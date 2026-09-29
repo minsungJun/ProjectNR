@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "LayeredMoveBase.h"
+#include "NRWeaponPartTypes.h"
 #include "NRMeleeComponent.generated.h"
 
 class UAnimMontage;
@@ -266,9 +267,23 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> CurrentMontage;
 
+	/** Seconds into the current clip. Every FNRMeleeAttack timing is clip time, so scaling by
+	 *  the play rate keeps hit, chain and recovery windows on the same frames of the swing. */
+	float GetAttackClipTime() const;
+
+	/** Melee stats after parts, from UNRWeaponComponent, or base values when it is absent. */
+	FNRWeaponRuntimeStats ReadMeleeStats() const;
+
 	/** Index into LightCombo, or INDEX_NONE while the heavy attack plays. */
 	int32 CurrentComboIndex = INDEX_NONE;
 	float AttackStartTime = 0.0f;
+
+	/**
+	 * Stats frozen when the attack started. A part changed mid-swing waits for the next
+	 * attack, so the swing's timing cannot shift under the montage that is already playing.
+	 */
+	FNRWeaponRuntimeStats AttackStats;
+	float AttackPlayRate = 1.0f;
 	bool bComboQueued = false;
 
 	/** Side held at the click that queued the next hit, for its start-of-attack turn. */

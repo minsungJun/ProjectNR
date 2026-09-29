@@ -95,3 +95,4 @@ DerivedDataCache/*
 /Content/Blueprints/*
 !/Content/Blueprints/Player/
 !/Content/StateTree/
+!/Content/DataAssets/

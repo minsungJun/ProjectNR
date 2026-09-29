@@ -19,6 +19,8 @@ public class ProjectNR : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			// FCoreStyle fonts for the C++-built loadout widget.
+			"SlateCore",
 			// Plugins/Experimental/Mover. The player pawn's header implements
 			// IMoverInputProducerInterface, so this is public. Mover re-exports
 			// NetworkPrediction and MotionWarping, both already enabled.

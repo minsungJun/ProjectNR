@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "MoveLibrary/FloorQueryUtils.h"
+#include "NRAimComponent.h"
 #include "MoverComponent.h"
 #include "MoverDataModelTypes.h"
 #include "MoverSimulationTypes.h"
@@ -344,6 +345,16 @@ bool UNRRollComponent::TryRoll()
 	if (bCancelsAttack)
 	{
 		Melee->CancelAttack();
+	}
+
+	// Precision aim is first person; tumbling with the camera at eye height is disorienting,
+	// so a roll drops back to third person. Shoulder aim is a held button and stays.
+	if (UNRAimComponent* Aim = Owner->FindComponentByClass<UNRAimComponent>())
+	{
+		if (Aim->IsPrecisionAiming())
+		{
+			Aim->ExitAim();
+		}
 	}
 
 	// A plain montage play: the clip has no root motion, so there is nothing for Mover to take

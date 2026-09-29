@@ -40,6 +40,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Projectile")
 	float GetDamage() const { return Damage; }
 
+	/**
+	 * Replaces the class default damage with a final value worked out by whoever fired -
+	 * the player's weapon applies parts and criticals before the shot leaves. Call between
+	 * SpawnActorDeferred and FinishSpawning so no hit can happen first.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Projectile")
+	void InitializeDamage(float FinalDamage) { Damage = FMath::Max(0.0f, FinalDamage); }
+
 	UFUNCTION(BlueprintPure, Category = "Projectile")
 	float GetCollisionRadius() const;
 

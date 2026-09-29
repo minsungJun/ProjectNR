@@ -10,6 +10,8 @@
 #include "Projectiles/AITestProjectile.h"
 #include "NeuralAI.h"
 
+TArray<TWeakObjectPtr<UEnemySensorComponent>> UEnemySensorComponent::ActiveSensors;
+
 namespace
 {
 	/** Projects onto the ground plane and normalizes. The crawler fights in 2D. */
@@ -30,6 +32,8 @@ void UEnemySensorComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	ActiveSensors.Add(this);
+
 	PrimaryComponentTick.TickInterval = SensorInterval;
 
 	if (AActor* Owner = GetOwner())
@@ -45,6 +49,16 @@ void UEnemySensorComponent::BeginPlay()
 				*GetNameSafe(Owner));
 		}
 	}
+}
+
+void UEnemySensorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	ActiveSensors.RemoveAllSwap([this](const TWeakObjectPtr<UEnemySensorComponent>& Entry)
+	{
+		return !Entry.IsValid() || Entry.Get() == this;
+	});
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void UEnemySensorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -75,6 +89,34 @@ void UEnemySensorComponent::UpdateSensorData(float DeltaTime)
 void UEnemySensorComponent::UpdateTargetSenses(const FVector& SelfLocation, const FVector& Forward, const FVector& Right)
 {
 	AActor* Target = AcquireTarget(SelfLocation);
+
+	// A fresh sighting is news worth passing on; a continuing one was already passed on.
+	const bool bSeesDirectly = Target != nullptr;
+	if (bSeesDirectly && !bSawTargetDirectly)
+	{
+		BroadcastAlert(Target);
+	}
+	bSawTargetDirectly = bSeesDirectly;
+
+	// Nothing in sight: fall back to what an ally reported, while it is fresh and within chase
+	// range. Past that the alert is dropped and the enemy goes back to idle.
+	bSensingByAlert = false;
+	if (!Target)
+	{
+		const UWorld* World = GetWorld();
+		AActor* Alerted = AlertTarget.Get();
+		if (World && Alerted && World->GetTimeSeconds() < AlertExpireTime
+			&& FVector::DistSquared2D(SelfLocation, Alerted->GetActorLocation()) <= FMath::Square(AlertChaseRange))
+		{
+			Target = Alerted;
+			bSensingByAlert = true;
+		}
+		else
+		{
+			AlertTarget = nullptr;
+		}
+	}
+
 	CurrentTarget = Target;
 
 	if (!Target)
@@ -101,8 +143,10 @@ void UEnemySensorComponent::UpdateTargetSenses(const FVector& SelfLocation, cons
 
 	SensorData.TargetDetected = 1.0f;
 
-	// Linear falloff: 1 when touching, 0 at the edge of perception.
-	SensorData.TargetNear = FMath::Clamp(1.0f - (Distance / DetectionRange), 0.0f, 1.0f);
+	// Linear falloff: 1 when touching, 0 at the edge of perception - which, for a target known
+	// only from an alert, is the chase range rather than our own eyesight.
+	const float NearRange = bSensingByAlert ? AlertChaseRange : DetectionRange;
+	SensorData.TargetNear = FMath::Clamp(1.0f - (Distance / NearRange), 0.0f, 1.0f);
 
 	// Ego-centric bearing. A target at 45 degrees lights up Front and one side together,
 	// which is what lets the brain blend approach with a strafe instead of snapping.
@@ -285,6 +329,57 @@ bool UEnemySensorComponent::HasLineOfSightTo(const AActor* Target) const
 	FHitResult Hit;
 	const bool bBlocked = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
 	return !bBlocked;
+}
+
+void UEnemySensorComponent::BroadcastAlert(AActor* Target) const
+{
+	const AActor* Owner = GetOwner();
+	if (!Owner || !Target || AlertRadius <= 0.0f)
+	{
+		return;
+	}
+
+	const FVector Origin = Owner->GetActorLocation();
+	const float RadiusSquared = FMath::Square(AlertRadius);
+	int32 Alerted = 0;
+	for (const TWeakObjectPtr<UEnemySensorComponent>& Entry : ActiveSensors)
+	{
+		UEnemySensorComponent* Other = Entry.Get();
+		if (!Other || Other == this || !Other->GetOwner())
+		{
+			continue;
+		}
+		if (FVector::DistSquared2D(Origin, Other->GetOwner()->GetActorLocation()) <= RadiusSquared)
+		{
+			Other->ReceiveAlert(Target, this);
+			++Alerted;
+		}
+	}
+
+	if (Alerted > 0)
+	{
+		UE_LOG(LogNeuralAI, Log, TEXT("%s spotted %s and alerted %d ally(s)"),
+			*GetNameSafe(Owner), *GetNameSafe(Target), Alerted);
+	}
+}
+
+void UEnemySensorComponent::ReceiveAlert(AActor* Target, const UEnemySensorComponent* From)
+{
+	const UWorld* World = GetWorld();
+	if (!World || !Target)
+	{
+		return;
+	}
+
+	// A dead ally cannot be alerted into action; the controller would refuse anyway, but the
+	// log would claim otherwise.
+	if (OwnerHealth && OwnerHealth->IsDead())
+	{
+		return;
+	}
+
+	AlertTarget = Target;
+	AlertExpireTime = World->GetTimeSeconds() + AlertDuration;
 }
 
 void UEnemySensorComponent::HandleOwnerDamaged(float Damage, AActor* DamageInstigator, const FVector& HitDirection)

@@ -22,6 +22,7 @@
 #include "MoverDataModelTypes.h"
 #include "MoverSimulationTypes.h"
 #include "NRMoveInput.h"
+#include "NRWeaponComponent.h"
 #include "MoverComponent.h"
 #include "TimerManager.h"
 
@@ -333,7 +334,7 @@ void UNRMeleeComponent::LightAttack()
 		// clip starts from, so a late press lets this hit play out instead of snapping.
 		const FNRMeleeAttack* Current = GetCurrentAttack();
 		const bool bHasNext = GetNextComboIndex() != INDEX_NONE;
-		const float Elapsed = World->GetTimeSeconds() - AttackStartTime;
+		const float Elapsed = GetAttackClipTime();
 		if (Current && bHasNext && Elapsed >= Current->ComboInputStart && Elapsed <= Current->ChainTime)
 		{
 			bComboQueued = true;
@@ -375,6 +376,18 @@ void UNRMeleeComponent::HeavyAttack()
 	}
 }
 
+float UNRMeleeComponent::GetAttackClipTime() const
+{
+	const UWorld* World = GetWorld();
+	return World ? (World->GetTimeSeconds() - AttackStartTime) * AttackPlayRate : 0.0f;
+}
+
+FNRWeaponRuntimeStats UNRMeleeComponent::ReadMeleeStats() const
+{
+	const UNRWeaponComponent* Weapons = GetOwner() ? GetOwner()->FindComponentByClass<UNRWeaponComponent>() : nullptr;
+	return Weapons ? Weapons->GetRuntimeStats(ENRWeaponId::Melee) : FNRWeaponRuntimeStats();
+}
+
 float UNRMeleeComponent::ReadSideInput() const
 {
 	AActor* Owner = GetOwner();
@@ -409,10 +422,15 @@ bool UNRMeleeComponent::StartAttack(const FNRMeleeAttack& Attack, UAnimMontage* 
 	// running through its montage's blend-out - and with equal priority the older move wins.
 	Mover->CancelFeaturesWithTag(Mover_AnimRootMotion_Montage);
 
+	// Attack speed from parts, frozen for this swing. The montage, the lunge and every timing
+	// window below all use this one rate, so they stay on the same frames of the clip.
+	const FNRWeaponRuntimeStats Stats = ReadMeleeStats();
+	const float PlayRate = FMath::Max(Stats.AttackSpeedMultiplier, 0.1f);
+
 	// A plain play: it stops the previous combo hit with that montage's blend-out. The pose's
 	// root is locked by the anim instance's root motion extraction; the capsule is moved by
 	// the layered move below, which reads the same root motion from the asset.
-	if (AnimInstance->Montage_Play(Montage, 1.0f) <= 0.0f || !AnimInstance->Montage_IsPlaying(Montage))
+	if (AnimInstance->Montage_Play(Montage, PlayRate) <= 0.0f || !AnimInstance->Montage_IsPlaying(Montage))
 	{
 		EndAttack();
 		UE_LOG(LogNRMelee, Warning, TEXT("%s could not start %s"), *GetNameSafe(Owner), *GetNameSafe(Montage));
@@ -422,7 +440,7 @@ bool UNRMeleeComponent::StartAttack(const FNRMeleeAttack& Attack, UAnimMontage* 
 	TSharedPtr<FNRMeleeRootMotionMove> Lunge = MakeShared<FNRMeleeRootMotionMove>();
 	Lunge->Montage = Montage;
 	Lunge->StartPosition = AnimInstance->Montage_GetPosition(Montage);
-	Lunge->PlayRate = 1.0f;
+	Lunge->PlayRate = PlayRate;
 	// A or D held now, or at the click that queued this hit: turn a fixed step towards it over
 	// the first moments of the attack. The click wins if both disagree - it is what was meant.
 	float TurnDegrees = 0.0f;
@@ -433,7 +451,7 @@ bool UNRMeleeComponent::StartAttack(const FNRMeleeAttack& Attack, UAnimMontage* 
 	}
 	Lunge->TurnDegrees = TurnDegrees;
 	Lunge->TurnSeconds = AttackTurnTime;
-	Lunge->DurationMs = Montage->GetPlayLength() * 1000.0f;
+	Lunge->DurationMs = Montage->GetPlayLength() / PlayRate * 1000.0f;
 	// Everything but vertical velocity: the lunge and the turn are the attack's, falling and
 	// ground contact stay with the movement mode.
 	Lunge->MixMode = EMoveMixMode::OverrideAllExceptVerticalVelocity;
@@ -446,6 +464,8 @@ bool UNRMeleeComponent::StartAttack(const FNRMeleeAttack& Attack, UAnimMontage* 
 	CurrentMontage = Montage;
 	CurrentComboIndex = ComboIndex;
 	AttackStartTime = World->GetTimeSeconds();
+	AttackStats = Stats;
+	AttackPlayRate = PlayRate;
 	bComboQueued = false;
 	QueuedSide = 0.0f;
 	HitThisSwing.Reset();
@@ -454,9 +474,9 @@ bool UNRMeleeComponent::StartAttack(const FNRMeleeAttack& Attack, UAnimMontage* 
 	// Diagnostics: what the montage says the lunge covers, whether Mover was handed root motion
 	// at all, and - once the clip is over - how far the capsule really went.
 	const FVector AnimTravel = Montage->ExtractRootMotionFromTrackRange(0.0f, Montage->GetPlayLength(), FAnimExtractContext()).GetTranslation();
-	UE_LOG(LogNRMelee, Log, TEXT("%s attacks: %s, turn %+.0f deg | montage root motion %s, travel %.1fcm %s | anim root motion mode %d"),
+	UE_LOG(LogNRMelee, Log, TEXT("%s attacks: %s, turn %+.0f deg, rate x%.2f | montage root motion %s, travel %.1fcm %s | anim root motion mode %d"),
 		*GetNameSafe(Owner),
-		ComboIndex == INDEX_NONE ? TEXT("heavy") : *FString::Printf(TEXT("light %d"), ComboIndex + 1), TurnDegrees,
+		ComboIndex == INDEX_NONE ? TEXT("heavy") : *FString::Printf(TEXT("light %d"), ComboIndex + 1), TurnDegrees, PlayRate,
 		Montage->HasRootMotion() ? TEXT("yes") : TEXT("NO"), AnimTravel.Size(), *AnimTravel.ToCompactString(),
 		static_cast<int32>(AnimInstance->RootMotionMode.GetValue()));
 
@@ -470,7 +490,7 @@ bool UNRMeleeComponent::StartAttack(const FNRMeleeAttack& Attack, UAnimMontage* 
 			UE_LOG(LogNRMelee, Log, TEXT("%s attack moved actor %.1fcm (2D)"), *GetNameSafe(O),
 				FVector::Dist2D(StartLocation, O->GetActorLocation()));
 		}
-	}), FMath::Max(Montage->GetPlayLength() - BlendOutTime, 0.1f), false);
+	}), FMath::Max((Montage->GetPlayLength() - BlendOutTime) / PlayRate, 0.1f), false);
 	return true;
 }
 
@@ -486,7 +506,7 @@ void UNRMeleeComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 		return;
 	}
 
-	const float Elapsed = World->GetTimeSeconds() - AttackStartTime;
+	const float Elapsed = GetAttackClipTime();
 
 	if (Elapsed >= Attack->HitStart && Elapsed <= Attack->HitEnd)
 	{
@@ -556,8 +576,12 @@ void UNRMeleeComponent::TestHits(const FNRMeleeAttack& Attack)
 		}
 
 		HitThisSwing.Add(Other);
-		Health->ApplyDamage(Attack.Damage, Owner, ToOtherDir);
-		UE_LOG(LogNRMelee, Log, TEXT("%s hit %s for %.0f"), *GetNameSafe(Owner), *GetNameSafe(Other), Attack.Damage);
+		// Rolled per target, from the stats frozen at the start of the swing.
+		bool bCritical = false;
+		const float Damage = AttackStats.RollDamage(Attack.Damage, bCritical);
+		Health->ApplyDamage(Damage, Owner, ToOtherDir);
+		UE_LOG(LogNRMelee, Log, TEXT("%s hit %s for %.1f%s"), *GetNameSafe(Owner), *GetNameSafe(Other), Damage,
+			bCritical ? TEXT(" (critical)") : TEXT(""));
 	}
 
 #if ENABLE_DRAW_DEBUG

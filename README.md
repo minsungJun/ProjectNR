@@ -5,6 +5,8 @@ Unreal Engine 5.8 3인칭 액션 프로토타입. **Game Animation Sample**(Move
 
 - 무기: 1번 라이플 / 2번 샷건(펠릿 12발) / 3번 근접(도끼 콤보)
 - 구르기: `Left Ctrl`, 8방향, 근접 공격 캔슬
+- 조준: 우클릭 홀드 = 견착, 클릭 = 정조준(1인칭)
+- 무기 파츠: `Tab` 장착 화면, 무기별 전용 1 + 공용 5 슬롯, `R` 재장전
 - 적 AI: 손으로 배선한 leaky 신경망 + StateTree (`NeuralAI` 모듈)
 
 > **이 저장소에는 마켓·샘플 애셋이 없다.** 라이선스상 원본 애셋을 재배포할 수 없어서 `Content/`는
@@ -46,9 +48,13 @@ Unreal Engine 5.8 3인칭 액션 프로토타입. **Game Animation Sample**(Move
 |---|---|
 | `NRWeaponComponent` | 무기 슬롯(원거리/근접), 화면 중앙 수렴 조준, 크로스헤어 상태 |
 | `NRProjectiles` | 라이플 탄 / 샷건 펠릿 (사거리는 투사체 수명) |
-| `NRHUD` | Canvas 크로스헤어·무기 이름 |
+| `NRHUD` | Canvas 크로스헤어·무기 이름·적 체력바·데미지 숫자 |
 | `NRRollComponent` | 구르기. 이동은 전용 Mover 레이어드 무브 (진입 속도로 끝나는 곡선) |
 | `NRMeleeComponent` | 근접 콤보. 루트 모션을 전용 레이어드 무브로 적용, 시작 시 A/D 방향 틀기 |
+| `NRWeaponPartTypes` / `NRWeaponPartData` / `NRWeaponPartComponent` | 파츠 데이터, 장착 규칙, 런타임 스탯 (→ `docs/WEAPON_ATTACHMENTS.md`) |
+| `NRLoadoutWidget` | C++로 구성한 임시 파츠 장착 화면 |
+| `NRWeaponPartCommands` | 테스트 콘솔 `NR.Loadout`, `NR.Parts.*`, `NR.Weapon.*` |
+| `NRAimComponent` | 견착 / 정조준. 우클릭 홀드·탭 판정, 1인칭 카메라, 샘플 `WantsToAim` 구동 |
 | `NRMoveInput` | 샘플의 `Get_MoveInput`으로 실제 키 입력 방향 읽기 |
 | `NRAnimInfoCommand` | 콘솔 `NR.AnimInfo` / `NR.AnimChain` — 루트 모션·스윙 구간·콤보 연결 자세 측정 |
 | `NRPlayerPawn` | 이전 C++ 폰 (비교용) |

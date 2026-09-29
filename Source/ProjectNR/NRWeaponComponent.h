@@ -4,12 +4,17 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Engine/TimerHandle.h"
 #include "InputCoreTypes.h"
+#include "NRWeaponPartTypes.h"
 #include "NRWeaponComponent.generated.h"
 
 class AAITestProjectile;
 class UAnimMontage;
+class UEnhancedInputLocalPlayerSubsystem;
 class UInputAction;
+class UInputMappingContext;
+class UNRWeaponPartComponent;
 
 UENUM(BlueprintType)
 enum class ENRWeaponKind : uint8
@@ -39,9 +44,27 @@ struct FNRWeaponDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Input")
 	FKey EquipKey;
 
-	/** Melee slots ignore every field below except DisplayName and EquipKey. */
+	/** Melee slots ignore every field below except DisplayName, EquipKey and the base stats. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon")
 	ENRWeaponKind Kind = ENRWeaponKind::Ranged;
+
+	/** Which part loadout this weapon uses. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon")
+	ENRWeaponId WeaponId = ENRWeaponId::Rifle;
+
+	/** Rounds per magazine before parts. Ignored for melee. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Stats", meta = (ClampMin = "1"))
+	int32 BaseMagazine = 30;
+
+	/** Seconds from pressing reload to a full magazine. Ignored for melee. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Stats", meta = (ClampMin = "0.0"))
+	float ReloadTime = 1.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Stats", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float BaseCritChance = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Stats", meta = (ClampMin = "1.0"))
+	float BaseCritMultiplier = 1.5f;
 
 	/** What to spawn. Range, speed and damage belong to the projectile, not the weapon. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon")
@@ -115,6 +138,15 @@ public:
 	/** The equipped weapon, or null if @Weapons is empty. */
 	const FNRWeaponDefinition* GetCurrentWeapon() const;
 
+	/** The carried weapon with this id, or null. */
+	const FNRWeaponDefinition* FindWeaponById(ENRWeaponId WeaponId) const;
+
+	/**
+	 * Stats after parts. Read from the pawn's UNRWeaponPartComponent when there is one, and
+	 * computed from the base values alone otherwise, so every weapon works without parts.
+	 */
+	FNRWeaponRuntimeStats GetRuntimeStats(ENRWeaponId WeaponId) const;
+
 	UFUNCTION(BlueprintPure, Category = "Weapon")
 	FText GetCurrentWeaponName() const;
 
@@ -146,6 +178,32 @@ public:
 	/** True while the cooldown has not elapsed. */
 	UFUNCTION(BlueprintPure, Category = "Weapon")
 	bool IsOnCooldown() const;
+
+	// --- Ammo ----------------------------------------------------------------------
+	//
+	// Each ranged weapon keeps its own magazine, so switching never refills or empties one.
+
+	/** Starts reloading the weapon in hand. False if it is melee, full, or already reloading. */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
+	bool Reload();
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	bool IsReloading() const { return ReloadingWeaponIndex != INDEX_NONE; }
+
+	/** 0..1 through the current reload, 0 when not reloading. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	float GetReloadProgress() const;
+
+	/** Rounds left in the weapon in hand. 0 for melee. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentAmmo() const;
+
+	/** Magazine size of the weapon in hand after parts. 0 for melee. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetMaxAmmo() const;
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetAmmoForWeapon(ENRWeaponId WeaponId) const;
 
 	// --- Crosshair state -----------------------------------------------------------
 	//
@@ -179,6 +237,12 @@ protected:
 
 	void OnFireInput();
 
+	void OnReloadInput();
+
+	/** A loadout change resized a magazine: keep the rounds, but never more than fit. */
+	UFUNCTION()
+	void OnRuntimeStatsChanged(ENRWeaponId WeaponId, const FNRWeaponRuntimeStats& Stats);
+
 	/**
 	 * Tells everything that depends on the weapon kind that it changed: the melee component
 	 * takes or releases the mouse buttons, and the animation blueprint's rifle upper-body
@@ -204,6 +268,19 @@ protected:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Input")
 	TObjectPtr<UInputAction> FireAction;
+
+	/** Reload key. Taken through a runtime mapping context above the sample's, because the
+	 *  sample maps R to ragdoll and both would otherwise fire. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Input")
+	FKey ReloadKey = EKeys::R;
+
+	/** Priority of that context. Must be above IMC_Sandbox's 0 so R is consumed here. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Input")
+	int32 ReloadInputPriority = 10;
+
+	/** Starts a reload when the trigger is pulled on an empty magazine. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Ammo")
+	bool bAutoReloadWhenEmpty = true;
 
 	/** Bone or socket the muzzle is measured from. Leave as None to use the actor's own
 	 *  transform, which is what you want until there is a weapon mesh to hang this on. */
@@ -266,4 +343,26 @@ private:
 	float LastFireSpread = 0.0f;
 
 	bool bInputBound = false;
+
+	void UpdateReloadContext();
+	void FinishReload();
+	void CancelReload();
+
+	/** Rounds per weapon, parallel to Weapons. Filled to the magazine size at BeginPlay. */
+	TArray<int32> Ammo;
+
+	int32 ReloadingWeaponIndex = INDEX_NONE;
+	float ReloadStartTime = 0.0f;
+	float ReloadDuration = 0.0f;
+	FTimerHandle ReloadTimer;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> ReloadContext;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> ReloadAction;
+
+	/** Same reason as UNRMeleeComponent::ContextSubsystem: removal must find the subsystem it
+	 *  was added to even after the controller is gone. */
+	TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> ReloadContextSubsystem;
 };

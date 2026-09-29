@@ -9,10 +9,23 @@ UHealthComponent::UHealthComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
+FOnAnyHealthDamaged UHealthComponent::OnAnyDamaged;
+TArray<TWeakObjectPtr<UHealthComponent>> UHealthComponent::ActiveComponents;
+
 void UHealthComponent::BeginPlay()
 {
 	Super::BeginPlay();
 	ResetHealth();
+
+	// Stale entries from components destroyed without EndPlay are pruned here too.
+	ActiveComponents.RemoveAll([](const TWeakObjectPtr<UHealthComponent>& Entry) { return !Entry.IsValid(); });
+	ActiveComponents.AddUnique(this);
+}
+
+void UHealthComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	ActiveComponents.Remove(this);
+	Super::EndPlay(EndPlayReason);
 }
 
 void UHealthComponent::ResetHealth()
@@ -41,6 +54,7 @@ float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, cons
 		*GetNameSafe(GetOwner()), Applied, CurrentHealth, MaxHealth);
 
 	OnDamaged.Broadcast(Applied, DamageInstigator, HitDirection);
+	OnAnyDamaged.Broadcast(this, Applied);
 
 	if (CurrentHealth <= 0.0f)
 	{

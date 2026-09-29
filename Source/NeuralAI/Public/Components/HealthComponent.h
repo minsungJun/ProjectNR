@@ -6,11 +6,16 @@
 #include "Components/ActorComponent.h"
 #include "HealthComponent.generated.h"
 
+class UHealthComponent;
+
 /** Fired whenever damage is actually applied. HitDirection points from the damage source towards the owner. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnHealthDamaged, float, Damage, AActor*, DamageInstigator, const FVector&, HitDirection);
 
 /** Fired once, the first time health reaches zero. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHealthDeath, AActor*, Killer);
+
+/** Native, class-wide twin of OnDamaged: tells listeners *which* component was hit. */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnAnyHealthDamaged, UHealthComponent* /*Health*/, float /*Damage*/);
 
 /**
  * Minimal health container shared by the test player and the enemy.
@@ -54,8 +59,18 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Health")
 	FOnHealthDeath OnDeath;
 
+	/**
+	 * Broadcast by every component after its own OnDamaged. Lets a single observer (the
+	 * HUD's damage numbers) hear about hits on actors it never bound to.
+	 */
+	static FOnAnyHealthDamaged OnAnyDamaged;
+
+	/** Every component that has begun play and not yet ended it, across all worlds. */
+	static const TArray<TWeakObjectPtr<UHealthComponent>>& GetActiveComponents() { return ActiveComponents; }
+
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "1.0"))
 	float MaxHealth = 100.0f;
@@ -66,4 +81,6 @@ private:
 
 	/** Latches so OnDeath can only ever broadcast once per life. */
 	bool bDead = false;
+
+	static TArray<TWeakObjectPtr<UHealthComponent>> ActiveComponents;
 };

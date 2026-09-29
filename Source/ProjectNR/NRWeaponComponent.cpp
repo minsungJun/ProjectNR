@@ -7,11 +7,18 @@
 #include "Components/HealthComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "InputAction.h"
+#include "InputMappingContext.h"
+#include "TimerManager.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "NRAimComponent.h"
 #include "NRMeleeComponent.h"
 #include "NRProjectiles.h"
+#include "NRWeaponPartComponent.h"
 #include "Projectiles/AITestProjectile.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRWeapon, Log, All);
@@ -30,6 +37,11 @@ UNRWeaponComponent::UNRWeaponComponent()
 	Rifle.SpreadHalfAngle = 0.0f;
 	Rifle.FireCooldown = 0.2f;
 	Rifle.FireSpread = 0.5f;
+	Rifle.WeaponId = ENRWeaponId::Rifle;
+	Rifle.BaseMagazine = 30;
+	Rifle.ReloadTime = 1.6f;
+	Rifle.BaseCritChance = 0.05f;
+	Rifle.BaseCritMultiplier = 1.5f;
 	Weapons.Add(Rifle);
 
 	// A pump-action rate, and a cone wide enough that the pattern covers a torso at about
@@ -42,12 +54,20 @@ UNRWeaponComponent::UNRWeaponComponent()
 	Shotgun.SpreadHalfAngle = 5.0f;
 	Shotgun.FireCooldown = 0.9f;
 	Shotgun.FireSpread = 1.0f;
+	Shotgun.WeaponId = ENRWeaponId::Shotgun;
+	Shotgun.BaseMagazine = 6;
+	Shotgun.ReloadTime = 2.0f;
+	Shotgun.BaseCritChance = 0.05f;
+	Shotgun.BaseCritMultiplier = 1.5f;
 	Weapons.Add(Shotgun);
 
 	FNRWeaponDefinition Melee;
 	Melee.DisplayName = NSLOCTEXT("NRWeapon", "Melee", "Axe");
 	Melee.EquipKey = EKeys::Three;
 	Melee.Kind = ENRWeaponKind::Melee;
+	Melee.WeaponId = ENRWeaponId::Melee;
+	Melee.BaseCritChance = 0.1f;
+	Melee.BaseCritMultiplier = 1.5f;
 	Weapons.Add(Melee);
 }
 
@@ -63,10 +83,29 @@ void UNRWeaponComponent::BeginPlay()
 		ApplyWeaponKind();
 	}
 
+	// Full magazines to start. The part component computed its stats in InitializeComponent,
+	// which runs before any BeginPlay, so the sizes already include starting loadouts.
+	Ammo.SetNum(Weapons.Num());
+	for (int32 Index = 0; Index < Weapons.Num(); ++Index)
+	{
+		Ammo[Index] = Weapons[Index].Kind == ENRWeaponKind::Ranged ? GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine : 0;
+	}
+
+	if (UNRWeaponPartComponent* Parts = GetOwner()->FindComponentByClass<UNRWeaponPartComponent>())
+	{
+		Parts->OnRuntimeStatsChanged.AddUniqueDynamic(this, &UNRWeaponComponent::OnRuntimeStatsChanged);
+	}
+
+	// Built at runtime like the melee context: one key, nothing to keep in sync with assets.
+	ReloadAction = NewObject<UInputAction>(this, TEXT("IA_NRReload"));
+	ReloadContext = NewObject<UInputMappingContext>(this, TEXT("IMC_NRWeapon"));
+	ReloadContext->MapKey(ReloadAction, ReloadKey);
+
 	if (APawn* Pawn = Cast<APawn>(GetOwner()))
 	{
 		// Already possessed - a pawn placed in the level with auto-possess - so bind now.
 		BindInput();
+		UpdateReloadContext();
 
 		// Otherwise the InputComponent does not exist yet. A GameMode-spawned pawn runs
 		// BeginPlay before possession, and the component is created during the restart.
@@ -81,12 +120,49 @@ void UNRWeaponComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		Pawn->ReceiveRestartedDelegate.RemoveDynamic(this, &UNRWeaponComponent::OnPawnRestarted);
 	}
 
+	if (UNRWeaponPartComponent* Parts = GetOwner()->FindComponentByClass<UNRWeaponPartComponent>())
+	{
+		Parts->OnRuntimeStatsChanged.RemoveDynamic(this, &UNRWeaponComponent::OnRuntimeStatsChanged);
+	}
+
+	CancelReload();
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ReloadContextSubsystem.Get())
+	{
+		Subsystem->RemoveMappingContext(ReloadContext);
+	}
+	ReloadContextSubsystem = nullptr;
+
 	Super::EndPlay(EndPlayReason);
 }
 
 void UNRWeaponComponent::OnPawnRestarted(APawn* Pawn)
 {
 	BindInput();
+	UpdateReloadContext();
+}
+
+void UNRWeaponComponent::UpdateReloadContext()
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
+	UEnhancedInputLocalPlayerSubsystem* Wanted = PC && PC->GetLocalPlayer()
+		? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())
+		: nullptr;
+
+	if (!ReloadContext || ReloadContextSubsystem.Get() == Wanted)
+	{
+		return;
+	}
+
+	if (UEnhancedInputLocalPlayerSubsystem* Previous = ReloadContextSubsystem.Get())
+	{
+		Previous->RemoveMappingContext(ReloadContext);
+	}
+	ReloadContextSubsystem = Wanted;
+	if (Wanted)
+	{
+		Wanted->AddMappingContext(ReloadContext, ReloadInputPriority);
+	}
 }
 
 void UNRWeaponComponent::BindInput()
@@ -117,6 +193,14 @@ void UNRWeaponComponent::BindInput()
 		Pawn->InputComponent->KeyBindings.Emplace(MoveTemp(Binding));
 	}
 
+	if (UEnhancedInputComponent* Input = Cast<UEnhancedInputComponent>(Pawn->InputComponent))
+	{
+		if (ReloadAction)
+		{
+			Input->BindAction(ReloadAction, ETriggerEvent::Started, this, &UNRWeaponComponent::OnReloadInput);
+		}
+	}
+
 	if (FireAction)
 	{
 		if (UEnhancedInputComponent* Input = Cast<UEnhancedInputComponent>(Pawn->InputComponent))
@@ -142,6 +226,103 @@ void UNRWeaponComponent::OnFireInput()
 	Fire();
 }
 
+void UNRWeaponComponent::OnReloadInput()
+{
+	Reload();
+}
+
+// --- Ammo --------------------------------------------------------------------------
+
+int32 UNRWeaponComponent::GetAmmoForWeapon(ENRWeaponId WeaponId) const
+{
+	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+	return Ammo.IsValidIndex(Index) ? Ammo[Index] : 0;
+}
+
+int32 UNRWeaponComponent::GetCurrentAmmo() const
+{
+	return Ammo.IsValidIndex(CurrentWeaponIndex) ? Ammo[CurrentWeaponIndex] : 0;
+}
+
+int32 UNRWeaponComponent::GetMaxAmmo() const
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	return Weapon && Weapon->Kind == ENRWeaponKind::Ranged ? GetRuntimeStats(Weapon->WeaponId).MaxMagazine : 0;
+}
+
+float UNRWeaponComponent::GetReloadProgress() const
+{
+	const UWorld* World = GetWorld();
+	if (!IsReloading() || !World || ReloadDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	return FMath::Clamp((World->GetTimeSeconds() - ReloadStartTime) / ReloadDuration, 0.0f, 1.0f);
+}
+
+bool UNRWeaponComponent::Reload()
+{
+	UWorld* World = GetWorld();
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || IsReloading()
+		|| !Ammo.IsValidIndex(CurrentWeaponIndex) || Ammo[CurrentWeaponIndex] >= GetMaxAmmo())
+	{
+		return false;
+	}
+
+	ReloadingWeaponIndex = CurrentWeaponIndex;
+	ReloadStartTime = World->GetTimeSeconds();
+	ReloadDuration = Weapon->ReloadTime;
+
+	if (ReloadDuration <= 0.0f)
+	{
+		FinishReload();
+		return true;
+	}
+
+	World->GetTimerManager().SetTimer(ReloadTimer, this, &UNRWeaponComponent::FinishReload, ReloadDuration, false);
+	UE_LOG(LogNRWeapon, Log, TEXT("%s reloading %s (%.1fs)"), *GetNameSafe(GetOwner()),
+		*Weapon->DisplayName.ToString(), ReloadDuration);
+	return true;
+}
+
+void UNRWeaponComponent::FinishReload()
+{
+	const int32 Index = ReloadingWeaponIndex;
+	ReloadingWeaponIndex = INDEX_NONE;
+	if (!Weapons.IsValidIndex(Index) || !Ammo.IsValidIndex(Index))
+	{
+		return;
+	}
+
+	// The size is read now rather than when the reload started, in case a part changed it.
+	Ammo[Index] = GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine;
+	UE_LOG(LogNRWeapon, Log, TEXT("%s reloaded %s: %d"), *GetNameSafe(GetOwner()),
+		*Weapons[Index].DisplayName.ToString(), Ammo[Index]);
+}
+
+void UNRWeaponComponent::CancelReload()
+{
+	if (!IsReloading())
+	{
+		return;
+	}
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReloadTimer);
+	}
+	ReloadingWeaponIndex = INDEX_NONE;
+}
+
+void UNRWeaponComponent::OnRuntimeStatsChanged(ENRWeaponId WeaponId, const FNRWeaponRuntimeStats& Stats)
+{
+	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+	if (Ammo.IsValidIndex(Index) && Weapons[Index].Kind == ENRWeaponKind::Ranged && Ammo[Index] > Stats.MaxMagazine)
+	{
+		Ammo[Index] = Stats.MaxMagazine;
+	}
+}
+
 bool UNRWeaponComponent::IsOnCooldown() const
 {
 	const UWorld* World = GetWorld();
@@ -153,6 +334,22 @@ bool UNRWeaponComponent::IsOnCooldown() const
 const FNRWeaponDefinition* UNRWeaponComponent::GetCurrentWeapon() const
 {
 	return Weapons.IsValidIndex(CurrentWeaponIndex) ? &Weapons[CurrentWeaponIndex] : nullptr;
+}
+
+const FNRWeaponDefinition* UNRWeaponComponent::FindWeaponById(ENRWeaponId WeaponId) const
+{
+	return Weapons.FindByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+}
+
+FNRWeaponRuntimeStats UNRWeaponComponent::GetRuntimeStats(ENRWeaponId WeaponId) const
+{
+	if (const UNRWeaponPartComponent* Parts = GetOwner() ? GetOwner()->FindComponentByClass<UNRWeaponPartComponent>() : nullptr)
+	{
+		return Parts->GetRuntimeStats(WeaponId);
+	}
+
+	const FNRWeaponDefinition* Weapon = FindWeaponById(WeaponId);
+	return Weapon ? UNRWeaponPartComponent::ComputeRuntimeStats(*Weapon, {}) : FNRWeaponRuntimeStats();
 }
 
 FText UNRWeaponComponent::GetCurrentWeaponName() const
@@ -180,6 +377,12 @@ void UNRWeaponComponent::ApplyWeaponKind()
 	if (UNRMeleeComponent* MeleeComponent = Owner->FindComponentByClass<UNRMeleeComponent>())
 	{
 		MeleeComponent->SetMeleeEquipped(bMelee);
+	}
+
+	// Aiming is for ranged weapons; with melee in hand the right button is the heavy attack.
+	if (UNRAimComponent* Aim = Owner->FindComponentByClass<UNRAimComponent>())
+	{
+		Aim->SetAimAllowed(!bMelee);
 	}
 
 	// The shared animation blueprint decides the rifle upper-body layer from its own HasWeapon
@@ -218,6 +421,9 @@ void UNRWeaponComponent::EquipWeapon(int32 Index)
 			return;
 		}
 	}
+
+	// A reload belongs to the weapon being put away; it is not finished in the holster.
+	CancelReload();
 
 	CurrentWeaponIndex = Index;
 	ApplyWeaponKind();
@@ -308,6 +514,22 @@ FVector UNRWeaponComponent::GetMuzzleLocation() const
 		return FVector::ZeroVector;
 	}
 
+	// Precision aim is first person with the character hidden: a shot from the chest would
+	// appear from the lower right of the screen. Fire from the view point instead, a little
+	// ahead of it so the projectile is past the near clip plane on its first frame.
+	if (const UNRAimComponent* Aim = Owner->FindComponentByClass<UNRAimComponent>(); Aim && Aim->IsPrecisionAiming())
+	{
+		const APawn* Pawn = Cast<APawn>(Owner);
+		if (const APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr)
+		{
+			constexpr float ForwardFromView = 40.0f;
+			FVector ViewLocation;
+			FRotator ViewRotation;
+			PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+			return ViewLocation + ViewRotation.Vector() * ForwardFromView;
+		}
+	}
+
 	if (!MuzzleSocketName.IsNone())
 	{
 		if (const USkeletalMeshComponent* Mesh = Owner->FindComponentByClass<USkeletalMeshComponent>())
@@ -340,7 +562,11 @@ float UNRWeaponComponent::GetCrosshairSpread() const
 	const float SinceFire = World->GetTimeSeconds() - LastFireTime;
 	const float FromFiring = FMath::Max(0.0f, 1.0f - (SinceFire / SpreadRecoveryTime)) * LastFireSpread;
 
-	return FMath::Clamp(FromMovement + FromFiring, 0.0f, 1.0f);
+	// Precision aim tightens the bloom; shoulder aim and hip fire are unchanged.
+	const UNRAimComponent* Aim = Owner->FindComponentByClass<UNRAimComponent>();
+	const float AimScale = Aim ? Aim->GetSpreadScale() : 1.0f;
+
+	return FMath::Clamp((FromMovement + FromFiring) * AimScale, 0.0f, 1.0f);
 }
 
 bool UNRWeaponComponent::IsAimingAtHostile() const
@@ -398,19 +624,36 @@ int32 UNRWeaponComponent::Fire()
 	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
 	// Melee attacks come through UNRMeleeComponent's own input; the left mouse binding that
 	// lands here is the ranged one and has nothing to do with an axe.
-	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || !Weapon->ProjectileClass || IsOnCooldown())
+	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || !Weapon->ProjectileClass || IsOnCooldown() || IsReloading())
 	{
 		return 0;
 	}
 
+	if (!Ammo.IsValidIndex(CurrentWeaponIndex) || Ammo[CurrentWeaponIndex] <= 0)
+	{
+		if (bAutoReloadWhenEmpty)
+		{
+			Reload();
+		}
+		return 0;
+	}
+
+	const FNRWeaponRuntimeStats Stats = GetRuntimeStats(Weapon->WeaponId);
 	const FVector MuzzleLocation = GetMuzzleLocation();
 	const FVector AimPoint = GetAimPoint();
 
 	// After the getters above, so the spread they may have read still reflects the shot
 	// before this one.
 	LastFireTime = World->GetTimeSeconds();
-	NextFireTime = LastFireTime + Weapon->FireCooldown;
+	NextFireTime = LastFireTime + Stats.GetAttackInterval(Weapon->FireCooldown);
 	LastFireSpread = Weapon->FireSpread;
+
+	// One round per trigger pull, however many pellets it throws.
+	--Ammo[CurrentWeaponIndex];
+
+	// Damage is the projectile class's own, scaled here, so the bullet and the pellet keep
+	// their separate base values.
+	const float BaseDamage = Weapon->ProjectileClass->GetDefaultObject<AAITestProjectile>()->GetDamage();
 
 	// This subtraction is the whole trick: the projectile is aimed from the muzzle at the
 	// point the crosshair resolved to, so the two converge there no matter how far the
@@ -421,30 +664,40 @@ int32 UNRWeaponComponent::Fire()
 		FireDirection = GetOwner()->GetActorForwardVector();
 	}
 
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = GetOwner();
-	SpawnParams.Instigator = Cast<APawn>(GetOwner());
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-
 	// Every projectile scatters around the converged direction, not around the camera ray,
 	// so the centre of a shotgun pattern still lands on the crosshair.
-	const float SpreadRadians = FMath::DegreesToRadians(Weapon->SpreadHalfAngle);
+	// Precision aim narrows the cone too, so the shotgun pattern tightens with the crosshair.
+	const UNRAimComponent* Aim = GetOwner()->FindComponentByClass<UNRAimComponent>();
+	const float SpreadRadians = FMath::DegreesToRadians(Weapon->SpreadHalfAngle * (Aim ? Aim->GetConeScale() : 1.0f));
 	const int32 Count = FMath::Max(Weapon->ProjectilesPerShot, 1);
 
 	int32 Spawned = 0;
+	int32 Criticals = 0;
+	float TotalDamage = 0.0f;
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		const FVector Direction = (SpreadRadians > 0.0f)
 			? FMath::VRandCone(FireDirection, SpreadRadians)
 			: FireDirection;
 
-		AAITestProjectile* Projectile = World->SpawnActor<AAITestProjectile>(
-			Weapon->ProjectileClass, MuzzleLocation, Direction.Rotation(), SpawnParams);
+		// Deferred so the final damage is in place before the projectile can touch anything.
+		const FTransform SpawnTransform(Direction.Rotation(), MuzzleLocation);
+		AAITestProjectile* Projectile = World->SpawnActorDeferred<AAITestProjectile>(
+			Weapon->ProjectileClass, SpawnTransform, GetOwner(), Cast<APawn>(GetOwner()),
+			ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
 
 		if (Projectile)
 		{
+			// Rolled per projectile: each pellet can crit on its own.
+			bool bCritical = false;
+			const float FinalDamage = Stats.RollDamage(BaseDamage, bCritical);
+			Projectile->InitializeDamage(FinalDamage);
+			Projectile->FinishSpawning(SpawnTransform);
 			Projectile->LaunchInDirection(Direction);
+
 			++Spawned;
+			Criticals += bCritical ? 1 : 0;
+			TotalDamage += FinalDamage;
 		}
 	}
 
@@ -462,8 +715,9 @@ int32 UNRWeaponComponent::Fire()
 		}
 	}
 
-	UE_LOG(LogNRWeapon, Verbose, TEXT("%s fired %s: %d projectile(s) towards %s"),
-		*GetNameSafe(GetOwner()), *Weapon->DisplayName.ToString(), Spawned, *AimPoint.ToCompactString());
+	UE_LOG(LogNRWeapon, Log, TEXT("%s fired %s: %d projectile(s), %d crit, %.1f damage total, ammo %d/%d, next in %.2fs"),
+		*GetNameSafe(GetOwner()), *Weapon->DisplayName.ToString(), Spawned, Criticals, TotalDamage,
+		Ammo[CurrentWeaponIndex], Stats.MaxMagazine, NextFireTime - LastFireTime);
 
 	return Spawned;
 }

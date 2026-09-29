@@ -254,6 +254,13 @@ int32 AEnemyCharacter::PerformAttack()
 			continue;
 		}
 
+		// No friendly fire: once allies converge on the same target (see the sensor's
+		// alert), a swing at the player would otherwise land on the crawler beside it.
+		if (Other->IsA<AEnemyCharacter>())
+		{
+			continue;
+		}
+
 		UHealthComponent* OtherHealth = Other->FindComponentByClass<UHealthComponent>();
 		if (!OtherHealth || OtherHealth->IsDead())
 		{
