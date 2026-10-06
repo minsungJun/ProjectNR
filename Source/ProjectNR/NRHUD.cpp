@@ -10,6 +10,9 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "NRConsumableComponent.h"
+#include "NRInteractable.h"
+#include "NRInteractionComponent.h"
 #include "NRLoadoutWidget.h"
 #include "NRRoom.h"
 #include "NRRunSubsystem.h"
@@ -436,6 +439,222 @@ void ANRHUD::DrawRunStatus()
 	}
 }
 
+namespace NRHudStyle
+{
+	const FLinearColor Bright(0.95f, 0.97f, 1.0f, 0.95f);
+	const FLinearColor Dim(0.72f, 0.78f, 0.82f, 0.85f);
+	const FLinearColor Panel(0.02f, 0.04f, 0.05f, 0.45f);
+	const FLinearColor Edge(0.85f, 0.9f, 0.95f, 0.35f);
+	const FLinearColor Track(0.0f, 0.0f, 0.0f, 0.45f);
+	const FLinearColor Fill(0.88f, 0.9f, 0.92f, 0.95f);
+	const FLinearColor Warning(1.0f, 0.55f, 0.25f, 0.95f);
+	const FLinearColor Danger(0.95f, 0.3f, 0.25f, 0.95f);
+	const FLinearColor Shield(0.55f, 0.82f, 1.0f, 0.95f);
+
+	/** Draws Text with a soft shadow; Anchor 0 = left edge at X, 1 = right edge, 0.5 = centred. */
+	FVector2D DrawLabel(UCanvas* Canvas, UFont* Font, const FString& Text, float X, float CenterY, float Scale,
+		const FLinearColor& Color, float Anchor = 0.0f)
+	{
+		float Width = 0.0f;
+		float Height = 0.0f;
+		Canvas->TextSize(Font, Text, Width, Height, Scale, Scale);
+		FCanvasTextItem Item(FVector2D(X - Width * Anchor, CenterY - Height * 0.5f), FText::FromString(Text), Font, Color);
+		Item.Scale = FVector2D(Scale, Scale);
+		Item.EnableShadow(FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
+		Canvas->DrawItem(Item);
+		return FVector2D(Width, Height);
+	}
+
+	void DrawFrame(AHUD* HUD, float X, float Y, float W, float H, const FLinearColor& Color, float T)
+	{
+		HUD->DrawRect(Color, X, Y, W, T);
+		HUD->DrawRect(Color, X, Y + H - T, W, T);
+		HUD->DrawRect(Color, X, Y + T, T, H - 2.0f * T);
+		HUD->DrawRect(Color, X + W - T, Y + T, T, H - 2.0f * T);
+	}
+}
+
+void ANRHUD::DrawPlayerStatus()
+{
+	// Bottom left, after the reference layout: a plus, the number, a light bar, the shield bar
+	// under it, and the consumables above. Sized from the canvas height so it keeps its
+	// proportions at any resolution.
+	const APawn* Pawn = GetOwningPawn();
+	const UHealthComponent* Health = Pawn ? Pawn->FindComponentByClass<UHealthComponent>() : nullptr;
+	UFont* Font = GEngine ? GEngine->GetLargeFont() : nullptr;
+	if (!Health || !Font)
+	{
+		return;
+	}
+
+	const float U = Canvas->SizeY / 1080.0f;
+	const float X = 40.0f * U;
+	const float Y = Canvas->SizeY - 78.0f * U;
+	const float Fraction = Health->GetHealthNormalized();
+	const FLinearColor BarColor = Fraction <= 0.3f ? NRHudStyle::Danger : NRHudStyle::Fill;
+
+	// Plus sign.
+	DrawRect(NRHudStyle::Bright, X, Y - 3.5f * U, 26.0f * U, 7.0f * U);
+	DrawRect(NRHudStyle::Bright, X + 9.5f * U, Y - 13.0f * U, 7.0f * U, 26.0f * U);
+
+	NRHudStyle::DrawLabel(Canvas, Font, FString::FromInt(FMath::CeilToInt(Health->GetCurrentHealth())),
+		X + 38.0f * U, Y, 2.0f * U, NRHudStyle::Bright);
+
+	const float BarX = X + 110.0f * U;
+	const float BarW = 240.0f * U;
+	const float BarH = 12.0f * U;
+	// The track runs a little past the fill on every side so a full, light bar still has a dark
+	// edge against a light floor.
+	const float Pad = 2.0f * U;
+	DrawRect(NRHudStyle::Track, BarX - Pad, Y - BarH * 0.5f - Pad, BarW + 2.0f * Pad, BarH + 2.0f * Pad);
+	DrawRect(BarColor, BarX, Y - BarH * 0.5f, BarW * Fraction, BarH);
+
+	// Shield: a thinner bar under health, empty until a shield is used.
+	const float ShieldY = Y + BarH * 0.5f + 8.0f * U;
+	const float ShieldH = 6.0f * U;
+	const float MaxShield = Health->GetMaxShield();
+	const float Shield = Health->GetCurrentShield();
+	UFont* Small = GEngine->GetMediumFont();
+	DrawRect(NRHudStyle::Track, BarX - Pad, ShieldY - Pad, BarW + 2.0f * Pad, ShieldH + 2.0f * Pad);
+	if (MaxShield > 0.0f && Shield > 0.0f)
+	{
+		DrawRect(NRHudStyle::Shield, BarX, ShieldY, BarW * FMath::Clamp(Shield / MaxShield, 0.0f, 1.0f), ShieldH);
+		if (Small)
+		{
+			NRHudStyle::DrawLabel(Canvas, Small, FString::FromInt(FMath::CeilToInt(Shield)),
+				BarX + BarW + 10.0f * U, ShieldY + ShieldH * 0.5f, 0.9f * U, NRHudStyle::Shield);
+		}
+	}
+
+	// Consumables: a key box and the count for each, above the health row.
+	const UNRConsumableComponent* Consumables = Pawn->FindComponentByClass<UNRConsumableComponent>();
+	if (Consumables && Small)
+	{
+		const float Box = 24.0f * U;
+		const float RowY = Y - 44.0f * U;
+		float ItemX = X;
+		auto DrawItem = [&](const FKey& Key, const TCHAR* Label, int32 Count)
+		{
+			const FLinearColor Color = Count > 0 ? NRHudStyle::Bright : NRHudStyle::Dim * FLinearColor(1.0f, 1.0f, 1.0f, 0.6f);
+			DrawRect(NRHudStyle::Panel, ItemX, RowY - Box * 0.5f, Box, Box);
+			NRHudStyle::DrawFrame(this, ItemX, RowY - Box * 0.5f, Box, Box, NRHudStyle::Edge, FMath::Max(1.0f, 1.5f * U));
+			NRHudStyle::DrawLabel(Canvas, Small, Key.GetDisplayName().ToString(), ItemX + Box * 0.5f, RowY, 0.9f * U, Color, 0.5f);
+			const FVector2D Size = NRHudStyle::DrawLabel(Canvas, Small, FString::Printf(TEXT("%s x%d"), Label, Count),
+				ItemX + Box + 8.0f * U, RowY, 0.9f * U, Color);
+			ItemX += Box + 8.0f * U + Size.X + 22.0f * U;
+		};
+		DrawItem(Consumables->GetPotionKey(), TEXT("HEAL"), Consumables->GetPotionCount());
+		DrawItem(Consumables->GetShieldKey(), TEXT("SHIELD"), Consumables->GetShieldCount());
+	}
+}
+
+void ANRHUD::DrawWeaponPanel(const UNRWeaponComponent* Weapon)
+{
+	// Bottom right, after the reference layout: a framed, translucent panel with the rounds
+	// in the magazine large, the magazine size small, and the weapon on the right.
+	UFont* Large = GEngine ? GEngine->GetLargeFont() : nullptr;
+	UFont* Medium = GEngine ? GEngine->GetMediumFont() : nullptr;
+	if (!Weapon || !Large || !Medium)
+	{
+		return;
+	}
+
+	const float U = Canvas->SizeY / 1080.0f;
+	const float W = 320.0f * U;
+	const float H = 80.0f * U;
+	const float X = Canvas->SizeX - 110.0f * U - W;
+	const float Y = Canvas->SizeY - 95.0f * U - H;
+	const float MidY = Y + H * 0.46f;
+	const float Line = FMath::Max(1.0f, 1.5f * U);
+
+	DrawRect(NRHudStyle::Panel, X, Y, W, H);
+	NRHudStyle::DrawFrame(this, X, Y, W, H, NRHudStyle::Edge, Line);
+
+	// Divider between the ammo and the weapon, as in the reference.
+	const float DividerX = X + W * 0.5f;
+	DrawRect(NRHudStyle::Edge, DividerX, Y + 12.0f * U, Line, H - 24.0f * U);
+
+	const int32 MaxAmmo = Weapon->GetMaxAmmo();
+	const float UnderlineX = X + 18.0f * U;
+	const float UnderlineY = Y + H - 16.0f * U;
+	const float UnderlineW = DividerX - UnderlineX - 18.0f * U;
+
+	if (MaxAmmo <= 0)
+	{
+		// Melee: no rounds to count.
+		NRHudStyle::DrawLabel(Canvas, Large, TEXT("--"), UnderlineX, MidY, 2.0f * U, NRHudStyle::Dim);
+	}
+	else if (Weapon->IsReloading())
+	{
+		NRHudStyle::DrawLabel(Canvas, Medium, TEXT("RELOADING"), UnderlineX, MidY, 1.2f * U, NRHudStyle::Dim);
+		DrawRect(NRHudStyle::Track, UnderlineX, UnderlineY, UnderlineW, 3.0f * U);
+		DrawRect(NRHudStyle::Fill, UnderlineX, UnderlineY, UnderlineW * Weapon->GetReloadProgress(), 3.0f * U);
+	}
+	else
+	{
+		const int32 Ammo = Weapon->GetCurrentAmmo();
+		const float AmmoFraction = static_cast<float>(Ammo) / MaxAmmo;
+		const FLinearColor AmmoColor = Ammo == 0 ? NRHudStyle::Danger
+			: (AmmoFraction <= 0.25f ? NRHudStyle::Warning : NRHudStyle::Bright);
+
+		const FVector2D AmmoSize = NRHudStyle::DrawLabel(Canvas, Large, FString::FromInt(Ammo), UnderlineX, MidY, 2.3f * U, AmmoColor);
+		// Small separator, then the magazine size.
+		const float SepX = UnderlineX + AmmoSize.X + 12.0f * U;
+		DrawRect(NRHudStyle::Edge, SepX, MidY - 12.0f * U, Line, 24.0f * U);
+		NRHudStyle::DrawLabel(Canvas, Medium, FString::FromInt(MaxAmmo), SepX + 12.0f * U, MidY, 1.3f * U, NRHudStyle::Dim);
+
+		// The short line under the count, as long as the magazine is full.
+		DrawRect(NRHudStyle::Track, UnderlineX, UnderlineY, UnderlineW, 3.0f * U);
+		DrawRect(AmmoColor, UnderlineX, UnderlineY, UnderlineW * AmmoFraction, 3.0f * U);
+	}
+
+	// Weapon: no icons yet, so its name and slot stand where the reference has a silhouette.
+	const FString Name = Weapon->GetCurrentWeaponName().ToString().ToUpper();
+	NRHudStyle::DrawLabel(Canvas, Medium, Name, X + W - 18.0f * U, Y + H * 0.42f, 1.3f * U, NRHudStyle::Bright, 1.0f);
+	NRHudStyle::DrawLabel(Canvas, Medium, FString::Printf(TEXT("[%d]"), Weapon->GetCurrentWeaponIndex() + 1),
+		X + W - 18.0f * U, Y + H * 0.74f, 0.9f * U, NRHudStyle::Dim, 1.0f);
+}
+
+void ANRHUD::DrawInteractPrompt()
+{
+	const APawn* Pawn = GetOwningPawn();
+	const UNRInteractionComponent* Interaction = Pawn ? Pawn->FindComponentByClass<UNRInteractionComponent>() : nullptr;
+	const INRInteractable* Interactable = Interaction ? Cast<INRInteractable>(Interaction->GetTarget()) : nullptr;
+	UFont* Font = GEngine ? GEngine->GetMediumFont() : nullptr;
+	FVector2D Screen;
+	if (!Interactable || !Font || !ProjectToScreen(Interactable->GetInteractLocation(), Screen))
+	{
+		return;
+	}
+
+	// A key box and the verb, centred on the target's prompt point.
+	const float U = Canvas->SizeY / 1080.0f;
+	const float Box = 30.0f * U;
+	const float Gap = 10.0f * U;
+	const float Scale = 1.1f * U;
+	const FString Verb = Interactable->GetInteractPrompt().ToString();
+	float VerbWidth = 0.0f;
+	float VerbHeight = 0.0f;
+	Canvas->TextSize(Font, Verb, VerbWidth, VerbHeight, Scale, Scale);
+
+	const float PadX = 12.0f * U;
+	const float PanelW = Box + Gap + VerbWidth + PadX * 2.0f;
+	const float PanelH = Box + 12.0f * U;
+	const float X = Screen.X - PanelW * 0.5f;
+	const float Y = Screen.Y - PanelH * 0.5f;
+	const float Line = FMath::Max(1.0f, 1.5f * U);
+
+	DrawRect(NRHudStyle::Panel, X, Y, PanelW, PanelH);
+	NRHudStyle::DrawFrame(this, X, Y, PanelW, PanelH, NRHudStyle::Edge, Line);
+
+	const float BoxX = X + PadX;
+	const float BoxY = Y + (PanelH - Box) * 0.5f;
+	DrawRect(NRHudStyle::Bright, BoxX, BoxY, Box, Box);
+	NRHudStyle::DrawLabel(Canvas, Font, Interaction->GetInteractKey().GetDisplayName().ToString(),
+		BoxX + Box * 0.5f, BoxY + Box * 0.5f, Scale, FLinearColor(0.02f, 0.03f, 0.04f, 1.0f), 0.5f);
+	NRHudStyle::DrawLabel(Canvas, Font, Verb, BoxX + Box + Gap, Y + PanelH * 0.5f, Scale, NRHudStyle::Bright);
+}
+
 void ANRHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -450,6 +669,11 @@ void ANRHUD::DrawHUD()
 	DrawDamageNumbers();
 	DrawRoomStatus();
 	DrawRunStatus();
+	DrawPlayerStatus();
+	if (!IsLoadoutMenuOpen())
+	{
+		DrawInteractPrompt();
+	}
 
 	const UNRWeaponComponent* Weapon = FindWeapon();
 	if (!Weapon)
@@ -457,24 +681,9 @@ void ANRHUD::DrawHUD()
 		return;
 	}
 
-	// Equipped weapon, bottom centre. Drawn even when the crosshair is hidden so a switch
-	// made mid-vault is still confirmed on screen.
-	FString WeaponLabel = FString::Printf(TEXT("[%d] %s"),
-		Weapon->GetCurrentWeaponIndex() + 1, *Weapon->GetCurrentWeaponName().ToString());
-	if (Weapon->IsReloading())
-	{
-		WeaponLabel += FString::Printf(TEXT("   RELOADING %d%%"), FMath::RoundToInt(Weapon->GetReloadProgress() * 100.0f));
-	}
-	else if (Weapon->GetMaxAmmo() > 0)
-	{
-		WeaponLabel += FString::Printf(TEXT("   %d / %d"), Weapon->GetCurrentAmmo(), Weapon->GetMaxAmmo());
-	}
-	float LabelWidth = 0.0f;
-	float LabelHeight = 0.0f;
-	GetTextSize(WeaponLabel, LabelWidth, LabelHeight, nullptr, WeaponLabelScale);
-	DrawText(WeaponLabel, NeutralColor,
-		(Canvas->SizeX - LabelWidth) * 0.5f, Canvas->SizeY - LabelHeight - WeaponLabelBottomMargin,
-		nullptr, WeaponLabelScale);
+	// Ammo and weapon, bottom right. Drawn even when the crosshair is hidden so a switch made
+	// mid-vault is still confirmed on screen.
+	DrawWeaponPanel(Weapon);
 
 	if (!Weapon->ShouldShowCrosshair() || IsLoadoutMenuOpen())
 	{

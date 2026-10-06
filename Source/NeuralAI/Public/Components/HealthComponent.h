@@ -32,11 +32,27 @@ class NEURALAI_API UHealthComponent : public UActorComponent
 public:
 	UHealthComponent();
 
-	/** Applies damage and broadcasts. Returns the amount actually removed. */
+	/** Applies damage and broadcasts. Shield takes it first, then health. Returns the amount
+	 *  actually removed from both. */
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	float ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection);
 
-	/** Restores health to MaxHealth and clears the dead flag. */
+	/** Restores up to Amount health, never past MaxHealth. Returns the amount restored; 0 once dead. */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	float Heal(float Amount);
+
+	/** Adds temporary health that soaks damage before health does, up to MaxShield. Returns
+	 *  the amount added; 0 once dead. */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	float AddShield(float Amount);
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetCurrentShield() const { return CurrentShield; }
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetMaxShield() const { return MaxShield; }
+
+	/** Restores health to MaxHealth, clears the shield and the dead flag. */
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	void ResetHealth();
 
@@ -75,9 +91,16 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "1.0"))
 	float MaxHealth = 100.0f;
 
+	/** Most shield the owner can hold at once. Shield is only ever added by AddShield. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "0.0"))
+	float MaxShield = 100.0f;
+
 private:
 	UPROPERTY(VisibleInstanceOnly, Category = "Health", Transient)
 	float CurrentHealth = 0.0f;
+
+	UPROPERTY(VisibleInstanceOnly, Category = "Health", Transient)
+	float CurrentShield = 0.0f;
 
 	/** Latches so OnDeath can only ever broadcast once per life. */
 	bool bDead = false;

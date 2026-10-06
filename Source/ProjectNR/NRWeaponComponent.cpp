@@ -26,7 +26,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogNRWeapon, Log, All);
 
 namespace
 {
-	bool IsOwnerDead(const AActor* Owner)
+	bool IsWeaponOwnerDead(const AActor* Owner)
 	{
 		const UHealthComponent* Health = Owner ? Owner->FindComponentByClass<UHealthComponent>() : nullptr;
 		return Health && Health->IsDead();
@@ -293,7 +293,7 @@ bool UNRWeaponComponent::Reload()
 {
 	UWorld* World = GetWorld();
 	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
-	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || IsReloading() || IsOwnerDead(GetOwner())
+	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || IsReloading() || IsWeaponOwnerDead(GetOwner())
 		|| !Ammo.IsValidIndex(CurrentWeaponIndex) || Ammo[CurrentWeaponIndex] >= GetMaxAmmo())
 	{
 		return false;
@@ -665,7 +665,7 @@ int32 UNRWeaponComponent::Fire()
 	// lands here is the ranged one and has nothing to do with an axe.
 	// The dead do not shoot: the crosshair already hid itself, but the trigger still worked.
 	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || !Weapon->ProjectileClass || IsOnCooldown() || IsReloading()
-		|| IsOwnerDead(GetOwner()))
+		|| IsWeaponOwnerDead(GetOwner()))
 	{
 		return 0;
 	}

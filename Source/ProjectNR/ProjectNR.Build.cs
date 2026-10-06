@@ -13,6 +13,7 @@ public class ProjectNR : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"InputCore",
+			"DeveloperSettings",
 			"EnhancedInput",
 			"AIModule",
 			"StateTreeModule",

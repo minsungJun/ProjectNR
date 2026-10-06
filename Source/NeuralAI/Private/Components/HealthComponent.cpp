@@ -32,7 +32,32 @@ void UHealthComponent::ResetHealth()
 {
 	MaxHealth = FMath::Max(MaxHealth, 1.0f);
 	CurrentHealth = MaxHealth;
+	CurrentShield = 0.0f;
 	bDead = false;
+}
+
+float UHealthComponent::Heal(float Amount)
+{
+	if (bDead || Amount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float Restored = FMath::Min(Amount, MaxHealth - CurrentHealth);
+	CurrentHealth += Restored;
+	return Restored;
+}
+
+float UHealthComponent::AddShield(float Amount)
+{
+	if (bDead || Amount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float Added = FMath::Min(Amount, FMath::Max(MaxShield - CurrentShield, 0.0f));
+	CurrentShield += Added;
+	return Added;
 }
 
 float UHealthComponent::GetHealthNormalized() const
@@ -47,11 +72,13 @@ float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, cons
 		return 0.0f;
 	}
 
-	const float Applied = FMath::Min(Amount, CurrentHealth);
-	CurrentHealth -= Applied;
+	const float Absorbed = FMath::Min(Amount, CurrentShield);
+	CurrentShield -= Absorbed;
+	const float Applied = Absorbed + FMath::Min(Amount - Absorbed, CurrentHealth);
+	CurrentHealth -= Applied - Absorbed;
 
-	UE_LOG(LogNeuralAI, Verbose, TEXT("%s took %.1f damage (%.1f/%.1f)"),
-		*GetNameSafe(GetOwner()), Applied, CurrentHealth, MaxHealth);
+	UE_LOG(LogNeuralAI, Verbose, TEXT("%s took %.1f damage (%.1f/%.1f, shield %.1f)"),
+		*GetNameSafe(GetOwner()), Applied, CurrentHealth, MaxHealth, CurrentShield);
 
 	OnDamaged.Broadcast(Applied, DamageInstigator, HitDirection);
 	OnAnyDamaged.Broadcast(this, Applied);

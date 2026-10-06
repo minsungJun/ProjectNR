@@ -218,6 +218,15 @@ private:
 	/** Top left: run time, rooms and kills; a centred banner once the run has ended. */
 	void DrawRunStatus();
 
+	/** Bottom left: the player's health, a plus sign, the number and a bar. */
+	void DrawPlayerStatus();
+
+	/** Bottom right: rounds, magazine size and the weapon, in a framed panel. */
+	void DrawWeaponPanel(const UNRWeaponComponent* Weapon);
+
+	/** "[E] OPEN" over whatever the player's interaction component would use. */
+	void DrawInteractPrompt();
+
 	/** Kept after closing so reopening is instant; the loadout itself lives on the pawn. */
 	UPROPERTY(Transient)
 	TObjectPtr<UNRLoadoutWidget> LoadoutWidget;

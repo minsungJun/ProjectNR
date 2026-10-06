@@ -49,7 +49,7 @@ Unreal Engine 5.8 3인칭 액션 프로토타입. **Game Animation Sample**(Move
 |---|---|
 | `NRWeaponComponent` | 무기 슬롯(원거리/근접), 화면 중앙 수렴 조준, 크로스헤어 상태 |
 | `NRProjectiles` | 라이플 탄 / 샷건 펠릿 (사거리는 투사체 수명) |
-| `NRHUD` | Canvas 크로스헤어·무기 이름·적 체력바·데미지 숫자 |
+| `NRHUD` | Canvas 크로스헤어, 좌하단 체력·쉴드·소모품, 우하단 탄약 패널, 적 체력바, 데미지 숫자, 상호작용 안내 |
 | `NRRollComponent` | 구르기. 이동은 전용 Mover 레이어드 무브 (진입 속도로 끝나는 곡선) |
 | `NRMeleeComponent` | 근접 콤보. 루트 모션을 전용 레이어드 무브로 적용, 시작 시 A/D 방향 틀기 |
 | `NRWeaponPartTypes` / `NRWeaponPartData` / `NRWeaponPartComponent` | 파츠 데이터, 장착 규칙, 런타임 스탯 (→ `docs/WEAPON_ATTACHMENTS.md`) |
@@ -58,6 +58,11 @@ Unreal Engine 5.8 3인칭 액션 프로토타입. **Game Animation Sample**(Move
 | `NRAimComponent` | 견착 / 정조준. 우클릭 홀드·탭 판정, 1인칭 카메라, 샘플 `WantsToAim` 구동 |
 | `NRMoveInput` | 샘플의 `Get_MoveInput`으로 실제 키 입력 방향 읽기 |
 | `NRAnimInfoCommand` | 콘솔 `NR.AnimInfo` / `NR.AnimChain` — 루트 모션·스윙 구간·콤보 연결 자세 측정 |
+| `NRConsumableComponent` | 회복약(4, 최대 체력 50%)·쉴드(5, 임시 체력 100). 쉴드는 `UHealthComponent`가 먼저 깎는다 |
+| `NRItemTypes` / `NRItemPickup` | 아이템 종류·드랍 테이블 항목, 밟으면 획득하는 필드 아이템 |
+| `NRLootSubsystem` / `NRLootSettings` | 적 사망 시 확률 드랍. 설정은 Project Settings > Game > NR Loot |
+| `NRInteractable` / `NRInteractionComponent` | 범용 상호작용(E). 가장 가까운 대상 선택, 샘플 `IA_Interact`보다 우선 |
+| `NRLootChest` | E로 여는 상자. 뚜껑이 열리고 앞에 아이템을 떨어뜨린다 |
 | `NRPlayerPawn` | 이전 C++ 폰 (비교용) |
 
 `Source/NeuralAI/` — 적 AI: 센서 → 신경망(25뉴런) → 컨트롤러, StateTree 노드, `UHealthComponent`.

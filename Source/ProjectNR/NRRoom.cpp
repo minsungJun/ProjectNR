@@ -238,7 +238,7 @@ void ANRRoom::KillAllEnemies()
 		UHealthComponent* Health = IsValid(Enemy) ? Enemy->FindComponentByClass<UHealthComponent>() : nullptr;
 		if (Health && !Health->IsDead())
 		{
-			Health->ApplyDamage(Health->GetCurrentHealth(), nullptr, FVector::ForwardVector);
+			Health->ApplyDamage(Health->GetCurrentHealth() + Health->GetCurrentShield(), nullptr, FVector::ForwardVector);
 		}
 	}
 }
