@@ -16,6 +16,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "NRAimComponent.h"
+#include "NRAttackInput.h"
 #include "NRMeleeComponent.h"
 #include "NRProjectiles.h"
 #include "NRWeaponPartComponent.h"
@@ -23,11 +24,21 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRWeapon, Log, All);
 
+namespace
+{
+	bool IsOwnerDead(const AActor* Owner)
+	{
+		const UHealthComponent* Health = Owner ? Owner->FindComponentByClass<UHealthComponent>() : nullptr;
+		return Health && Health->IsDead();
+	}
+}
+
 UNRWeaponComponent::UNRWeaponComponent()
 {
-	// Firing is event driven and the crosshair getters are pulled by whoever draws, so
-	// there is nothing to push per frame.
-	PrimaryComponentTick.bCanEverTick = false;
+	// Ticks only while the fire button is held, for automatic fire. The crosshair getters are
+	// pulled by whoever draws, so nothing else needs a frame.
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
 
 	FNRWeaponDefinition Rifle;
 	Rifle.DisplayName = NSLOCTEXT("NRWeapon", "Rifle", "Rifle");
@@ -224,6 +235,24 @@ void UNRWeaponComponent::BindInput()
 void UNRWeaponComponent::OnFireInput()
 {
 	Fire();
+	// Holding the button keeps firing; the tick stops itself once it is released.
+	SetComponentTickEnabled(true);
+}
+
+void UNRWeaponComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	if (!NRAttackInput::IsAttackHeld(GetOwner()) || IsMeleeEquipped())
+	{
+		SetComponentTickEnabled(false);
+		return;
+	}
+
+	// Fire() owns every rule - cooldown at the part-adjusted interval, ammo, reload, death -
+	// so calling it each frame fires exactly as fast as a perfect clicker would, and an empty
+	// magazine reloads and then carries on.
+	Fire();
 }
 
 void UNRWeaponComponent::OnReloadInput()
@@ -264,7 +293,7 @@ bool UNRWeaponComponent::Reload()
 {
 	UWorld* World = GetWorld();
 	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
-	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || IsReloading()
+	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || IsReloading() || IsOwnerDead(GetOwner())
 		|| !Ammo.IsValidIndex(CurrentWeaponIndex) || Ammo[CurrentWeaponIndex] >= GetMaxAmmo())
 	{
 		return false;
@@ -591,6 +620,16 @@ bool UNRWeaponComponent::ShouldShowCrosshair() const
 		return false;
 	}
 
+	// Hip fire goes where the character faces, not to the screen centre, so a crosshair there
+	// would point at the wrong place. It shows only while aiming.
+	if (const UNRAimComponent* Aim = Pawn->FindComponentByClass<UNRAimComponent>())
+	{
+		if (Aim->GetAimMode() == ENRAimMode::None)
+		{
+			return false;
+		}
+	}
+
 	if (const UHealthComponent* Health = Pawn->FindComponentByClass<UHealthComponent>())
 	{
 		if (Health->IsDead())
@@ -624,7 +663,9 @@ int32 UNRWeaponComponent::Fire()
 	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
 	// Melee attacks come through UNRMeleeComponent's own input; the left mouse binding that
 	// lands here is the ranged one and has nothing to do with an axe.
-	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || !Weapon->ProjectileClass || IsOnCooldown() || IsReloading())
+	// The dead do not shoot: the crosshair already hid itself, but the trigger still worked.
+	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || !Weapon->ProjectileClass || IsOnCooldown() || IsReloading()
+		|| IsOwnerDead(GetOwner()))
 	{
 		return 0;
 	}
@@ -655,10 +696,16 @@ int32 UNRWeaponComponent::Fire()
 	// their separate base values.
 	const float BaseDamage = Weapon->ProjectileClass->GetDefaultObject<AAITestProjectile>()->GetDamage();
 
-	// This subtraction is the whole trick: the projectile is aimed from the muzzle at the
-	// point the crosshair resolved to, so the two converge there no matter how far the
-	// muzzle sits from the camera.
-	FVector FireDirection = (AimPoint - MuzzleLocation).GetSafeNormal();
+	// Aiming (shoulder or precision): the projectile is aimed from the muzzle at the point
+	// the crosshair resolved to - this subtraction is the whole trick that makes the two
+	// converge however far the muzzle sits from the camera.
+	// Not aiming: hip fire goes where the character faces, level, whatever the camera does;
+	// the crosshair is hidden then, so nothing promises otherwise.
+	const UNRAimComponent* AimMode = GetOwner()->FindComponentByClass<UNRAimComponent>();
+	const bool bHipFire = AimMode && AimMode->GetAimMode() == ENRAimMode::None;
+	FVector FireDirection = bHipFire
+		? GetOwner()->GetActorForwardVector().GetSafeNormal2D()
+		: (AimPoint - MuzzleLocation).GetSafeNormal();
 	if (FireDirection.IsNearlyZero())
 	{
 		FireDirection = GetOwner()->GetActorForwardVector();

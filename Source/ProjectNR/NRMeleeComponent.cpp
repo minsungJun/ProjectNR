@@ -21,6 +21,7 @@
 #include "MotionWarpingComponent.h"
 #include "MoverDataModelTypes.h"
 #include "MoverSimulationTypes.h"
+#include "NRAttackInput.h"
 #include "NRMoveInput.h"
 #include "NRWeaponComponent.h"
 #include "MoverComponent.h"
@@ -247,6 +248,8 @@ void UNRMeleeComponent::SetMeleeEquipped(bool bEquipped)
 
 	bMeleeEquipped = bEquipped;
 	UpdateMappingContext();
+	// Ticks for as long as melee is in hand, so holding the button can start an attack.
+	SetComponentTickEnabled(bMeleeEquipped || IsAttacking());
 }
 
 void UNRMeleeComponent::OnLightInput(const FInputActionValue& Value)
@@ -500,13 +503,29 @@ void UNRMeleeComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 
 	const UWorld* World = GetWorld();
 	const FNRMeleeAttack* Attack = GetCurrentAttack();
+	const bool bHeld = NRAttackInput::IsAttackHeld(GetOwner());
 	if (!World || !Attack)
 	{
-		SetComponentTickEnabled(false);
+		// Between attacks: holding the button starts the combo again as soon as the body is
+		// free - after a roll, a heavy attack, or landing. Checked first so a refusal is silent.
+		if (bMeleeEquipped && bHeld && LightCombo.Num() > 0 && CanStartAttack())
+		{
+			LightAttack();
+		}
+		SetComponentTickEnabled(bMeleeEquipped || IsAttacking());
 		return;
 	}
 
 	const float Elapsed = GetAttackClipTime();
+
+	// Held through a light attack: queue the next hit the moment its window opens, as a press
+	// would. With the combo looping, holding plays 1, 2, 1, 2... until the button is let go.
+	if (bHeld && !bComboQueued && CurrentComboIndex != INDEX_NONE && GetNextComboIndex() != INDEX_NONE
+		&& Elapsed >= Attack->ComboInputStart && Elapsed <= Attack->ChainTime)
+	{
+		bComboQueued = true;
+		QueuedSide = ReadSideInput();
+	}
 
 	if (Elapsed >= Attack->HitStart && Elapsed <= Attack->HitEnd)
 	{
@@ -639,5 +658,5 @@ void UNRMeleeComponent::EndAttack()
 	CurrentComboIndex = INDEX_NONE;
 	bComboQueued = false;
 	HitThisSwing.Reset();
-	SetComponentTickEnabled(false);
+	SetComponentTickEnabled(bMeleeEquipped);
 }

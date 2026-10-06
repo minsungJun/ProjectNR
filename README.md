@@ -32,11 +32,12 @@ Unreal Engine 5.8 3인칭 액션 프로토타입. **Game Animation Sample**(Move
 | 애셋 | 수정 |
 |---|---|
 | `Blueprints/GM_Sandbox` | `PawnClasses_Soft = [BP_NRPlayer_V2, SandboxCharacter_Mover]`, `HUDClass = NRHUD` |
-| `Blueprints/SandboxCharacter_Mover_ABP` | AnimGraph에 라이플 상체 레이어(`LayeredBoneBlend`, `spine_01` 이하, `neck_01` 제외) 추가, `HasWeapon`/`AimAlpha` 변수 |
+| `Blueprints/SandboxCharacter_Mover_ABP` | AnimGraph에 라이플 상체 레이어(`LayeredBoneBlend`, `spine_01` 이하, `neck_01` 제외) 추가, `HasWeapon`/`AimAlpha` 변수. `Get_OffsetRootRotationMode`: 땅 위에서 `RotationMode == 조준`(NewEnumerator2)이면 Release. `Offset Root Bone` 노드 `RotationHalfLife` 0.1 → 0.05 |
 | `Input/IMC_Sandbox` | `LeftControl → IA_Walk` 매핑 삭제 (Ctrl은 구르기) |
 | `TwinBlastManny/Dive_*_Roll`, `CommboAttack/Anim_DA_Combo_A1/A2/A4_RM` | `bEnableRootMotion = true` |
 
-플레이어 폰은 `DDCvar.PawnClass 0` (기본값 `-1`이면 `GM_Sandbox.DefaultPawnClass`가 스폰된다).
+시작 맵은 `Levels/Lvl_RoomLoop`(방 루프 테스트 레벨, 사용자 제작)이다. 이 레벨은 `Blueprints/Game/GM_NRRun`(`GM_Sandbox` 자식, 기본 폰 `BP_NRPlayer_V2`)을 쓰므로 콘솔 설정 없이 바로 런이 시작된다.
+샌드박스 레벨(`GM_Sandbox`)에서 V2 폰을 쓰려면 여전히 `DDCvar.PawnClass 0`이 필요하다.
 
 ---
 

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
 #include "InputCoreTypes.h"
+#include "NRRunSubsystem.h"
 #include "NRHUD.generated.h"
 
 class UHealthComponent;
@@ -59,6 +60,20 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Loadout")
 	FKey LoadoutMenuKey = EKeys::Tab;
+
+	/** Restarts the run once it has ended. Enter, because R reloads and Space jumps. */
+	UPROPERTY(EditDefaultsOnly, Category = "Run")
+	FKey RestartKey = EKeys::Enter;
+
+	/** Seconds after the run ends before the restart prompt shows and the key works, so the
+	 *  ending is seen and a key still held from the fight cannot skip it. */
+	UPROPERTY(EditDefaultsOnly, Category = "Run", meta = (ClampMin = "0.0"))
+	float RestartPromptDelay = 1.0f;
+
+	void OnRestartPressed();
+
+	UFUNCTION()
+	void HandleRunStateChanged(ENRRunState NewState);
 
 	/** Bars farther from the camera than this are not drawn. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Health Bar", meta = (ClampMin = "0.0"))
@@ -196,6 +211,12 @@ private:
 
 	void DrawHealthBars();
 	void DrawDamageNumbers();
+
+	/** Top centre: enemies left while the player's room is fighting, a banner once it is cleared. */
+	void DrawRoomStatus();
+
+	/** Top left: run time, rooms and kills; a centred banner once the run has ended. */
+	void DrawRunStatus();
 
 	/** Kept after closing so reopening is instant; the loadout itself lives on the pawn. */
 	UPROPERTY(Transient)

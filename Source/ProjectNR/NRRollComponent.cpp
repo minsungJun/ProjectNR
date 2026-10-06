@@ -357,6 +357,35 @@ bool UNRRollComponent::TryRoll()
 		}
 	}
 
+	// A roll out of a slide ends the slide. The sample slides while crouched and fast, and
+	// leaves the slide when no longer crouched (BP_MovementTransition_FromSlide), so standing
+	// up is what ends it - and keeps it from starting again at the roll's speed, which a plain
+	// switch to walking would not (BP_MovementTransition_ToSlide fires on crouch + speed).
+	// The crouch itself is re-applied every sim tick from PlayerInputState.WantsToCrouch
+	// (On_PreSimulateTick), which C toggles, so that is what must be cleared; UnCrouch alone
+	// was undone on the next tick. The sample does the same when it starts falling.
+	if (UCharacterMoverComponent* SlidingMover = Cast<UCharacterMoverComponent>(Mover))
+	{
+		if (SlidingMover->GetMovementModeName() == TEXT("sliding"))
+		{
+			if (const FStructProperty* InputState = FindFProperty<FStructProperty>(Owner->GetClass(), TEXT("PlayerInputState")))
+			{
+				void* StructData = InputState->ContainerPtrToValuePtr<void>(Owner);
+				for (TFieldIterator<FBoolProperty> It(InputState->Struct); It; ++It)
+				{
+					if (It->GetAuthoredName() == TEXT("WantsToCrouch"))
+					{
+						It->SetPropertyValue_InContainer(StructData, false);
+						break;
+					}
+				}
+			}
+			SlidingMover->UnCrouch();
+			SlidingMover->QueueNextMode(TEXT("walking"));
+			UE_LOG(LogNRRoll, Log, TEXT("%s rolls out of a slide"), *GetNameSafe(Owner));
+		}
+	}
+
 	// A plain montage play: the clip has no root motion, so there is nothing for Mover to take
 	// from it. PlayRate is already baked into the dynamic montage.
 	if (AnimInstance->Montage_Play(Montage, 1.0f) <= 0.0f)

@@ -11,6 +11,8 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "NRLoadoutWidget.h"
+#include "NRRoom.h"
+#include "NRRunSubsystem.h"
 #include "NRWeaponComponent.h"
 #include "NRWeaponPartComponent.h"
 
@@ -18,6 +20,11 @@ void ANRHUD::BeginPlay()
 {
 	Super::BeginPlay();
 	AnyDamagedHandle = UHealthComponent::OnAnyDamaged.AddUObject(this, &ANRHUD::HandleAnyDamaged);
+
+	if (UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr)
+	{
+		Run->OnRunStateChanged.AddUniqueDynamic(this, &ANRHUD::HandleRunStateChanged);
+	}
 
 	// The HUD's own input component, pushed onto the controller's stack. Tab is not mapped by
 	// the sample, so a plain key binding is enough.
@@ -27,6 +34,7 @@ void ANRHUD::BeginPlay()
 		if (InputComponent)
 		{
 			InputComponent->BindKey(LoadoutMenuKey, IE_Pressed, this, &ANRHUD::ToggleLoadoutMenu);
+			InputComponent->BindKey(RestartKey, IE_Pressed, this, &ANRHUD::OnRestartPressed);
 		}
 	}
 }
@@ -40,6 +48,25 @@ void ANRHUD::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	UHealthComponent::OnAnyDamaged.Remove(AnyDamagedHandle);
 	AnyDamagedHandle.Reset();
 	Super::EndPlay(EndPlayReason);
+}
+
+void ANRHUD::HandleRunStateChanged(ENRRunState NewState)
+{
+	// The run is over: no more loadout changes, and the cursor and input mode the menu set
+	// must not outlive it.
+	if (NewState == ENRRunState::Won || NewState == ENRRunState::Lost)
+	{
+		CloseLoadoutMenu();
+	}
+}
+
+void ANRHUD::OnRestartPressed()
+{
+	UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr;
+	if (Run && Run->GetTimeSinceEnded() >= RestartPromptDelay)
+	{
+		Run->RestartRun();
+	}
 }
 
 bool ANRHUD::IsLoadoutMenuOpen() const
@@ -336,6 +363,79 @@ void ANRHUD::DrawDamageNumbers()
 	}
 }
 
+void ANRHUD::DrawRoomStatus()
+{
+	const APawn* Pawn = GetOwningPawn();
+	const ANRRoom* Room = Pawn ? ANRRoom::FindRoomAt(GetWorld(), Pawn->GetActorLocation()) : nullptr;
+	if (!Room)
+	{
+		return;
+	}
+
+	FString Label;
+	FLinearColor Color = NeutralColor;
+	float Scale = 1.4f;
+	if (Room->GetRoomState() == ENRRoomState::Active)
+	{
+		Label = FString::Printf(TEXT("ENEMIES LEFT  %d"), Room->GetRemainingEnemies());
+		Color = HostileColor;
+	}
+	else if (Room->GetRoomState() == ENRRoomState::Cleared && Room->GetTotalEnemies() > 0
+		&& Room->GetTimeSinceCleared() < 3.0f)
+	{
+		// A banner for a moment, fading over its last second; then the room says nothing.
+		Label = TEXT("ROOM CLEARED");
+		Color = FLinearColor(0.4f, 1.0f, 0.5f, FMath::Clamp(3.0f - Room->GetTimeSinceCleared(), 0.0f, 1.0f));
+		Scale = 2.0f;
+	}
+	if (Label.IsEmpty())
+	{
+		return;
+	}
+
+	float Width = 0.0f;
+	float Height = 0.0f;
+	GetTextSize(Label, Width, Height, nullptr, Scale);
+	DrawText(Label, Color, (Canvas->SizeX - Width) * 0.5f, 40.0f, nullptr, Scale);
+}
+
+void ANRHUD::DrawRunStatus()
+{
+	const UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr;
+	if (!Run || Run->GetRunState() == ENRRunState::NoRun)
+	{
+		return;
+	}
+
+	const int32 Seconds = FMath::FloorToInt(Run->GetElapsedTime());
+	const FString Panel = FString::Printf(TEXT("RUN  %02d:%02d    ROOMS %d/%d    KILLS %d"),
+		Seconds / 60, Seconds % 60, Run->GetRoomsCleared(), Run->GetTotalRooms(), Run->GetKills());
+	DrawText(Panel, NeutralColor, 24.0f, 20.0f, nullptr, 1.1f);
+
+	if (Run->GetRunState() == ENRRunState::InProgress)
+	{
+		return;
+	}
+
+	const bool bWon = Run->GetRunState() == ENRRunState::Won;
+	const FString Banner = bWon ? TEXT("RUN COMPLETE") : TEXT("RUN FAILED");
+	const FLinearColor Color = bWon ? FLinearColor(0.4f, 1.0f, 0.5f, 1.0f) : HostileColor;
+	float Width = 0.0f;
+	float Height = 0.0f;
+	GetTextSize(Banner, Width, Height, nullptr, 3.0f);
+	const float BannerY = Canvas->SizeY * 0.38f;
+	DrawText(Banner, Color, (Canvas->SizeX - Width) * 0.5f, BannerY, nullptr, 3.0f);
+
+	if (Run->GetTimeSinceEnded() >= RestartPromptDelay)
+	{
+		const FString Prompt = FString::Printf(TEXT("[%s] Restart"), *RestartKey.GetDisplayName().ToString());
+		float PromptWidth = 0.0f;
+		float PromptHeight = 0.0f;
+		GetTextSize(Prompt, PromptWidth, PromptHeight, nullptr, 1.4f);
+		DrawText(Prompt, NeutralColor, (Canvas->SizeX - PromptWidth) * 0.5f, BannerY + Height + 12.0f, nullptr, 1.4f);
+	}
+}
+
 void ANRHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -348,6 +448,8 @@ void ANRHUD::DrawHUD()
 	// World-space UI first so the crosshair always sits on top of it.
 	DrawHealthBars();
 	DrawDamageNumbers();
+	DrawRoomStatus();
+	DrawRunStatus();
 
 	const UNRWeaponComponent* Weapon = FindWeapon();
 	if (!Weapon)

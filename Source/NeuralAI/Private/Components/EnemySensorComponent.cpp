@@ -88,7 +88,12 @@ void UEnemySensorComponent::UpdateSensorData(float DeltaTime)
 
 void UEnemySensorComponent::UpdateTargetSenses(const FVector& SelfLocation, const FVector& Forward, const FVector& Right)
 {
-	AActor* Target = AcquireTarget(SelfLocation);
+	// Dormant: behave exactly as if nothing were in sight and no ally had called.
+	if (bDormant)
+	{
+		AlertTarget = nullptr;
+	}
+	AActor* Target = bDormant ? nullptr : AcquireTarget(SelfLocation);
 
 	// A fresh sighting is news worth passing on; a continuing one was already passed on.
 	const bool bSeesDirectly = Target != nullptr;
@@ -372,14 +377,25 @@ void UEnemySensorComponent::ReceiveAlert(AActor* Target, const UEnemySensorCompo
 	}
 
 	// A dead ally cannot be alerted into action; the controller would refuse anyway, but the
-	// log would claim otherwise.
-	if (OwnerHealth && OwnerHealth->IsDead())
+	// log would claim otherwise. A dormant one is waiting in a room the player has not
+	// entered, and a call from the next room over must not wake it.
+	if ((OwnerHealth && OwnerHealth->IsDead()) || bDormant)
 	{
 		return;
 	}
 
 	AlertTarget = Target;
 	AlertExpireTime = World->GetTimeSeconds() + AlertDuration;
+}
+
+void UEnemySensorComponent::SetDormant(bool bInDormant)
+{
+	bDormant = bInDormant;
+	if (bDormant)
+	{
+		AlertTarget = nullptr;
+		bSawTargetDirectly = false;
+	}
 }
 
 void UEnemySensorComponent::HandleOwnerDamaged(float Damage, AActor* DamageInstigator, const FVector& HitDirection)

@@ -228,6 +228,12 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+public:
+	/** Runs only while the fire button is held: keeps firing at the weapon's interval. */
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
+protected:
+
 	/** A GameMode-spawned pawn has no InputComponent during BeginPlay - it is created when
 	 *  the controller possesses it - so binding waits for the restart notification. */
 	UFUNCTION()

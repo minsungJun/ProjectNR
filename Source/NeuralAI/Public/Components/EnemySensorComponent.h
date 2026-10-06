@@ -77,6 +77,17 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Sensor")
 	bool IsSensingByAlert() const { return bSensingByAlert; }
 
+	/**
+	 * A dormant enemy senses no target and takes no alerts, so its brain stays idle - how a
+	 * room keeps its enemies waiting until the player walks in. Projectile and pain senses
+	 * keep working; waking is the room's decision, not the sensor's.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sensor")
+	void SetDormant(bool bInDormant);
+
+	UFUNCTION(BlueprintPure, Category = "Sensor")
+	bool IsDormant() const { return bDormant; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -175,6 +186,7 @@ private:
 	/** Whether last update saw the target directly; a new sighting is what triggers an alert. */
 	bool bSawTargetDirectly = false;
 	bool bSensingByAlert = false;
+	bool bDormant = false;
 
 	TWeakObjectPtr<AActor> AlertTarget;
 	float AlertExpireTime = -1.0f;

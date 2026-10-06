@@ -15,6 +15,11 @@
 #include "GameFramework/PlayerController.h"
 #include "InputAction.h"
 #include "InputMappingContext.h"
+#include "MoverComponent.h"
+#include "MovementMode.h"
+#include "DefaultMovementSet/CharacterMoverComponent.h"
+#include "MoverDataModelTypes.h"
+#include "MoverSimulationTypes.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRAim, Log, All);
 
@@ -74,6 +79,7 @@ void UNRAimComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		FirstPersonCamera = nullptr;
 	}
 
+	ApplyAimFacing(false);
 	bAimAllowed = false;
 	UpdateMappingContext();
 
@@ -234,6 +240,15 @@ void UNRAimComponent::SetMode(ENRAimMode NewMode)
 
 	// Both aim modes are "aiming" to the sample: strafe, upper-body pose and aim offset.
 	SetSampleWantsToAim(NewMode != ENRAimMode::None);
+	if ((OldMode == ENRAimMode::None) != (NewMode == ENRAimMode::None))
+	{
+		ApplyAimFacing(NewMode != ENRAimMode::None);
+	}
+	if (OldMode == ENRAimMode::None && NewMode != ENRAimMode::None)
+	{
+		NextAimTurnTime = 0.0f;
+		TryStartAimTurn();
+	}
 	SetComponentTickEnabled(NewMode != ENRAimMode::None);
 
 	UE_LOG(LogNRAim, Log, TEXT("%s aim: %s -> %s"), *GetNameSafe(GetOwner()),
@@ -397,4 +412,147 @@ void UNRAimComponent::RestoreCharacter()
 		}
 	}
 	HiddenMeshes.Reset();
+}
+
+// --- Turning -----------------------------------------------------------------------
+
+void UNRAimComponent::ApplyAimFacing(bool bAiming)
+{
+	// Put back whatever was replaced, whichever way this is going.
+	for (const FFacingOverride& Entry : FacingOverrides)
+	{
+		if (UObject* ModeObject = Entry.Mode.Get())
+		{
+			Entry.Property->SetFloatingPointPropertyValue(Entry.Property->ContainerPtrToValuePtr<void>(ModeObject), Entry.Original);
+		}
+	}
+	FacingOverrides.Reset();
+
+	if (!bAiming || AimFacingTime <= 0.0f)
+	{
+		return;
+	}
+
+	const UMoverComponent* Mover = GetOwner()->FindComponentByClass<UMoverComponent>();
+	UBaseMovementMode* Walking = Mover ? Mover->FindMovementModeByName(TEXT("walking")) : nullptr;
+	if (!Walking)
+	{
+		return;
+	}
+
+	// The sample's BP_MovementMode_Walking sets SmoothWalkingSettings.FacingSmoothingTime every
+	// step from these two variables, so it is these that must change. Matched on the authored
+	// name; the class is a Blueprint and offers nothing to call.
+	for (TFieldIterator<FNumericProperty> It(Walking->GetClass()); It; ++It)
+	{
+		const FString Name = It->GetAuthoredName();
+		if (!It->IsFloatingPoint() || !(Name.Equals(TEXT("Walk/RunFacingTime"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("SprintFacingTime"), ESearchCase::IgnoreCase)))
+		{
+			continue;
+		}
+
+		void* Value = It->ContainerPtrToValuePtr<void>(Walking);
+		FFacingOverride& Entry = FacingOverrides.AddDefaulted_GetRef();
+		Entry.Mode = Walking;
+		Entry.Property = *It;
+		Entry.Original = It->GetFloatingPointPropertyValue(Value);
+		It->SetFloatingPointPropertyValue(Value, AimFacingTime);
+	}
+
+	if (FacingOverrides.Num() == 0)
+	{
+		UE_LOG(LogNRAim, Warning, TEXT("%s: walking mode %s has no facing time variables; aim turning stays as it is"),
+			*GetNameSafe(GetOwner()), *GetNameSafe(Walking->GetClass()));
+	}
+}
+
+// --- Snap turn ---------------------------------------------------------------------
+
+void UNRAimComponent::TryStartAimTurn()
+{
+	UWorld* World = GetWorld();
+	const APlayerController* PC = GetPlayerController();
+	UCharacterMoverComponent* Mover = GetOwner()->FindComponentByClass<UCharacterMoverComponent>();
+	if (AimTurnTime <= 0.0f || !World || !PC || !Mover || World->GetTimeSeconds() < NextAimTurnTime)
+	{
+		return;
+	}
+
+	// On the ground only: the move hands back the current velocity, which in the air would
+	// hold the fall for the length of the turn.
+	if (!Mover->IsOnGround())
+	{
+		return;
+	}
+
+	const float Off = FMath::Abs(FRotator::NormalizeAxis(PC->GetControlRotation().Yaw - GetOwner()->GetActorRotation().Yaw));
+	if (Off < AimTurnTriggerAngle)
+	{
+		return;
+	}
+
+	TSharedPtr<FNRAimTurnMove> Turn = MakeShared<FNRAimTurnMove>();
+	Turn->TurnSeconds = AimTurnTime;
+	// A short tail past the turn itself, during which the move only holds the aim direction.
+	// The walking mode resumes from whatever angular velocity the sync state carries; ending
+	// on the turn's last step would hand it ~1800 deg/s and the facing spring would carry the
+	// body 30 degrees past the aim before pulling it back (measured with NR.TurnTrace).
+	Turn->DurationMs = (AimTurnTime + 0.06f) * 1000.0f;
+	Turn->MixMode = EMoveMixMode::OverrideVelocity;
+	Mover->QueueLayeredMove(Turn);
+
+	// One at a time; the next may start once this one has had its time.
+	NextAimTurnTime = World->GetTimeSeconds() + AimTurnTime;
+	UE_LOG(LogNRAim, Verbose, TEXT("%s aim turn: %.0f deg"), *GetNameSafe(GetOwner()), Off);
+}
+
+bool FNRAimTurnMove::GenerateMove(const FMoverTickStartData& StartState, const FMoverTimeStep& TimeStep,
+	const UMoverComponent* MoverComp, UMoverBlackboard* SimBlackboard, FProposedMove& OutProposedMove)
+{
+	const FMoverDefaultSyncState* SyncState = StartState.SyncState.SyncStateCollection.FindDataByType<FMoverDefaultSyncState>();
+	const FCharacterDefaultInputs* Inputs = StartState.InputCmd.InputCollection.FindDataByType<FCharacterDefaultInputs>();
+	const float DeltaSeconds = TimeStep.StepMs * 0.001f;
+	if (!SyncState || !Inputs || DeltaSeconds <= UE_KINDA_SMALL_NUMBER)
+	{
+		return false;
+	}
+
+	// Time left in the turn, never less than this step, so the last step lands exactly.
+	const double Elapsed = (TimeStep.BaseSimTimeMs - StartSimTimeMs) * 0.001;
+	const float TimeLeft = FMath::Max(TurnSeconds - static_cast<float>(Elapsed), DeltaSeconds);
+	const float Remaining = FRotator::NormalizeAxis(Inputs->ControlRotation.Yaw - SyncState->GetOrientation_WorldSpace().Yaw);
+
+	OutProposedMove = FProposedMove();
+	OutProposedMove.MixMode = MixMode;
+	// Same velocity as now: the turn changes where the body faces, not how it moves.
+	OutProposedMove.LinearVelocity = SyncState->GetVelocity_WorldSpace();
+	OutProposedMove.AngularVelocityDegrees = FVector(0.0f, 0.0f, Remaining / TimeLeft);
+	return true;
+}
+
+FLayeredMoveBase* FNRAimTurnMove::Clone() const
+{
+	return new FNRAimTurnMove(*this);
+}
+
+void FNRAimTurnMove::NetSerialize(FArchive& Ar)
+{
+	Super::NetSerialize(Ar);
+	Ar << TurnSeconds;
+}
+
+UScriptStruct* FNRAimTurnMove::GetScriptStruct() const
+{
+	return FNRAimTurnMove::StaticStruct();
+}
+
+FString FNRAimTurnMove::ToSimpleString() const
+{
+	return TEXT("NRAimTurn");
+}
+
+void FNRAimTurnMove::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	Super::AddReferencedObjects(Collector);
 }
