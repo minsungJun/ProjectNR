@@ -17,6 +17,7 @@
 #include "MoverSimulationTypes.h"
 #include "NRMeleeComponent.h"
 #include "NRMoveInput.h"
+#include "NRStaminaComponent.h"
 #include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRRoll, Log, All);
@@ -274,6 +275,13 @@ bool UNRRollComponent::TryRoll()
 		}
 	}
 
+	// Checked now, paid once the roll has actually started.
+	UNRStaminaComponent* Stamina = Owner->FindComponentByClass<UNRStaminaComponent>();
+	if (Stamina && !Stamina->HasStamina(StaminaCost))
+	{
+		return false;
+	}
+
 	// Ground only. The layered move leaves vertical velocity alone, so starting a roll in the
 	// air would not float - but a roll animation in mid-fall reads as a bug.
 	UMoverComponent* Mover = Owner->FindComponentByClass<UMoverComponent>();
@@ -392,6 +400,11 @@ bool UNRRollComponent::TryRoll()
 	{
 		UE_LOG(LogNRRoll, Warning, TEXT("%s could not start %s"), *GetNameSafe(Owner), *GetNameSafe(Montage));
 		return false;
+	}
+
+	if (Stamina)
+	{
+		Stamina->Consume(StaminaCost);
 	}
 
 	FOnMontageEnded EndDelegate;

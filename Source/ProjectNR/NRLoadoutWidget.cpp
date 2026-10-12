@@ -16,6 +16,11 @@
 #include "Engine/World.h"
 #include "NRWeaponPartComponent.h"
 #include "NRWeaponPartData.h"
+#include "GameFramework/Pawn.h"
+#include "HAL/IConsoleManager.h"
+#include "UObject/UObjectIterator.h"
+#include "NRStatsComponent.h"
+#include "NRStatsPanel.h"
 #include "Styling/CoreStyle.h"
 #include "TimerManager.h"
 
@@ -232,6 +237,12 @@ void UNRLoadoutWidget::NativeOnInitialized()
 void UNRLoadoutWidget::NativeDestruct()
 {
 	UnbindFromParts();
+	UnbindFromStats();
+	// Closing the menu drops whatever was staged on the stat page.
+	if (StatsPanel)
+	{
+		StatsPanel->ResetStaged();
+	}
 	Super::NativeDestruct();
 }
 
@@ -423,6 +434,75 @@ FString UNRLoadoutWidget::DescribePart(const FGuid& PartId) const
 }
 
 // --- Building ------------------------------------------------------------------------
+
+void UNRLoadoutWidget::ShowStatsPage(bool bStats)
+{
+	const EPage Wanted = bStats ? EPage::Stats : EPage::Parts;
+	if (ActivePage != Wanted)
+	{
+		ActivePage = Wanted;
+		RequestRefresh();
+	}
+}
+
+void UNRLoadoutWidget::UnbindFromStats()
+{
+	if (UNRStatsComponent* Old = BoundStats.Get())
+	{
+		Old->OnStatsChanged.Remove(StatsChangedHandle);
+	}
+	StatsChangedHandle.Reset();
+	BoundStats = nullptr;
+}
+
+UWidget* UNRLoadoutWidget::MakeTabBar()
+{
+	UHorizontalBox* Bar = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
+
+	const APawn* Pawn = GetOwningPlayerPawn();
+	UNRStatsComponent* Stats = Pawn ? Pawn->FindComponentByClass<UNRStatsComponent>() : nullptr;
+	const int32 Points = Stats ? Stats->GetUnspentPoints() : 0;
+	if (BoundStats.Get() != Stats || !StatsChangedHandle.IsValid())
+	{
+		UnbindFromStats();
+		BoundStats = Stats;
+		if (Stats)
+		{
+			StatsChangedHandle = Stats->OnStatsChanged.AddWeakLambda(this, [this]() { RequestRefresh(); });
+		}
+	}
+
+	auto AddTab = [this, Bar](EPage Page, const FText& Label)
+	{
+		const bool bActive = ActivePage == Page;
+		UNRClickBox* Tab = CreateWidget<UNRClickBox>(this, UNRClickBox::StaticClass());
+		UNRClickBox::FStyle Style;
+		Style.Edge = bActive ? NRLoadoutStyle::Common : NRLoadoutStyle::EmptyEdge;
+		Style.Fill = bActive ? NRLoadoutStyle::CellHover : NRLoadoutStyle::Panel;
+		Style.HoverFill = NRLoadoutStyle::CellHover;
+		Style.Padding = FMargin(24.0f, 8.0f);
+		const FLinearColor Color = bActive ? NRLoadoutStyle::TextColor : NRLoadoutStyle::Dim;
+		Tab->Configure([Label, Color](UWidgetTree* Tree)
+		{
+			return NRLoadoutStyle::MakeText(Tree, Label, 16, Color);
+		}, Style);
+		Tab->OnClicked.BindWeakLambda(this, [this, Page]()
+		{
+			if (ActivePage != Page)
+			{
+				ActivePage = Page;
+				RequestRefresh();
+			}
+		});
+		Bar->AddChildToHorizontalBox(Tab)->SetPadding(FMargin(0.0f, 0.0f, 8.0f, 0.0f));
+	};
+
+	AddTab(EPage::Parts, NSLOCTEXT("NRLoadout", "PartsTab", "무기 파츠"));
+	AddTab(EPage::Stats, Points > 0
+		? FText::Format(NSLOCTEXT("NRLoadout", "StatsTabPoints", "스탯 강화  +{0}"), FText::AsNumber(Points))
+		: NSLOCTEXT("NRLoadout", "StatsTab", "스탯 강화"));
+	return Bar;
+}
 
 UTextBlock* UNRLoadoutWidget::MakeText(const FText& Text, int32 Size, FLinearColor Color, bool bBold)
 {
@@ -623,8 +703,31 @@ void UNRLoadoutWidget::Refresh()
 	}
 
 	UVerticalBox* Page = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass());
+	Page->AddChildToVerticalBox(MakeTabBar())->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f));
 
 	CardEdges.Reset();
+	if (ActivePage == EPage::Stats)
+	{
+		HighlightedCard = INDEX_NONE;
+		if (!StatsPanel)
+		{
+			StatsPanel = CreateWidget<UNRStatsPanel>(this, UNRStatsPanel::StaticClass());
+		}
+		StatsPanel->RequestRefresh();
+		// Framed like a weapon card: the stat page has no cards of its own to sit on.
+		UBorder* Edge = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+		Edge->SetBrushColor(NRLoadoutStyle::PanelEdge);
+		Edge->SetPadding(FMargin(2.0f));
+		UBorder* Fill = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+		Fill->SetBrushColor(NRLoadoutStyle::Panel);
+		Fill->SetPadding(FMargin(24.0f, 16.0f));
+		Fill->SetContent(StatsPanel);
+		Edge->SetContent(Fill);
+		Page->AddChildToVerticalBox(Edge);
+		RootBorder->SetContent(Page);
+		return;
+	}
+
 	CardEdges.SetNum(NRWeaponIdCount);
 	HighlightedCard = INDEX_NONE;
 	bHighlightCanFit = false;
@@ -957,3 +1060,23 @@ void UNRLoadoutWidget::DropOnInventory(UNRPartDragOperation* Operation)
 	}
 	RequestRefresh();
 }
+
+// NR.Loadout.Page <parts|stats>: switch the open menu's tab, as clicking the tab does.
+namespace NRLoadoutCommands
+{
+	void Page(const TArray<FString>& Args, UWorld* World)
+	{
+		const bool bStats = Args.Num() > 0 && Args[0].Equals(TEXT("stats"), ESearchCase::IgnoreCase);
+		for (TObjectIterator<UNRLoadoutWidget> It; It; ++It)
+		{
+			if (It->GetWorld() == World && It->IsInViewport())
+			{
+				It->ShowStatsPage(bStats);
+			}
+		}
+	}
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GNRLoadoutPageCommand(TEXT("NR.Loadout.Page"),
+	TEXT("NR.Loadout.Page <parts|stats>: switch the open menu's tab."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRLoadoutCommands::Page));

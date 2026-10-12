@@ -13,6 +13,8 @@
 #include "NRConsumableComponent.h"
 #include "NRInteractable.h"
 #include "NRInteractionComponent.h"
+#include "NRStaminaComponent.h"
+#include "NRStatsComponent.h"
 #include "NRLoadoutWidget.h"
 #include "NRRoom.h"
 #include "NRRunSubsystem.h"
@@ -450,6 +452,8 @@ namespace NRHudStyle
 	const FLinearColor Warning(1.0f, 0.55f, 0.25f, 0.95f);
 	const FLinearColor Danger(0.95f, 0.3f, 0.25f, 0.95f);
 	const FLinearColor Shield(0.55f, 0.82f, 1.0f, 0.95f);
+	const FLinearColor Stamina(1.0f, 0.88f, 0.4f, 0.95f);
+	const FLinearColor Gold(1.0f, 0.78f, 0.1f, 1.0f);
 
 	/** Draws Text with a soft shadow; Anchor 0 = left edge at X, 1 = right edge, 0.5 = centred. */
 	FVector2D DrawLabel(UCanvas* Canvas, UFont* Font, const FString& Text, float X, float CenterY, float Scale,
@@ -477,8 +481,8 @@ namespace NRHudStyle
 void ANRHUD::DrawPlayerStatus()
 {
 	// Bottom left, after the reference layout: a plus, the number, a light bar, the shield bar
-	// under it, and the consumables above. Sized from the canvas height so it keeps its
-	// proportions at any resolution.
+	// under it, stamina below that, and the consumables and level above. Sized from the canvas
+	// height so it keeps its proportions at any resolution.
 	const APawn* Pawn = GetOwningPawn();
 	const UHealthComponent* Health = Pawn ? Pawn->FindComponentByClass<UHealthComponent>() : nullptr;
 	UFont* Font = GEngine ? GEngine->GetLargeFont() : nullptr;
@@ -489,7 +493,7 @@ void ANRHUD::DrawPlayerStatus()
 
 	const float U = Canvas->SizeY / 1080.0f;
 	const float X = 40.0f * U;
-	const float Y = Canvas->SizeY - 78.0f * U;
+	const float Y = Canvas->SizeY - 110.0f * U;
 	const float Fraction = Health->GetHealthNormalized();
 	const FLinearColor BarColor = Fraction <= 0.3f ? NRHudStyle::Danger : NRHudStyle::Fill;
 
@@ -526,6 +530,31 @@ void ANRHUD::DrawPlayerStatus()
 		}
 	}
 
+	// Stamina: a bolt and a shorter bar under the shield, with the number after it.
+	if (const UNRStaminaComponent* Stamina = Pawn->FindComponentByClass<UNRStaminaComponent>())
+	{
+		const float StaminaY = ShieldY + ShieldH + 26.0f * U;
+		const float BoltX = X + 6.0f * U;
+		const float Thick = FMath::Max(1.5f, 3.0f * U);
+		DrawLine(BoltX + 14.0f * U, StaminaY - 12.0f * U, BoltX + 4.0f * U, StaminaY + 1.0f * U, NRHudStyle::Bright, Thick);
+		DrawLine(BoltX + 4.0f * U, StaminaY + 1.0f * U, BoltX + 13.0f * U, StaminaY + 1.0f * U, NRHudStyle::Bright, Thick);
+		DrawLine(BoltX + 13.0f * U, StaminaY + 1.0f * U, BoltX + 3.0f * U, StaminaY + 14.0f * U, NRHudStyle::Bright, Thick);
+
+		const float MaxStamina = Stamina->GetMaxStamina();
+		const float StaminaFraction = MaxStamina > 0.0f ? FMath::Clamp(Stamina->GetCurrentStamina() / MaxStamina, 0.0f, 1.0f) : 0.0f;
+		const float StaminaW = 170.0f * U;
+		const float StaminaH = 8.0f * U;
+		DrawRect(NRHudStyle::Track, BarX - Pad, StaminaY - StaminaH * 0.5f - Pad, StaminaW + 2.0f * Pad, StaminaH + 2.0f * Pad);
+		DrawRect(StaminaFraction < 0.3f ? NRHudStyle::Warning : NRHudStyle::Stamina,
+			BarX, StaminaY - StaminaH * 0.5f, StaminaW * StaminaFraction, StaminaH);
+		if (Small)
+		{
+			NRHudStyle::DrawLabel(Canvas, Small, FString::Printf(TEXT("%d / %d"),
+				FMath::FloorToInt(Stamina->GetCurrentStamina()), FMath::RoundToInt(MaxStamina)),
+				BarX + StaminaW + 10.0f * U, StaminaY, 0.9f * U, NRHudStyle::Dim);
+		}
+	}
+
 	// Consumables: a key box and the count for each, above the health row.
 	const UNRConsumableComponent* Consumables = Pawn->FindComponentByClass<UNRConsumableComponent>();
 	if (Consumables && Small)
@@ -545,6 +574,28 @@ void ANRHUD::DrawPlayerStatus()
 		};
 		DrawItem(Consumables->GetPotionKey(), TEXT("HEAL"), Consumables->GetPotionCount());
 		DrawItem(Consumables->GetShieldKey(), TEXT("SHIELD"), Consumables->GetShieldCount());
+	}
+
+	// Level and experience above the consumables, with a reminder while points wait in the
+	// Tab menu.
+	const UNRStatsComponent* Stats = Pawn->FindComponentByClass<UNRStatsComponent>();
+	if (Stats && Small)
+	{
+		const float LevelY = Y - 80.0f * U;
+		const FVector2D LevelSize = NRHudStyle::DrawLabel(Canvas, Small, FString::Printf(TEXT("LV %d"), Stats->GetLevel()),
+			X, LevelY, 1.0f * U, NRHudStyle::Bright);
+		const float XpX = X + LevelSize.X + 12.0f * U;
+		const float XpW = 140.0f * U;
+		const float XpH = 4.0f * U;
+		const int32 Needed = Stats->GetExperienceToNextLevel();
+		DrawRect(NRHudStyle::Track, XpX, LevelY - XpH * 0.5f, XpW, XpH);
+		DrawRect(NRHudStyle::Shield, XpX, LevelY - XpH * 0.5f,
+			XpW * (Needed > 0 ? FMath::Clamp(static_cast<float>(Stats->GetExperience()) / Needed, 0.0f, 1.0f) : 0.0f), XpH);
+		if (Stats->GetUnspentPoints() > 0)
+		{
+			NRHudStyle::DrawLabel(Canvas, Small, FString::Printf(TEXT("+%d STAT  [Tab]"), Stats->GetUnspentPoints()),
+				XpX + XpW + 12.0f * U, LevelY, 0.9f * U, NRHudStyle::Gold);
+		}
 	}
 }
 

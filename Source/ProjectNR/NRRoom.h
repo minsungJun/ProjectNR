@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "NRGridTypes.h"
 #include "NRRoom.generated.h"
 
 class ANRDoor;
@@ -37,6 +38,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNROnRoomStateChanged, ANRRoom*, Ro
  *
  * A room with no enemies (reward, safe) clears the moment the player walks in, without
  * locking anything.
+ *
+ * In a level the map generator loads (bWaitForGenerator), the room does nothing at all until
+ * the generator hands it its id, type, doors and enemies (InitializeGenerated) and the run
+ * has started (OpenGate): no enemy search, no activation, no clearing. Its doors and enemies
+ * then come from its own level instance only, never from a search of the world.
  */
 UCLASS()
 class PROJECTNR_API ANRRoom : public AActor
@@ -65,9 +71,29 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Room")
 	bool ContainsLocation(const FVector& Location, float Inset = 0.0f) const;
 
-	/** Starts the fight now, as if the player had walked in. */
+	/** Starts the fight now, as if the player had walked in. Ignored while the gate is closed. */
 	UFUNCTION(BlueprintCallable, Category = "Room")
 	void Activate();
+
+	/**
+	 * Set up by the map generator. Doors are the ones on joined doorways, opened now so the
+	 * map can be walked; enemies are the room's own, held dormant. The room leaves the loadout
+	 * rule to the run (it no longer flips the safe phase itself). Stays inert until OpenGate.
+	 */
+	void InitializeGenerated(int32 InRoomId, ENRGridRoomType InRoomType, bool bInFinalRoom,
+		const TArray<ANRDoor*>& InDoors, const TArray<AActor*>& InEnemies);
+
+	/** Lets a generated room run: activation, clearing, doors. Called once the run has started. */
+	void OpenGate();
+
+	bool IsWaitingForGenerator() const { return bWaitForGenerator; }
+
+	/** Name for logs: "Room 3 (Combat)" for a generated room, the actor name otherwise. Every
+	 *  generated room actor has the same name inside its own level, so the name alone is useless. */
+	FString GetLabel() const;
+	bool IsGenerated() const { return GeneratedRoomId != INDEX_NONE; }
+	int32 GetGeneratedRoomId() const { return GeneratedRoomId; }
+	ENRGridRoomType GetRoomType() const { return RoomType; }
 
 	/** Test helper: kills every living enemy of this room. */
 	UFUNCTION(BlueprintCallable, Category = "Room|Debug")
@@ -114,6 +140,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room", meta = (ClampMin = "0.0"))
 	float EntryInset = 150.0f;
 
+	/** Set in room templates for the map generator: stay inert until it sets the room up. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Generated")
+	bool bWaitForGenerator = false;
+
 private:
 	void CollectEnemies();
 	void SetEnemiesDormant(bool bDormant) const;
@@ -125,6 +155,11 @@ private:
 
 	ENRRoomState State = ENRRoomState::Dormant;
 	float ClearedTime = -1.0f;
+
+	/** False while a generated room waits for the generator and the run. */
+	bool bGateOpen = true;
+	int32 GeneratedRoomId = INDEX_NONE;
+	ENRGridRoomType RoomType = ENRGridRoomType::Combat;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AActor>> RoomEnemies;

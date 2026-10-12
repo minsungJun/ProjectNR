@@ -10,6 +10,7 @@
 
 class UBorder;
 class UNRLoadoutWidget;
+class UNRStatsPanel;
 class UNRWeaponPartComponent;
 class UTextBlock;
 class UTexture2D;
@@ -121,6 +122,9 @@ class PROJECTNR_API UNRLoadoutWidget : public UUserWidget
 public:
 	void SetPartComponent(UNRWeaponPartComponent* InParts);
 
+	/** Switches between the parts and stat tabs. */
+	void ShowStatsPage(bool bStats);
+
 	/** Tab or Escape while the widget has focus. The HUD owns opening and closing. */
 	FSimpleDelegate OnCloseRequested;
 
@@ -202,6 +206,21 @@ private:
 
 	int32 HighlightedCard = INDEX_NONE;
 	bool bHighlightCanFit = false;
+
+	/** Which tab of the menu is showing. Kept while the menu is closed. */
+	enum class EPage : uint8 { Parts, Stats };
+	EPage ActivePage = EPage::Parts;
+
+	UWidget* MakeTabBar();
+
+	/** The stat page. Made once and kept, so it survives the parts page being rebuilt. */
+	UPROPERTY(Transient)
+	TObjectPtr<UNRStatsPanel> StatsPanel;
+
+	/** The tab shows unspent points, so the bar is redrawn when they change. */
+	TWeakObjectPtr<class UNRStatsComponent> BoundStats;
+	FDelegateHandle StatsChangedHandle;
+	void UnbindFromStats();
 
 	FGuid SelectedPart;
 	FText StatusText;

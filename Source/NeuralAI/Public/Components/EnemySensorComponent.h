@@ -164,6 +164,14 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor", meta = (ClampMin = "0.01"))
 	float SensorInterval = 0.05f;
 
+	/**
+	 * Starts dormant, sensing nothing until whoever owns the enemy wakes it. For enemies in
+	 * levels that are loaded at run time: they begin play the moment their level loads, before
+	 * anything has decided whether their room is in play.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor")
+	bool bStartDormant = false;
+
 private:
 	FEnemySensorData SensorData;
 

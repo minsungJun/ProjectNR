@@ -73,6 +73,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weapon Parts")
 	void SetInSafePhase(bool bSafe) { bInSafePhase = bSafe; }
 
+	bool IsInSafePhase() const { return bInSafePhase; }
+
+	/** Turns the prototype "edit anywhere" bypass on or off. A run that decides safe areas
+	 *  itself turns it off for its own duration. */
+	void SetPrototypeAllowLoadoutEditing(bool bAllow) { bPrototypeAllowLoadoutEditing = bAllow; }
+
 	const TArray<FNRWeaponPartInstance>& GetInventory() const { return Inventory; }
 
 	const FNRWeaponPartInstance* FindPart(const FGuid& InstanceId) const;

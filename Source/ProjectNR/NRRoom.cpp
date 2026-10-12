@@ -40,10 +40,65 @@ void ANRRoom::BeginPlay()
 	AllRooms.RemoveAll([](const TWeakObjectPtr<ANRRoom>& Entry) { return !Entry.IsValid(); });
 	AllRooms.AddUnique(this);
 
+	if (bWaitForGenerator)
+	{
+		// Loaded as part of a generated map: everything waits for InitializeGenerated.
+		bGateOpen = false;
+		SetActorTickEnabled(false);
+		UE_LOG(LogNRRoom, Log, TEXT("%s: waiting for the map generator"), *GetNameSafe(this));
+		return;
+	}
+
 	CollectEnemies();
 	SetEnemiesDormant(true);
 
 	UE_LOG(LogNRRoom, Log, TEXT("%s: %d enemy(s), %d door(s)"), *GetNameSafe(this), RoomEnemies.Num(), Doors.Num());
+}
+
+void ANRRoom::InitializeGenerated(int32 InRoomId, ENRGridRoomType InRoomType, bool bInFinalRoom,
+	const TArray<ANRDoor*>& InDoors, const TArray<AActor*>& InEnemies)
+{
+	GeneratedRoomId = InRoomId;
+	RoomType = InRoomType;
+	bFinalRoom = bInFinalRoom;
+
+	Doors.Reset();
+	for (ANRDoor* Door : InDoors)
+	{
+		if (Door)
+		{
+			Doors.Add(Door);
+			Door->Open();
+		}
+	}
+	RoomEnemies.Reset();
+	for (AActor* Enemy : InEnemies)
+	{
+		if (Enemy)
+		{
+			RoomEnemies.AddUnique(Enemy);
+		}
+	}
+	SetEnemiesDormant(true);
+
+	UE_LOG(LogNRRoom, Log, TEXT("%s%s set up: %d enemy(s), %d door(s)"), *GetLabel(),
+		bFinalRoom ? TEXT(", final") : TEXT(""), RoomEnemies.Num(), Doors.Num());
+}
+
+FString ANRRoom::GetLabel() const
+{
+	if (!IsGenerated())
+	{
+		return GetName();
+	}
+	return FString::Printf(TEXT("Room %d (%s)"), GeneratedRoomId,
+		*StaticEnum<ENRGridRoomType>()->GetNameStringByValue(static_cast<int64>(RoomType)));
+}
+
+void ANRRoom::OpenGate()
+{
+	bGateOpen = true;
+	SetActorTickEnabled(State != ENRRoomState::Cleared);
 }
 
 void ANRRoom::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -141,6 +196,10 @@ ANRRoom* ANRRoom::FindRoomAt(const UWorld* World, const FVector& Location)
 void ANRRoom::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (!bGateOpen)
+	{
+		return;
+	}
 
 	switch (State)
 	{
@@ -168,7 +227,7 @@ void ANRRoom::Tick(float DeltaSeconds)
 
 void ANRRoom::Activate()
 {
-	if (State != ENRRoomState::Dormant)
+	if (State != ENRRoomState::Dormant || !bGateOpen)
 	{
 		return;
 	}
@@ -200,7 +259,10 @@ void ANRRoom::SetState(ENRRoomState NewState)
 			}
 		}
 		SetEnemiesDormant(false);
-		UpdateSafePhase(false);
+		if (!IsGenerated())
+		{
+			UpdateSafePhase(false);
+		}
 	}
 	else if (NewState == ENRRoomState::Cleared)
 	{
@@ -212,10 +274,14 @@ void ANRRoom::SetState(ENRRoomState NewState)
 				Door->Open();
 			}
 		}
-		UpdateSafePhase(true);
+		// A generated run decides the safe phase in one place, from where the player is.
+		if (!IsGenerated())
+		{
+			UpdateSafePhase(true);
+		}
 	}
 
-	UE_LOG(LogNRRoom, Log, TEXT("%s -> %s (%d/%d enemies left)"), *GetNameSafe(this),
+	UE_LOG(LogNRRoom, Log, TEXT("%s -> %s (%d/%d enemies left)"), *GetLabel(),
 		*UEnum::GetValueAsString(NewState), GetRemainingEnemies(), RoomEnemies.Num());
 	OnRoomStateChanged.Broadcast(this, NewState);
 }
@@ -256,7 +322,7 @@ namespace NRRoomCommands
 			const ANRRoom* Room = Entry.Get();
 			if (Room && Room->GetWorld() == World)
 			{
-				UE_LOG(LogNRRoom, Log, TEXT("  %s%s: %s, %d/%d enemies left"), *GetNameSafe(Room),
+				UE_LOG(LogNRRoom, Log, TEXT("  %s%s: %s, %d/%d enemies left"), *Room->GetLabel(),
 					Room == Current ? TEXT(" (player here)") : TEXT(""),
 					*UEnum::GetValueAsString(Room->GetRoomState()), Room->GetRemainingEnemies(), Room->GetTotalEnemies());
 			}
@@ -269,7 +335,7 @@ namespace NRRoomCommands
 		if (ANRRoom* Room = Player ? ANRRoom::FindRoomAt(World, Player->GetActorLocation()) : nullptr)
 		{
 			Room->KillAllEnemies();
-			UE_LOG(LogNRRoom, Log, TEXT("Killed the enemies of %s"), *GetNameSafe(Room));
+			UE_LOG(LogNRRoom, Log, TEXT("Killed the enemies of %s"), *Room->GetLabel());
 		}
 		else
 		{

@@ -14,6 +14,7 @@ public class ProjectNR : ModuleRules
 			"Engine",
 			"InputCore",
 			"DeveloperSettings",
+			"NavigationSystem",
 			"EnhancedInput",
 			"AIModule",
 			"StateTreeModule",

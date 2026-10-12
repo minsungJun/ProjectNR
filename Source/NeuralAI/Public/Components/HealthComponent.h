@@ -32,8 +32,8 @@ class NEURALAI_API UHealthComponent : public UActorComponent
 public:
 	UHealthComponent();
 
-	/** Applies damage and broadcasts. Shield takes it first, then health. Returns the amount
-	 *  actually removed from both. */
+	/** Applies damage and broadcasts. Armor takes a flat amount off first, then the shield
+	 *  soaks what is left before health does. Returns the amount actually removed from both. */
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	float ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection);
 
@@ -45,6 +45,17 @@ public:
 	 *  the amount added; 0 once dead. */
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	float AddShield(float Amount);
+
+	/** Changes the cap. Raising it adds the difference to current health, so a bigger pool
+	 *  arrives filled; lowering it only clamps. */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void SetMaxHealth(float NewMaxHealth);
+
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void SetArmor(float NewArmor) { Armor = FMath::Max(NewArmor, 0.0f); }
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetArmor() const { return Armor; }
 
 	UFUNCTION(BlueprintPure, Category = "Health")
 	float GetCurrentShield() const { return CurrentShield; }
@@ -94,6 +105,15 @@ protected:
 	/** Most shield the owner can hold at once. Shield is only ever added by AddShield. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "0.0"))
 	float MaxShield = 100.0f;
+
+	/** Taken off every hit before anything else. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "0.0"))
+	float Armor = 0.0f;
+
+	/** Least a hit does once armor is taken off, so armor never makes the owner untouchable.
+	 *  A hit already smaller than this is not raised to it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "0.0"))
+	float MinDamageAfterArmor = 1.0f;
 
 private:
 	UPROPERTY(VisibleInstanceOnly, Category = "Health", Transient)

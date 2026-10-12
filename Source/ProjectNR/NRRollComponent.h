@@ -210,6 +210,11 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roll|Movement", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float AirborneSpeedScale = 0.35f;
 
+	/** Stamina one roll costs, from the owner's UNRStaminaComponent. Without that component
+	 *  rolls are free. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roll", meta = (ClampMin = "0.0"))
+	float StaminaCost = 15.0f;
+
 	/** Seconds after a roll ends before the next may start. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roll", meta = (ClampMin = "0.0"))
 	float Cooldown = 0.25f;

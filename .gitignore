@@ -97,3 +97,6 @@ DerivedDataCache/*
 !/Content/StateTree/
 !/Content/DataAssets/
 !/Content/Blueprints/Game/
+!/Content/Levels/
+/Content/Levels/*
+!/Content/Levels/GridRun/

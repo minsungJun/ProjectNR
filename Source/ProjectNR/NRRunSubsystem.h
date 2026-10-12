@@ -78,9 +78,40 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Run")
 	void EndRun(bool bWon);
 
-	/** Reloads the level, which starts a fresh run. */
+	/** Reloads the level, which starts a fresh run. In a generated map, bSameSeed rebuilds the
+	 *  same map; otherwise the map is generated anew. */
 	UFUNCTION(BlueprintCallable, Category = "Run")
-	void RestartRun();
+	void RestartRun(bool bSameSeed = false);
+
+	/**
+	 * Adds a room loaded after the world began play (a generated map). Safe to call twice.
+	 * Rooms added before StartRun only count once the run starts.
+	 */
+	void RegisterRoom(ANRRoom* Room);
+
+	/** Removes a room, e.g. when its level is unloaded. Safe for a room never added. */
+	void UnregisterRoom(ANRRoom* Room);
+
+	/** Starts the run over the registered rooms. Ignored while one is in progress. A generated
+	 *  map calls this once every room is registered, so no half-registered map can be won. */
+	void StartRun();
+
+	/** Drops the run and every room: back to NoRun, e.g. before a map is rebuilt. */
+	void ResetRun();
+
+	/**
+	 * Generated maps: the run decides when loadouts may change, in one place, from where the
+	 * player is - inside a Start or Safe room with no fight going on anywhere. Also turns off
+	 * the prototype "edit anywhere" bypass for the run.
+	 */
+	void SetManagesSafePhase(bool bManage);
+
+	/** Seed of the generated map being played, for a same-seed restart. 0 for none. */
+	void SetGeneratedSeed(int32 InSeed) { GeneratedSeed = InSeed; }
+	int32 GetGeneratedSeed() const { return GeneratedSeed; }
+
+	/** Whether the run currently allows loadout changes (generated maps only). */
+	bool IsSafePhase() const { return bSafePhase; }
 
 	UPROPERTY(BlueprintAssignable, Category = "Run")
 	FNROnRunStateChanged OnRunStateChanged;
@@ -92,6 +123,7 @@ private:
 	void HandleAnyDamaged(UHealthComponent* Health, float Damage);
 
 	void SetState(ENRRunState NewState);
+	void UpdateSafePhase();
 
 	ENRRunState State = ENRRunState::NoRun;
 	double StartTime = 0.0;
@@ -101,5 +133,11 @@ private:
 	float DamageDealt = 0.0f;
 
 	TArray<TWeakObjectPtr<ANRRoom>> Rooms;
+	/** Rooms counted as cleared, so a room that reports twice is counted once. */
+	TSet<TWeakObjectPtr<ANRRoom>> ClearedRooms;
 	FDelegateHandle AnyDamagedHandle;
+
+	bool bManagesSafePhase = false;
+	bool bSafePhase = false;
+	int32 GeneratedSeed = 0;
 };

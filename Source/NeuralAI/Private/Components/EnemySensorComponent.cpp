@@ -35,6 +35,10 @@ void UEnemySensorComponent::BeginPlay()
 	ActiveSensors.Add(this);
 
 	PrimaryComponentTick.TickInterval = SensorInterval;
+	if (bStartDormant)
+	{
+		SetDormant(true);
+	}
 
 	if (AActor* Owner = GetOwner())
 	{

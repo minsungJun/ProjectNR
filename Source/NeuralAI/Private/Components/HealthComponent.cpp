@@ -36,6 +36,17 @@ void UHealthComponent::ResetHealth()
 	bDead = false;
 }
 
+void UHealthComponent::SetMaxHealth(float NewMaxHealth)
+{
+	NewMaxHealth = FMath::Max(NewMaxHealth, 1.0f);
+	const float Delta = NewMaxHealth - MaxHealth;
+	MaxHealth = NewMaxHealth;
+	if (!bDead)
+	{
+		CurrentHealth = FMath::Clamp(CurrentHealth + FMath::Max(Delta, 0.0f), 0.0f, MaxHealth);
+	}
+}
+
 float UHealthComponent::Heal(float Amount)
 {
 	if (bDead || Amount <= 0.0f)
@@ -70,6 +81,11 @@ float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, cons
 	if (bDead || Amount <= 0.0f)
 	{
 		return 0.0f;
+	}
+
+	if (Armor > 0.0f)
+	{
+		Amount = FMath::Max(Amount - Armor, FMath::Min(Amount, MinDamageAfterArmor));
 	}
 
 	const float Absorbed = FMath::Min(Amount, CurrentShield);

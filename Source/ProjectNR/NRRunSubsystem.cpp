@@ -10,6 +10,7 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "NRWeaponPartComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRRun, Log, All);
 
@@ -26,20 +27,135 @@ void UNRRunSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 	for (TActorIterator<ANRRoom> It(&InWorld); It; ++It)
 	{
-		Rooms.Add(*It);
-		It->OnRoomStateChanged.AddUniqueDynamic(this, &UNRRunSubsystem::HandleRoomStateChanged);
+		// A generated map's rooms register themselves through the map generator.
+		if (!It->IsWaitingForGenerator())
+		{
+			RegisterRoom(*It);
+		}
 	}
 
-	// No rooms, no run: sandbox and test levels keep playing as they always did.
+	// No rooms, no run: sandbox and test levels keep playing as they always did, and a
+	// generated map starts its run once it has been built.
 	if (Rooms.Num() == 0)
 	{
 		return;
 	}
+	StartRun();
+}
 
-	AnyDamagedHandle = UHealthComponent::OnAnyDamaged.AddUObject(this, &UNRRunSubsystem::HandleAnyDamaged);
-	StartTime = InWorld.GetTimeSeconds();
+void UNRRunSubsystem::RegisterRoom(ANRRoom* Room)
+{
+	if (!Room || Rooms.Contains(Room))
+	{
+		return;
+	}
+	Rooms.Add(Room);
+	Room->OnRoomStateChanged.AddUniqueDynamic(this, &UNRRunSubsystem::HandleRoomStateChanged);
+}
+
+void UNRRunSubsystem::UnregisterRoom(ANRRoom* Room)
+{
+	if (!Room)
+	{
+		return;
+	}
+	Room->OnRoomStateChanged.RemoveDynamic(this, &UNRRunSubsystem::HandleRoomStateChanged);
+	Rooms.Remove(Room);
+	ClearedRooms.Remove(Room);
+	RoomsCleared = ClearedRooms.Num();
+}
+
+void UNRRunSubsystem::StartRun()
+{
+	UWorld* World = GetWorld();
+	if (State == ENRRunState::InProgress || !World)
+	{
+		return;
+	}
+	if (!AnyDamagedHandle.IsValid())
+	{
+		AnyDamagedHandle = UHealthComponent::OnAnyDamaged.AddUObject(this, &UNRRunSubsystem::HandleAnyDamaged);
+	}
+	StartTime = World->GetTimeSeconds();
+	ClearedRooms.Reset();
+	RoomsCleared = 0;
+	Kills = 0;
+	DamageDealt = 0.0f;
 	SetState(ENRRunState::InProgress);
-	UE_LOG(LogNRRun, Log, TEXT("Run started: %d room(s)"), Rooms.Num());
+	UE_LOG(LogNRRun, Log, TEXT("Run started: %d room(s)%s"), Rooms.Num(),
+		GeneratedSeed != 0 ? *FString::Printf(TEXT(", map seed %d"), GeneratedSeed) : TEXT(""));
+}
+
+void UNRRunSubsystem::ResetRun()
+{
+	for (const TWeakObjectPtr<ANRRoom>& Entry : Rooms)
+	{
+		if (ANRRoom* Room = Entry.Get())
+		{
+			Room->OnRoomStateChanged.RemoveDynamic(this, &UNRRunSubsystem::HandleRoomStateChanged);
+		}
+	}
+	Rooms.Reset();
+	ClearedRooms.Reset();
+	RoomsCleared = 0;
+	Kills = 0;
+	DamageDealt = 0.0f;
+	SetState(ENRRunState::NoRun);
+}
+
+void UNRRunSubsystem::SetManagesSafePhase(bool bManage)
+{
+	bManagesSafePhase = bManage;
+	bSafePhase = false;
+	const APawn* Player = UGameplayStatics::GetPlayerPawn(GetWorld(), 0);
+	if (UNRWeaponPartComponent* Parts = Player ? Player->FindComponentByClass<UNRWeaponPartComponent>() : nullptr)
+	{
+		Parts->SetPrototypeAllowLoadoutEditing(!bManage);
+		Parts->SetInSafePhase(false);
+	}
+	UpdateSafePhase();
+}
+
+void UNRRunSubsystem::UpdateSafePhase()
+{
+	if (!bManagesSafePhase)
+	{
+		return;
+	}
+
+	// Safe only inside a Start or Safe room, and only while no room anywhere is fighting -
+	// a room woken by a long shot counts too. A corridor is never safe.
+	const APawn* Player = UGameplayStatics::GetPlayerPawn(GetWorld(), 0);
+	bool bSafe = State == ENRRunState::InProgress && Player != nullptr;
+	const ANRRoom* PlayerRoom = nullptr;
+	for (const TWeakObjectPtr<ANRRoom>& Entry : Rooms)
+	{
+		const ANRRoom* Room = Entry.Get();
+		if (!Room)
+		{
+			continue;
+		}
+		bSafe &= Room->GetRoomState() != ENRRoomState::Active;
+		if (Player && !PlayerRoom && Room->ContainsLocation(Player->GetActorLocation()))
+		{
+			PlayerRoom = Room;
+		}
+	}
+	bSafe &= PlayerRoom && (PlayerRoom->GetRoomType() == ENRGridRoomType::Start || PlayerRoom->GetRoomType() == ENRGridRoomType::Safe);
+
+	if (bSafe != bSafePhase)
+	{
+		bSafePhase = bSafe;
+		UE_LOG(LogNRRun, Log, TEXT("Safe phase %s (%s)"), bSafe ? TEXT("on") : TEXT("off"),
+			PlayerRoom ? *PlayerRoom->GetLabel() : TEXT("outside any room"));
+	}
+	if (UNRWeaponPartComponent* Parts = Player ? Player->FindComponentByClass<UNRWeaponPartComponent>() : nullptr)
+	{
+		if (Parts->IsInSafePhase() != bSafe)
+		{
+			Parts->SetInSafePhase(bSafe);
+		}
+	}
 }
 
 void UNRRunSubsystem::Deinitialize()
@@ -70,6 +186,7 @@ void UNRRunSubsystem::Tick(float DeltaTime)
 	{
 		EndRun(false);
 	}
+	UpdateSafePhase();
 }
 
 float UNRRunSubsystem::GetElapsedTime() const
@@ -98,8 +215,14 @@ void UNRRunSubsystem::HandleRoomStateChanged(ANRRoom* Room, ENRRoomState NewStat
 		return;
 	}
 
-	++RoomsCleared;
-	UE_LOG(LogNRRun, Log, TEXT("Room cleared: %s (%d/%d)"), *GetNameSafe(Room), RoomsCleared, Rooms.Num());
+	bool bAlreadyCleared = false;
+	ClearedRooms.Add(Room, &bAlreadyCleared);
+	if (bAlreadyCleared)
+	{
+		return;
+	}
+	RoomsCleared = ClearedRooms.Num();
+	UE_LOG(LogNRRun, Log, TEXT("Room cleared: %s (%d/%d)"), Room ? *Room->GetLabel() : TEXT("?"), RoomsCleared, Rooms.Num());
 
 	const bool bAnyFinal = Rooms.ContainsByPredicate([](const TWeakObjectPtr<ANRRoom>& Entry)
 	{
@@ -159,7 +282,7 @@ void UNRRunSubsystem::EndRun(bool bWon)
 		bWon ? TEXT("WON") : TEXT("LOST"), GetElapsedTime(), RoomsCleared, Rooms.Num(), Kills, DamageDealt);
 }
 
-void UNRRunSubsystem::RestartRun()
+void UNRRunSubsystem::RestartRun(bool bSameSeed)
 {
 	UWorld* World = GetWorld();
 	if (!World)
@@ -167,11 +290,12 @@ void UNRRunSubsystem::RestartRun()
 		return;
 	}
 	// Reloading the level resets every room, enemy and the player; a fresh subsystem starts
-	// the new run on its begin play.
-	UE_LOG(LogNRRun, Log, TEXT("Restarting run"));
+	// the new run on its begin play. A generated map reads the seed back from the options.
+	const FString Options = bSameSeed && GeneratedSeed != 0 ? FString::Printf(TEXT("GridSeed=%d"), GeneratedSeed) : FString();
+	UE_LOG(LogNRRun, Log, TEXT("Restarting run%s"), Options.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *Options));
 	// Full package path without the PIE prefix, so a level name shared by two folders
 	// cannot load the wrong one.
-	UGameplayStatics::OpenLevel(World, FName(*UWorld::RemovePIEPrefix(World->GetOutermost()->GetName())));
+	UGameplayStatics::OpenLevel(World, FName(*UWorld::RemovePIEPrefix(World->GetOutermost()->GetName())), true, Options);
 }
 
 void UNRRunSubsystem::SetState(ENRRunState NewState)
@@ -224,11 +348,12 @@ namespace NRRunCommands
 		}
 	}
 
+	/** NR.Run.Restart [same]: "same" rebuilds a generated map from the same seed. */
 	void Restart(const TArray<FString>& Args, UWorld* World)
 	{
 		if (UNRRunSubsystem* Run = Get(World))
 		{
-			Run->RestartRun();
+			Run->RestartRun(Args.Num() > 0 && Args[0].Equals(TEXT("same"), ESearchCase::IgnoreCase));
 		}
 	}
 }
@@ -246,5 +371,5 @@ static FAutoConsoleCommandWithWorldAndArgs GNRRunLoseCommand(TEXT("NR.Run.Lose")
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRRunCommands::Lose));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRRunRestartCommand(TEXT("NR.Run.Restart"),
-	TEXT("Reload the level and start a new run."),
+	TEXT("NR.Run.Restart [same]: reload the level and start a new run (same: same generated map seed)."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRRunCommands::Restart));
