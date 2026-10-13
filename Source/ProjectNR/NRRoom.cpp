@@ -304,6 +304,8 @@ void ANRRoom::KillAllEnemies()
 		UHealthComponent* Health = IsValid(Enemy) ? Enemy->FindComponentByClass<UHealthComponent>() : nullptr;
 		if (Health && !Health->IsDead())
 		{
+			// A dodge in progress must not save an enemy from the room being cleared.
+			Health->ClearInvulnerability();
 			Health->ApplyDamage(Health->GetCurrentHealth() + Health->GetCurrentShield(), nullptr, FVector::ForwardVector);
 		}
 	}

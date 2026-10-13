@@ -6,6 +6,7 @@
 #include "Combat/EnemyCombatSlotSettings.h"
 #include "Combat/EnemyCombatSlotSubsystem.h"
 #include "Components/EnemySensorComponent.h"
+#include "Components/HealthComponent.h"
 #include "Components/NeuralBrainComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -172,6 +173,11 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 	// Retire a finished commitment before anything asks whether it may act.
 	if (CurrentAction != EEnemyActionType::None && !IsCommitted(Now))
 	{
+		if (CurrentAction == EEnemyActionType::Dodge)
+		{
+			UE_LOG(LogNeuralAI, Log, TEXT("%s dodge carried it %.0f cm in %.2f s"), *GetNameSafe(ControlledEnemy),
+				FVector::Dist2D(DodgeStartLocation, ControlledEnemy->GetActorLocation()), Now - ActionStartTime);
+		}
 		CurrentAction = EEnemyActionType::None;
 	}
 
@@ -269,7 +275,13 @@ void AEnemyAIController::TryDodge(float Now, float ImmediateThreat)
 	// Override XY but leave Z alone, so a dodge is a sidestep rather than a hop.
 	ControlledEnemy->LaunchCharacter(DodgeDirection * DodgeImpulse, true, false);
 
+	if (UHealthComponent* Health = ControlledEnemy->GetHealthComponent())
+	{
+		Health->SetInvulnerableFor(DodgeInvulnerableTime);
+	}
+
 	LastDodgeTime = Now;
+	DodgeStartLocation = ControlledEnemy->GetActorLocation();
 	BeginAction(EEnemyActionType::Dodge, Now);
 
 	const UNeuralBrainComponent* Brain = ControlledEnemy->GetNeuralBrain();

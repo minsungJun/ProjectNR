@@ -1,6 +1,7 @@
 // Neural Enemy AI prototype module.
 
 #include "Components/HealthComponent.h"
+#include "Engine/World.h"
 #include "NeuralAI.h"
 
 UHealthComponent::UHealthComponent()
@@ -34,6 +35,21 @@ void UHealthComponent::ResetHealth()
 	CurrentHealth = MaxHealth;
 	CurrentShield = 0.0f;
 	bDead = false;
+	InvulnerableUntil = -1.0f;
+}
+
+void UHealthComponent::SetInvulnerableFor(float Seconds)
+{
+	if (const UWorld* World = GetWorld(); World && Seconds > 0.0f)
+	{
+		InvulnerableUntil = FMath::Max(InvulnerableUntil, World->GetTimeSeconds() + Seconds);
+	}
+}
+
+bool UHealthComponent::IsInvulnerable() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetTimeSeconds() < InvulnerableUntil;
 }
 
 void UHealthComponent::SetMaxHealth(float NewMaxHealth)
@@ -80,6 +96,12 @@ float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, cons
 {
 	if (bDead || Amount <= 0.0f)
 	{
+		return 0.0f;
+	}
+
+	if (IsInvulnerable())
+	{
+		UE_LOG(LogNeuralAI, Log, TEXT("%s ignored %.1f damage (invulnerable)"), *GetNameSafe(GetOwner()), Amount);
 		return 0.0f;
 	}
 

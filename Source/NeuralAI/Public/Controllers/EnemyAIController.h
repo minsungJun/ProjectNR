@@ -150,14 +150,23 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Dodge", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float DodgeThreshold = 0.55f;
 
+	/** Seconds from the start of one dodge until the next may start. 1.2 until 2026-10-13, then
+	 *  briefly 0.4. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Dodge", meta = (ClampMin = "0.0"))
-	float DodgeCooldown = 1.2f;
+	float DodgeCooldown = 0.6f;
 
+	/** Sideways launch speed of a dodge, cm/s. The enemy flies for about 0.05 s and then brakes
+	 *  on the ground, so distance is not proportional: 700 carried it about 64 cm, 1000 about
+	 *  88 cm (2026-10-13). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Dodge", meta = (ClampMin = "0.0"))
-	float DodgeImpulse = 700.0f;
+	float DodgeImpulse = 1000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Dodge", meta = (ClampMin = "0.0"))
 	float DodgeCommitTime = 0.3f;
+
+	/** Seconds from the start of a dodge in which the enemy takes no damage. 0 turns it off. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Dodge", meta = (ClampMin = "0.0"))
+	float DodgeInvulnerableTime = 0.2f;
 
 	/**
 	 * Live projectile threat required before a dodge is worth spending.
@@ -207,6 +216,9 @@ private:
 	float LastPathUpdateTime = -1000.0f;
 
 	float LastDodgeTime = -1000.0f;
+
+	/** Where the current dodge started, to log how far it carried the enemy. */
+	FVector DodgeStartLocation = FVector::ZeroVector;
 	float LastAttackTime = -1000.0f;
 	float LastDiagnosticTime = -1000.0f;
 	float LastTickDiagnosticTime = -1000.0f;

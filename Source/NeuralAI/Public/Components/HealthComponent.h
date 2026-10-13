@@ -37,6 +37,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	float ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection);
 
+	/** Ignores all damage for the next Seconds of game time. A shorter window never cuts a
+	 *  longer one already running short. */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void SetInvulnerableFor(float Seconds);
+
+	/** Ends any invulnerability now, for damage that must land (clearing a room). */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void ClearInvulnerability() { InvulnerableUntil = -1.0f; }
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	bool IsInvulnerable() const;
+
 	/** Restores up to Amount health, never past MaxHealth. Returns the amount restored; 0 once dead. */
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	float Heal(float Amount);
@@ -124,6 +136,9 @@ private:
 
 	/** Latches so OnDeath can only ever broadcast once per life. */
 	bool bDead = false;
+
+	/** Game time until which ApplyDamage does nothing. */
+	float InvulnerableUntil = -1.0f;
 
 	static TArray<TWeakObjectPtr<UHealthComponent>> ActiveComponents;
 };
