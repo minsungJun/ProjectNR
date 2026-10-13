@@ -32,18 +32,69 @@ DEFINE_LOG_CATEGORY_STATIC(LogNRMapGen, Log, All);
 namespace NRMapGen
 {
 	FName PortTag(const TCHAR* Letter) { return FName(*FString::Printf(TEXT("NRPort.%s"), Letter)); }
-	FName BlockTag(const TCHAR* Letter) { return FName(*FString::Printf(TEXT("NRBlock.%s"), Letter)); }
+
+	FNRRoomPort MakePort(const FIntPoint& Cell, ENRGridDirection Side)
+	{
+		FNRRoomPort Port;
+		Port.Cell = Cell;
+		Port.Side = Side;
+		return Port;
+	}
+
+	/** A room's template footprint before it was turned. */
+	FIntPoint TemplateFootprint(const FNRGeneratedRoom& Room)
+	{
+		return NRGrid::TurnFootprint(Room.Footprint, Room.RotationSteps);
+	}
+
+	/** A doorway of a placed room, given by world cell and direction, as its template names it. */
+	FNRRoomPort ToTemplate(const FNRGeneratedRoom& Room, const FNRRoomPort& World)
+	{
+		return MakePort(NRGrid::UnturnCell(World.Cell - Room.Cell, TemplateFootprint(Room), Room.RotationSteps),
+			NRGrid::WorldToLocal(World.Side, Room.RotationSteps));
+	}
+
+	/** Module tag of one doorway place, in the template's own frame: NRBlock.N in a one-cell
+	 *  room, NRBlock.1_0.N (cell 1,0, north side) in a bigger one. */
+	FName SlotTag(const TCHAR* Kind, const FNRGeneratedRoom& Room, const FNRRoomPort& World)
+	{
+		const FNRRoomPort Local = ToTemplate(Room, World);
+		return TemplateFootprint(Room) == FIntPoint(1, 1)
+			? FName(*FString::Printf(TEXT("%s.%s"), Kind, NRGrid::Letter(Local.Side)))
+			: FName(*FString::Printf(TEXT("%s.%d_%d.%s"), Kind, Local.Cell.X, Local.Cell.Y, NRGrid::Letter(Local.Side)));
+	}
+
+	/** Every doorway place on a room's outline, by world cell and direction. */
+	TArray<FNRRoomPort> Outline(const FNRGeneratedRoom& Room)
+	{
+		TArray<FNRRoomPort> Places = FNRRoomTemplateDesc::OutlinePorts(Room.Footprint, 0b1111);
+		for (FNRRoomPort& Place : Places)
+		{
+			Place.Cell += Room.Cell;
+		}
+		return Places;
+	}
+
+	/** Doorways each room uses, by world cell and direction, by room id. */
+	TMap<int32, TArray<FNRRoomPort>> OpenPorts(const FNRGeneratedLayout& Layout)
+	{
+		TMap<int32, TArray<FNRRoomPort>> Open;
+		for (const FNRGeneratedConnection& Connection : Layout.Connections)
+		{
+			ENRGridDirection Direction;
+			if (NRGrid::DirectionBetween(Connection.CellA, Connection.CellB, Direction))
+			{
+				Open.FindOrAdd(Connection.RoomA).Add(MakePort(Connection.CellA, Direction));
+				Open.FindOrAdd(Connection.RoomB).Add(MakePort(Connection.CellB, NRGrid::Opposite(Direction)));
+			}
+		}
+		return Open;
+	}
 
 	bool IsModuleTag(const FName& Tag)
 	{
 		const FString Text = Tag.ToString();
 		return Text.StartsWith(TEXT("NRPort.")) || Text.StartsWith(TEXT("NRBlock."));
-	}
-
-	/** The template direction that ends up facing World once turned by Steps. */
-	ENRGridDirection WorldToLocal(ENRGridDirection World, int32 Steps)
-	{
-		return static_cast<ENRGridDirection>(((static_cast<int32>(World) + Steps) % 4 + 4) % 4);
 	}
 
 	const TCHAR* StateName(ENRMapGenState State)
@@ -60,23 +111,6 @@ namespace NRMapGen
 		}
 	}
 
-	/** World directions each room is joined in, by room id. */
-	TMap<int32, uint8> OpenMasks(const FNRGeneratedLayout& Layout)
-	{
-		TMap<int32, uint8> Masks;
-		for (const FNRGeneratedConnection& Connection : Layout.Connections)
-		{
-			const FNRGeneratedRoom* A = Layout.FindRoom(Connection.RoomA);
-			const FNRGeneratedRoom* B = Layout.FindRoom(Connection.RoomB);
-			ENRGridDirection Direction;
-			if (A && B && NRGrid::DirectionBetween(A->Cell, B->Cell, Direction))
-			{
-				Masks.FindOrAdd(A->RoomId) |= 1 << static_cast<int32>(Direction);
-				Masks.FindOrAdd(B->RoomId) |= 1 << static_cast<int32>(NRGrid::Opposite(Direction));
-			}
-		}
-		return Masks;
-	}
 }
 
 ANRMapGenerator::ANRMapGenerator()
@@ -103,6 +137,8 @@ ANRMapGenerator::ANRMapGenerator()
 	FNRGeneratedConnection Link;
 	Link.RoomA = 0;
 	Link.RoomB = 1;
+	Link.CellA = Start.Cell;
+	Link.CellB = Second.Cell;
 	FixedLayout.Connections.Add(Link);
 	FixedLayout.StartRoomId = 0;
 }
@@ -151,17 +187,23 @@ FVector ANRMapGenerator::GetCellCenter(const FIntPoint& Cell) const
 	return GetActorLocation() + FVector(Cell.X * Pitch, Cell.Y * Pitch, 0.0f);
 }
 
-FTransform ANRMapGenerator::GetRoomTransform(const FNRGeneratedRoom& Room) const
+FVector ANRMapGenerator::GetRoomCenter(const FNRGeneratedRoom& Room) const
 {
-	return FTransform(FRotator(0.0f, 90.0f * Room.RotationSteps, 0.0f), GetCellCenter(Room.Cell));
+	// The middle of the footprint: halfway between its first and last cell centres.
+	return (GetCellCenter(Room.Cell) + GetCellCenter(Room.Cell + Room.Footprint - FIntPoint(1, 1))) * 0.5f;
 }
 
-FTransform ANRMapGenerator::GetCorridorTransform(const FNRGeneratedRoom& A, const FNRGeneratedRoom& B) const
+FTransform ANRMapGenerator::GetRoomTransform(const FNRGeneratedRoom& Room) const
+{
+	return FTransform(FRotator(0.0f, 90.0f * Room.RotationSteps, 0.0f), GetRoomCenter(Room));
+}
+
+FTransform ANRMapGenerator::GetCorridorTransform(const FNRGeneratedConnection& Connection) const
 {
 	// Halfway between the two cells, running along the link: the corridor template runs along
 	// its local X, so a north-south link is turned a quarter.
-	const bool bAlongY = A.Cell.X == B.Cell.X;
-	return FTransform(FRotator(0.0f, bAlongY ? 90.0f : 0.0f, 0.0f), (GetCellCenter(A.Cell) + GetCellCenter(B.Cell)) * 0.5f);
+	const bool bAlongY = Connection.CellA.X == Connection.CellB.X;
+	return FTransform(FRotator(0.0f, bAlongY ? 90.0f : 0.0f, 0.0f), (GetCellCenter(Connection.CellA) + GetCellCenter(Connection.CellB)) * 0.5f);
 }
 
 TArray<FNRRoomTemplateDesc> ANRMapGenerator::DescribeTemplates() const
@@ -179,7 +221,9 @@ TArray<FNRRoomTemplateDesc> ANRMapGenerator::DescribeTemplates() const
 			Desc.Weight = 0.0f;
 			continue;
 		}
-		Desc.PortMask = static_cast<uint8>(Template->PortMask & 0b1111);
+		Desc.Footprint = Template->Footprint;
+		Desc.Ports = Template->Ports.Num() > 0 ? Template->Ports
+			: FNRRoomTemplateDesc::OutlinePorts(Template->Footprint, static_cast<uint8>(Template->PortMask & 0b1111));
 		Desc.RotationMask = static_cast<uint8>(Template->AllowedRotations & 0b1111);
 		Desc.Weight = Template->Weight;
 		Desc.TypeMask = 0;
@@ -224,7 +268,7 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 
 	GeneratedLayout = FNRGeneratedLayout();
 	FNRGeneratedLayout Layout;
-	if (!FNRGridLayoutGenerator::Generate(Settings, InSeed, Layout, OutError))
+	if (!FNRGridLayoutGenerator::Generate(Settings, DescribeTemplates(), InSeed, Layout, OutError))
 	{
 		UE_LOG(LogNRMapGen, Error, TEXT("Layout generation failed: %s"), *OutError);
 		return false;
@@ -261,6 +305,25 @@ bool ANRMapGenerator::StartMap(int32 InSeed)
 	else
 	{
 		const int32 UseSeed = InSeed != 0 ? InSeed : FMath::RandRange(1, MAX_int32 - 1);
+		if (DescribeTemplates().Num() == 0)
+		{
+			ActiveLayout = FNRGeneratedLayout();
+			ActiveLayout.Seed = UseSeed;
+			Fail(TEXT("the config has no room templates"));
+			return false;
+		}
+		for (const UNRRoomTemplateData* Template : Config->RoomTemplates)
+		{
+			if (Template && !FMath::IsNearlyEqual(Template->Size, RoomSize))
+			{
+				ActiveLayout = FNRGeneratedLayout();
+				ActiveLayout.Seed = UseSeed;
+				Fail(FString::Printf(TEXT("room template %s has %.0f cm cells, the map's are %.0f cm"), *GetNameSafe(Template), Template->Size, RoomSize));
+				return false;
+			}
+		}
+
+		// Templates are chosen while the layout is generated: a room's shape decides where it fits.
 		FString Error;
 		if (!GenerateLayout(UseSeed, Error))
 		{
@@ -269,33 +332,7 @@ bool ANRMapGenerator::StartMap(int32 InSeed)
 			Fail(Error);
 			return false;
 		}
-
 		ActiveLayout = GeneratedLayout;
-		const TArray<FNRRoomTemplateDesc> Templates = DescribeTemplates();
-		if (Templates.Num() == 0)
-		{
-			Fail(TEXT("the config has no room templates"));
-			return false;
-		}
-		for (const UNRRoomTemplateData* Template : Config->RoomTemplates)
-		{
-			if (Template && !FMath::IsNearlyEqual(Template->Size, RoomSize))
-			{
-				Fail(FString::Printf(TEXT("room template %s is %.0f cm, the map's rooms are %.0f cm"), *GetNameSafe(Template), Template->Size, RoomSize));
-				return false;
-			}
-		}
-		if (!FNRGridLayoutGenerator::AssignTemplates(Templates, ActiveLayout, Error))
-		{
-			Fail(Error);
-			return false;
-		}
-		const TArray<FString> Problems = FNRGridLayoutGenerator::ValidateTemplates(Templates, ActiveLayout);
-		if (Problems.Num() > 0)
-		{
-			Fail(FString::Join(Problems, TEXT("; ")));
-			return false;
-		}
 	}
 
 	FString Error;
@@ -364,12 +401,13 @@ bool ANRMapGenerator::LoadActiveLayout(FString& OutError)
 		const FNRGeneratedRoom* A = ActiveLayout.FindRoom(Connection.RoomA);
 		const FNRGeneratedRoom* B = ActiveLayout.FindRoom(Connection.RoomB);
 		ENRGridDirection Direction;
-		if (!A || !B || !NRGrid::DirectionBetween(A->Cell, B->Cell, Direction))
+		if (!A || !B || !A->Covers(Connection.CellA) || !B->Covers(Connection.CellB)
+			|| !NRGrid::DirectionBetween(Connection.CellA, Connection.CellB, Direction))
 		{
-			OutError = FString::Printf(TEXT("connection %d does not join two neighbouring rooms"), Index);
+			OutError = FString::Printf(TEXT("connection %d does not join neighbouring cells of its two rooms"), Index);
 			return false;
 		}
-		Requests.Add({ true, Index, GetCorridorLevel(), GetCorridorTransform(*A, *B) });
+		Requests.Add({ true, Index, GetCorridorLevel(), GetCorridorTransform(Connection) });
 	}
 
 	// Every level must exist before anything is requested: a missing one would otherwise only
@@ -547,7 +585,7 @@ void ANRMapGenerator::HoldPlayer(bool bHold)
 
 void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 {
-	const TMap<int32, uint8> Masks = NRMapGen::OpenMasks(ActiveLayout);
+	const TMap<int32, TArray<FNRRoomPort>> Open = NRMapGen::OpenPorts(ActiveLayout);
 	for (const FNRGeneratedRoom& Room : ActiveLayout.Rooms)
 	{
 		const int32 ModuleIndex = FindRoomModule(Room.RoomId);
@@ -605,25 +643,50 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 			continue;
 		}
 
-		// Doors on joined doorways belong to the room; the rest are hidden behind the blockers.
-		TArray<ANRDoor*> Doors;
-		const uint8 Mask = Masks.FindRef(Room.RoomId);
-		for (int32 Local = 0; Local < 4; ++Local)
+		// The room box must cover the whole footprint, or part of the room would never activate it.
 		{
-			const ENRGridDirection LocalDirection = static_cast<ENRGridDirection>(Local);
-			const bool bJoined = (Mask & (1 << static_cast<int32>(NRGrid::LocalToWorld(LocalDirection, Room.RotationSteps)))) != 0;
-			for (AActor* Actor : FindTagged(ModuleIndex, FName(*FString::Printf(TEXT("NRDoor.%s"), NRGrid::Letter(LocalDirection)))))
+			const FVector Center = GetRoomCenter(Room);
+			const FVector Reach = (GetCellCenter(Room.Cell + Room.Footprint - FIntPoint(1, 1)) - GetCellCenter(Room.Cell)) * 0.5f
+				+ FVector(RoomSize * 0.5f - 300.0f, RoomSize * 0.5f - 300.0f, 0.0f);
+			for (const FVector Corner : { Center + FVector(Reach.X, Reach.Y, 0.0f), Center + FVector(-Reach.X, Reach.Y, 0.0f),
+				Center + FVector(Reach.X, -Reach.Y, 0.0f), Center + FVector(-Reach.X, -Reach.Y, 0.0f) })
 			{
-				if (ANRDoor* Door = Cast<ANRDoor>(Actor); Door && bJoined)
+				if (!RoomActors[0]->ContainsLocation(Corner))
 				{
-					Doors.Add(Door);
-				}
-				else
-				{
-					Actor->SetActorHiddenInGame(true);
-					Actor->SetActorEnableCollision(false);
+					Errors.Add(FString::Printf(TEXT("room %d: its NRRoom box does not cover its %dx%d footprint"), Room.RoomId, Room.Footprint.X, Room.Footprint.Y));
+					break;
 				}
 			}
+		}
+
+		// Doors on joined doorways belong to the room; the rest are hidden behind the blockers.
+		TSet<FName> JoinedDoors;
+		for (const FNRRoomPort& Port : Open.FindRef(Room.RoomId))
+		{
+			JoinedDoors.Add(NRMapGen::SlotTag(TEXT("NRDoor"), Room, Port));
+		}
+		TArray<ANRDoor*> Doors;
+		for (AActor* Actor : Level->Actors)
+		{
+			const FName* DoorTag = Actor ? Actor->Tags.FindByPredicate([](const FName& Tag) { return Tag.ToString().StartsWith(TEXT("NRDoor.")); }) : nullptr;
+			if (!DoorTag)
+			{
+				continue;
+			}
+			if (ANRDoor* Door = Cast<ANRDoor>(Actor); Door && JoinedDoors.Contains(*DoorTag))
+			{
+				Doors.Add(Door);
+			}
+			else
+			{
+				Actor->SetActorHiddenInGame(true);
+				Actor->SetActorEnableCollision(false);
+			}
+		}
+		if (Doors.Num() != JoinedDoors.Num())
+		{
+			Errors.Add(FString::Printf(TEXT("room %d: %d joined doorway(s) but %d door(s) found for them"), Room.RoomId, JoinedDoors.Num(), Doors.Num()));
+			continue;
 		}
 
 		RoomActors[0]->InitializeGenerated(Room.RoomId, Room.RoomType, Room.RoomId == ActiveLayout.BossRoomId, Doors, Enemies);
@@ -664,7 +727,7 @@ void ANRMapGenerator::InitializeModules()
 {
 	State = ENRMapGenState::Initializing;
 	TArray<FString> Errors;
-	const TMap<int32, uint8> Masks = NRMapGen::OpenMasks(ActiveLayout);
+	const TMap<int32, TArray<FNRRoomPort>> Open = NRMapGen::OpenPorts(ActiveLayout);
 
 	// Doorways: open the joined ones, leave the rest walled. Hidden and without collision, so
 	// an opened blocker leaves neither a visible panel nor an invisible wall.
@@ -672,32 +735,22 @@ void ANRMapGenerator::InitializeModules()
 	for (const FNRGeneratedRoom& Room : ActiveLayout.Rooms)
 	{
 		const int32 ModuleIndex = FindRoomModule(Room.RoomId);
-		const uint8 Mask = Masks.FindRef(Room.RoomId);
-		for (int32 Local = 0; Local < 4; ++Local)
+		for (const FNRRoomPort& Port : Open.FindRef(Room.RoomId))
 		{
-			const ENRGridDirection LocalDirection = static_cast<ENRGridDirection>(Local);
-			const ENRGridDirection WorldDirection = NRGrid::LocalToWorld(LocalDirection, Room.RotationSteps);
-			const TArray<AActor*> Blockers = FindTagged(ModuleIndex, NRMapGen::BlockTag(NRGrid::Letter(LocalDirection)));
-			const bool bJoined = (Mask & (1 << static_cast<int32>(WorldDirection))) != 0;
+			const FName Tag = NRMapGen::SlotTag(TEXT("NRBlock"), Room, Port);
+			const TArray<AActor*> Blockers = FindTagged(ModuleIndex, Tag);
 			if (Blockers.Num() == 0)
 			{
-				// A doorway the template does not have is fine as long as nothing joins there.
-				if (bJoined)
-				{
-					Errors.Add(FString::Printf(TEXT("room %d: joined to the %s but its level has no %s"), Room.RoomId,
-						NRGrid::Letter(WorldDirection), *NRMapGen::BlockTag(NRGrid::Letter(LocalDirection)).ToString()));
-				}
+				Errors.Add(FString::Printf(TEXT("room %d: joined at %d,%d %s but its level has no %s"), Room.RoomId,
+					Port.Cell.X, Port.Cell.Y, NRGrid::Letter(Port.Side), *Tag.ToString()));
 				continue;
 			}
-			if (bJoined)
+			for (AActor* Blocker : Blockers)
 			{
-				for (AActor* Blocker : Blockers)
-				{
-					Blocker->SetActorHiddenInGame(true);
-					Blocker->SetActorEnableCollision(false);
-				}
-				++Opened;
+				Blocker->SetActorHiddenInGame(true);
+				Blocker->SetActorEnableCollision(false);
 			}
+			++Opened;
 		}
 	}
 
@@ -708,7 +761,7 @@ void ANRMapGenerator::InitializeModules()
 		const FNRGeneratedRoom* A = ActiveLayout.FindRoom(Connection.RoomA);
 		const FNRGeneratedRoom* B = ActiveLayout.FindRoom(Connection.RoomB);
 		ENRGridDirection Direction;
-		if (!A || !B || !NRGrid::DirectionBetween(A->Cell, B->Cell, Direction))
+		if (!A || !B || !NRGrid::DirectionBetween(Connection.CellA, Connection.CellB, Direction))
 		{
 			continue;
 		}
@@ -722,13 +775,13 @@ void ANRMapGenerator::InitializeModules()
 			continue;
 		}
 
-		auto CheckRoomPort = [&](const FNRGeneratedRoom& Room, ENRGridDirection WorldDirection)
+		auto CheckRoomPort = [&](const FNRGeneratedRoom& Room, const FIntPoint& Cell, ENRGridDirection WorldDirection)
 		{
-			const ENRGridDirection Local = NRMapGen::WorldToLocal(WorldDirection, Room.RotationSteps);
-			const TArray<AActor*> Ports = FindTagged(FindRoomModule(Room.RoomId), NRMapGen::PortTag(NRGrid::Letter(Local)));
+			const FName Tag = NRMapGen::SlotTag(TEXT("NRPort"), Room, NRMapGen::MakePort(Cell, WorldDirection));
+			const TArray<AActor*> Ports = FindTagged(FindRoomModule(Room.RoomId), Tag);
 			if (Ports.Num() != 1)
 			{
-				Errors.Add(FString::Printf(TEXT("room %d: level needs exactly one NRPort.%s"), Room.RoomId, NRGrid::Letter(Local)));
+				Errors.Add(FString::Printf(TEXT("room %d: level needs exactly one %s"), Room.RoomId, *Tag.ToString()));
 				return;
 			}
 
@@ -744,8 +797,8 @@ void ANRMapGenerator::InitializeModules()
 					Index, Room.RoomId, NRGrid::Letter(WorldDirection), Gap, Facing));
 			}
 		};
-		CheckRoomPort(*A, Direction);
-		CheckRoomPort(*B, NRGrid::Opposite(Direction));
+		CheckRoomPort(*A, Connection.CellA, Direction);
+		CheckRoomPort(*B, Connection.CellB, NRGrid::Opposite(Direction));
 	}
 
 	if (Errors.Num() == 0)
@@ -761,7 +814,12 @@ void ANRMapGenerator::InitializeModules()
 	UE_LOG(LogNRMapGen, Log, TEXT("Generation %d: %d module(s) loaded in %.2f s, %d doorway(s) opened, %d link(s) checked; waiting for navigation"),
 		Generation, Streamings.Num(), GetWorld()->GetTimeSeconds() - LoadStartTime, Opened, ActiveLayout.Connections.Num());
 
-	// Navigation has to be rebuilt over the new geometry before anything may walk it.
+	// The player goes to the start room now (still held), so the teleport has landed by the
+	// time the rooms wake up; navigation has to be rebuilt over the new geometry meanwhile.
+	if (bMovePlayerToStartOnReady)
+	{
+		MovePlayerToStart();
+	}
 	NavigationStartTime = GetWorld()->GetTimeSeconds();
 	GetWorldTimerManager().SetTimer(NavigationTimer, this, &ANRMapGenerator::PollNavigation, 0.25f, true, 0.0f);
 }
@@ -788,7 +846,7 @@ bool ANRMapGenerator::HasNavigationPath(float* OutLength, bool* OutBuilding) con
 		*OutBuilding = Navigation->IsNavigationBuildInProgress();
 	}
 	const UNavigationPath* Path = Navigation->FindPathToLocationSynchronously(World,
-		GetCellCenter(From->Cell) + FVector(0.0f, 0.0f, 50.0f), GetCellCenter(To->Cell) + FVector(0.0f, 0.0f, 50.0f));
+		GetRoomCenter(*From) + FVector(0.0f, 0.0f, 50.0f), GetRoomCenter(*To) + FVector(0.0f, 0.0f, 50.0f));
 	const bool bWhole = Path && Path->IsValid() && !Path->IsPartial();
 	if (OutLength)
 	{
@@ -805,8 +863,27 @@ void ANRMapGenerator::PollNavigation()
 		return;
 	}
 
+	// The teleport to the start room (sent when the modules were set up) lands on the pawn's next
+	// movement update. No room may look for the player before it has, or a room standing where
+	// the player waited during loading would wake up.
+	bool bPlayerPlaced = true;
+	const APawn* Pawn = UGameplayStatics::GetPlayerPawn(GetWorld(), 0);
+	const FNRGeneratedRoom* Start = ActiveLayout.FindRoom(ActiveLayout.StartRoomId);
+	if (bMovePlayerToStartOnReady && Pawn && Start)
+	{
+		const FVector Half = (GetCellCenter(Start->Cell + Start->Footprint - FIntPoint(1, 1)) - GetCellCenter(Start->Cell)) * 0.5f
+			+ FVector(RoomSize * 0.5f, RoomSize * 0.5f, 0.0f);
+		const FVector Offset = Pawn->GetActorLocation() - GetRoomCenter(*Start);
+		bPlayerPlaced = FMath::Abs(Offset.X) <= Half.X && FMath::Abs(Offset.Y) <= Half.Y;
+		if (!bPlayerPlaced && GetWorld()->GetTimeSeconds() - NavigationStartTime > 5.0f)
+		{
+			UE_LOG(LogNRMapGen, Warning, TEXT("Generation %d: the player is still outside the start room 5 s after the teleport; going on"), Generation);
+			bPlayerPlaced = true;
+		}
+	}
+
 	bool bBuilding = false;
-	if (HasNavigationPath(nullptr, &bBuilding) && !bBuilding)
+	if (HasNavigationPath(nullptr, &bBuilding) && !bBuilding && bPlayerPlaced)
 	{
 		GetWorldTimerManager().ClearTimer(NavigationTimer);
 		BecomeReady();
@@ -828,11 +905,6 @@ void ANRMapGenerator::BecomeReady()
 		Generation, ActiveLayout.Seed, ActiveLayout.Rooms.Num(), ActiveLayout.Connections.Num(),
 		GetWorld()->GetTimeSeconds() - LoadStartTime, Length);
 	UE_LOG(LogNRMapGen, Log, TEXT("  signature %08x"), GetTypeHash(BuildSignature()));
-
-	if (bMovePlayerToStartOnReady)
-	{
-		MovePlayerToStart();
-	}
 
 	// The run starts only now, with every room registered, so it can neither be won nor
 	// count a clear before the map is whole; the rooms come alive after it.
@@ -870,7 +942,7 @@ void ANRMapGenerator::MovePlayerToStart() const
 	}
 
 	// The start room's NRSpawn marker if it has one, otherwise its centre.
-	FVector Target = GetCellCenter(Start->Cell) + FVector(0.0f, 0.0f, 100.0f);
+	FVector Target = GetRoomCenter(*Start) + FVector(0.0f, 0.0f, 100.0f);
 	const TArray<AActor*> Spawns = FindTagged(FindRoomModule(Start->RoomId), TEXT("NRSpawn"));
 	if (Spawns.Num() > 0)
 	{
@@ -896,25 +968,40 @@ void ANRMapGenerator::MovePlayerToStart() const
 FString ANRMapGenerator::BuildSignature() const
 {
 	TArray<FString> Parts;
-	const TMap<int32, uint8> Masks = NRMapGen::OpenMasks(ActiveLayout);
+	const TMap<int32, TArray<FNRRoomPort>> Open = NRMapGen::OpenPorts(ActiveLayout);
 
 	TArray<FNRGeneratedRoom> Rooms = ActiveLayout.Rooms;
 	Rooms.Sort([](const FNRGeneratedRoom& A, const FNRGeneratedRoom& B) { return A.RoomId < B.RoomId; });
 	for (const FNRGeneratedRoom& Room : Rooms)
 	{
 		const int32 ModuleIndex = FindRoomModule(Room.RoomId);
-		FString Ports;
-		for (int32 Local = 0; Local < 4; ++Local)
+		// Port markers by tag, wherever they ended up.
+		TArray<FString> Ports;
+		const ULevelStreamingDynamic* Streaming = Streamings.IsValidIndex(ModuleIndex) ? Streamings[ModuleIndex].Get() : nullptr;
+		if (const ULevel* Level = Streaming ? Streaming->GetLoadedLevel() : nullptr)
 		{
-			for (const AActor* Port : FindTagged(ModuleIndex, NRMapGen::PortTag(NRGrid::Letter(static_cast<ENRGridDirection>(Local)))))
+			for (const AActor* Actor : Level->Actors)
 			{
-				const FVector Location = Port->GetActorLocation();
-				Ports += FString::Printf(TEXT("%s(%.0f,%.0f)"), NRGrid::Letter(static_cast<ENRGridDirection>(Local)), Location.X, Location.Y);
+				for (const FName& Tag : Actor ? Actor->Tags : TArray<FName>())
+				{
+					if (Tag.ToString().StartsWith(TEXT("NRPort.")))
+					{
+						const FVector Location = Actor->GetActorLocation();
+						Ports.Add(FString::Printf(TEXT("%s(%.0f,%.0f)"), *Tag.ToString().RightChop(7), Location.X, Location.Y));
+					}
+				}
 			}
 		}
+		Ports.Sort();
+		TArray<FString> Joined;
+		for (const FNRRoomPort& Port : Open.FindRef(Room.RoomId))
+		{
+			Joined.Add(FString::Printf(TEXT("%d_%d.%s"), Port.Cell.X, Port.Cell.Y, NRGrid::Letter(Port.Side)));
+		}
+		Joined.Sort();
 		const FVector Location = ModuleIndex != INDEX_NONE ? Modules[ModuleIndex].Transform.GetLocation() : FVector::ZeroVector;
-		Parts.Add(FString::Printf(TEXT("R%d t%d r%d (%.0f,%.0f) open %s %s"), Room.RoomId, Room.TemplateIndex, Room.RotationSteps,
-			Location.X, Location.Y, *FNRGridLayoutGenerator::MaskToString(Masks.FindRef(Room.RoomId)), *Ports));
+		Parts.Add(FString::Printf(TEXT("R%d t%d r%d %dx%d (%.0f,%.0f) open %s %s"), Room.RoomId, Room.TemplateIndex, Room.RotationSteps,
+			Room.Footprint.X, Room.Footprint.Y, Location.X, Location.Y, *FString::Join(Joined, TEXT(",")), *FString::Join(Ports, TEXT(""))));
 	}
 	for (int32 Index = 0; Index < ActiveLayout.Connections.Num(); ++Index)
 	{
@@ -982,33 +1069,38 @@ void ANRMapGenerator::LogStatus() const
 	Geometry.AddObjectTypesToQuery(ECC_WorldDynamic);
 	const FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(NRMapGenCheck), false);
 
-	// Doorways: from each room's centre straight out through each side, at knee height. A
-	// joined side must be clear past the room's edge; any other side must stop at the wall.
-	const TMap<int32, uint8> Masks = NRMapGen::OpenMasks(ActiveLayout);
+	// Doorways: from the centre of each cell on a room's outline straight out through its outer
+	// side, at knee height. A joined side must be clear past the room's edge; any other side
+	// must stop at the wall.
+	const TMap<int32, TArray<FNRRoomPort>> Open = NRMapGen::OpenPorts(ActiveLayout);
 	int32 Faults = 0;
+	int32 Doorways = 0;
 	for (const FNRGeneratedRoom& Room : ActiveLayout.Rooms)
 	{
-		for (int32 Dir = 0; Dir < 4; ++Dir)
+		for (const FNRRoomPort& Place : NRMapGen::Outline(Room))
 		{
-			const FIntPoint Offset = NRGrid::ToOffset(static_cast<ENRGridDirection>(Dir));
-			const FVector Start = GetCellCenter(Room.Cell) + FVector(0.0f, 0.0f, 60.0f);
+			++Doorways;
+			const FIntPoint Offset = NRGrid::ToOffset(Place.Side);
+			const FVector Start = GetCellCenter(Place.Cell) + FVector(0.0f, 0.0f, 60.0f);
 			const FVector End = Start + FVector(Offset.X, Offset.Y, 0.0f) * (RoomSize * 0.5f + 50.0f);
 			FHitResult Hit;
 			const bool bHit = World->LineTraceSingleByObjectType(Hit, Start, End, Geometry, TraceParams);
-			const bool bOpen = (Masks.FindRef(Room.RoomId) & (1 << Dir)) != 0;
+			const bool bOpen = Open.FindRef(Room.RoomId).Contains(Place);
 			if (bOpen == bHit)
 			{
 				++Faults;
-				UE_LOG(LogNRMapGen, Warning, TEXT("  room %d doorway %s should be %s but is %s%s"), Room.RoomId,
-					NRGrid::Letter(static_cast<ENRGridDirection>(Dir)), bOpen ? TEXT("open") : TEXT("closed"), bHit ? TEXT("blocked") : TEXT("clear"),
+				UE_LOG(LogNRMapGen, Warning, TEXT("  room %d doorway %d,%d %s should be %s but is %s%s"), Room.RoomId, Place.Cell.X, Place.Cell.Y,
+					NRGrid::Letter(Place.Side), bOpen ? TEXT("open") : TEXT("closed"), bHit ? TEXT("blocked") : TEXT("clear"),
 					bHit ? *FString::Printf(TEXT(" by %s (%s) at %s"), *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()),
 						*Hit.ImpactPoint.ToCompactString()) : TEXT(""));
 			}
 		}
 	}
 
-	// Floor: straight down every 25 cm along each connection, room centre to room centre. A
-	// miss or a step means the player could fall through or trip at a seam.
+	// Floor: straight down every 25 cm along each connection, cell centre to cell centre, and
+	// 5 cm either side of each room-corridor seam. A miss or a step means the player could fall
+	// through or trip at a seam. The regular samples are offset half a step so none lands exactly
+	// on a seam, where two floors meeting edge to edge can both miss a trace by a rounding error.
 	int32 Samples = 0;
 	int32 Holes = 0;
 	float MinZ = TNumericLimits<float>::Max();
@@ -1021,12 +1113,22 @@ void ANRMapGenerator::LogStatus() const
 		{
 			continue;
 		}
-		const FVector From = GetCellCenter(A->Cell);
-		const FVector To = GetCellCenter(B->Cell);
-		const int32 Steps = FMath::CeilToInt(FVector::Dist(From, To) / 25.0f);
-		for (int32 Step = 0; Step <= Steps; ++Step)
+		const FVector From = GetCellCenter(Connection.CellA);
+		const FVector To = GetCellCenter(Connection.CellB);
+		const float Length = FVector::Dist(From, To);
+		const FVector Along = (To - From).GetSafeNormal();
+		TArray<float> Distances;
+		for (float Distance = 12.5f; Distance < Length; Distance += 25.0f)
 		{
-			const FVector Point = FMath::Lerp(From, To, static_cast<float>(Step) / Steps);
+			Distances.Add(Distance);
+		}
+		for (const float Seam : { RoomSize * 0.5f, Length - RoomSize * 0.5f })
+		{
+			Distances.Append({ Seam - 5.0f, Seam + 5.0f });
+		}
+		for (const float Distance : Distances)
+		{
+			const FVector Point = From + Along * Distance;
 			FHitResult Hit;
 			++Samples;
 			if (World->LineTraceSingleByObjectType(Hit, Point + FVector(0.0f, 0.0f, 100.0f), Point - FVector(0.0f, 0.0f, 100.0f), Geometry, TraceParams))
@@ -1041,15 +1143,20 @@ void ANRMapGenerator::LogStatus() const
 			}
 			else
 			{
-				++Holes;
+				if (++Holes <= 5)
+				{
+					UE_LOG(LogNRMapGen, Warning, TEXT("  no floor between rooms %d and %d at %s"), A->RoomId, B->RoomId, *Point.ToCompactString());
+				}
 			}
 		}
 	}
 	Faults += Holes > 0 || MaxZ - MinZ > 1.0f ? 1 : 0;
 	UE_LOG(LogNRMapGen, Log, TEXT("  doorways checked: %d, floor samples: %d, holes: %d, height %.2f..%.2f, collision faults: %d"),
-		ActiveLayout.Rooms.Num() * 4, Samples, Holes, MinZ, MaxZ, Faults);
+		Doorways, Samples, Holes, MinZ, MaxZ, Faults);
 
-	// Dormant rooms' enemies should stay where they were placed (within 800 cm of the centre).
+	// Dormant rooms' enemies should stay where they were placed: within 3/8 of a cell of the
+	// centre (900 cm in a 24 m cell), plus half the span between the outer cells of a room of
+	// several cells.
 	for (TActorIterator<ANRRoom> It(World); It; ++It)
 	{
 		if (!It->IsGenerated() || It->GetRoomState() != ENRRoomState::Dormant || !It->GetLevel())
@@ -1070,7 +1177,9 @@ void ANRMapGenerator::LogStatus() const
 				}
 			}
 		}
-		if (Farthest > 900.0f)
+		const FNRGeneratedRoom* Room = ActiveLayout.FindRoom(It->GetGeneratedRoomId());
+		const FVector Span = Room ? GetCellCenter(Room->Cell + Room->Footprint - FIntPoint(1, 1)) - GetCellCenter(Room->Cell) : FVector::ZeroVector;
+		if (Farthest > RoomSize * 0.375f + 0.5f * Span.Size2D())
 		{
 			UE_LOG(LogNRMapGen, Warning, TEXT("  %s is dormant but %s is %.0f cm from its centre"), *It->GetLabel(),
 				*GetNameSafe(Wanderer), Farthest);
@@ -1109,8 +1218,10 @@ void ANRMapGenerator::DrawLayout(const FNRGeneratedLayout& Layout, float Duratio
 		case ENRGridRoomType::Boss: Color = FColor::Red; TypeName = TEXT("Boss"); break;
 		default: break;
 		}
-		const FVector Center = GetCellCenter(Room.Cell) + Up;
-		DrawDebugBox(World, Center, FVector(Half, Half, 50.0f), Color, Duration > 0.0f, Duration, 0, 40.0f);
+		// A room of several cells covers the corridor gaps between them too.
+		const FVector Center = GetRoomCenter(Room) + Up;
+		const FVector Extent = (GetCellCenter(Room.Cell + Room.Footprint - FIntPoint(1, 1)) - GetCellCenter(Room.Cell)) * 0.5f + FVector(Half, Half, 0.0f);
+		DrawDebugBox(World, Center, FVector(Extent.X, Extent.Y, 50.0f), Color, Duration > 0.0f, Duration, 0, 40.0f);
 		DrawDebugString(World, Center + FVector(0.0f, 0.0f, 150.0f),
 			FString::Printf(TEXT("R%d %s%s"), Room.RoomId, TypeName,
 				Room.MainPathIndex != INDEX_NONE ? *FString::Printf(TEXT(" #%d"), Room.MainPathIndex) : TEXT("")),
@@ -1127,7 +1238,7 @@ void ANRMapGenerator::DrawLayout(const FNRGeneratedLayout& Layout, float Duratio
 		}
 		const bool bMainPath = A->MainPathIndex != INDEX_NONE && B->MainPathIndex != INDEX_NONE
 			&& FMath::Abs(A->MainPathIndex - B->MainPathIndex) == 1;
-		DrawDebugLine(World, GetCellCenter(A->Cell) + Up, GetCellCenter(B->Cell) + Up,
+		DrawDebugLine(World, GetCellCenter(Connection.CellA) + Up, GetCellCenter(Connection.CellB) + Up,
 			bMainPath ? FColor::Yellow : FColor(180, 180, 255), Duration > 0.0f, Duration, 0, bMainPath ? 120.0f : 50.0f);
 	}
 }
@@ -1191,7 +1302,7 @@ namespace NRGridCommands
 		}
 
 		const FVector Offset(Args.Num() > 2 ? FCString::Atof(*Args[1]) : 0.0f, Args.Num() > 2 ? FCString::Atof(*Args[2]) : 0.0f, 100.0f);
-		const FVector Target = Generator->GetCellCenter(Room->Cell) + Offset;
+		const FVector Target = Generator->GetRoomCenter(*Room) + Offset;
 		if (UMoverComponent* Mover = Pawn->FindComponentByClass<UMoverComponent>())
 		{
 			TSharedPtr<FTeleportEffect> Teleport = MakeShared<FTeleportEffect>();
@@ -1253,6 +1364,7 @@ namespace NRGridCommands
 			return;
 		}
 		const FNRMapGenSettings& Settings = Generator->GetSettings();
+		const TArray<FNRRoomTemplateDesc> Templates = Generator->DescribeTemplates();
 		const int32 From = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 1;
 		const int32 Count = Args.Num() > 1 ? FCString::Atoi(*Args[1]) : 500;
 		int32 MostRooms = INDEX_NONE;
@@ -1261,7 +1373,7 @@ namespace NRGridCommands
 		{
 			FNRGeneratedLayout Layout;
 			FString Error;
-			if (!FNRGridLayoutGenerator::Generate(Settings, Seed, Layout, Error))
+			if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Seed, Layout, Error))
 			{
 				continue;
 			}

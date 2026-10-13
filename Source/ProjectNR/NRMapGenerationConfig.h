@@ -62,6 +62,16 @@ struct PROJECTNR_API FNRMapGenSettings
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "0"))
 	int32 MaxLoops = 2;
 
+	/** Most corridors the start room may have: its main path corridor plus branches and loops.
+	 *  The boss always has exactly one, to the elite. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "1", ClampMax = "4"))
+	int32 MaxStartConnections = 2;
+
+	/** Fewest cells between the start room and the boss room, counted across and down between
+	 *  their nearest cells: 1 is side by side, 3 leaves at least two cells between them. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "1"))
+	int32 MinStartBossDistance = 3;
+
 	/** How many rooms deep a side branch may go from the main path. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "1"))
 	int32 MaxBranchDepth = 2;

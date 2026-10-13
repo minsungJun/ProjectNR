@@ -116,6 +116,18 @@ protected:
 	bool IsDirectionNavigable(const FVector& Direction) const;
 	bool FindNavigableDirection(const FVector& Desired, FVector& OutDirection) const;
 
+	/** Asks for a combat slot while a target is sensed, gives it back otherwise. */
+	void UpdateCombatSlot();
+
+	/** The combat slot to walk to, when slots drive movement and one is held. */
+	bool GetDrivingSlot(FVector& OutLocation, bool& bOutAttackRing) const;
+
+	/** Within the arrival radius of the slot held. */
+	bool IsAtSlot(const FVector& SlotLocation) const;
+
+	/** Turns towards the target while standing in a slot: orient-to-movement does nothing at rest. */
+	void FaceTargetAtSlot(float DeltaTime);
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Movement", meta = (ClampMin = "10.0"))
 	float NavProbeDistance = 120.0f;
 

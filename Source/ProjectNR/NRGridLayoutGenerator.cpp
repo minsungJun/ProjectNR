@@ -2,6 +2,7 @@
 
 #include "NRGridLayoutGenerator.h"
 
+#include "Algo/Sort.h"
 #include "Math/RandomStream.h"
 
 namespace NRGridGen
@@ -106,11 +107,14 @@ namespace NRGridGen
 		return Layout.Rooms.IndexOfByPredicate([Type](const FNRGeneratedRoom& Room) { return Room.RoomType == Type; });
 	}
 
-	void AddConnection(FNRGeneratedLayout& Layout, int32 A, int32 B)
+	void AddConnection(FNRGeneratedLayout& Layout, int32 A, int32 B, const FIntPoint& CellA, const FIntPoint& CellB)
 	{
 		FNRGeneratedConnection& Connection = Layout.Connections.AddDefaulted_GetRef();
-		Connection.RoomA = FMath::Min(A, B);
-		Connection.RoomB = FMath::Max(A, B);
+		const bool bSwap = B < A;
+		Connection.RoomA = bSwap ? B : A;
+		Connection.RoomB = bSwap ? A : B;
+		Connection.CellA = bSwap ? CellB : CellA;
+		Connection.CellB = bSwap ? CellA : CellB;
 	}
 
 	bool HasConnection(const FNRGeneratedLayout& Layout, int32 A, int32 B)
@@ -134,9 +138,352 @@ namespace NRGridGen
 		default: return TEXT("Mixed");
 		}
 	}
+
+	FString TypeName(ENRGridRoomType Type)
+	{
+		return StaticEnum<ENRGridRoomType>()->GetNameStringByValue(static_cast<int64>(Type));
+	}
+
+	uint8 TypeBit(ENRGridRoomType Type)
+	{
+		return static_cast<uint8>(1 << static_cast<int32>(Type));
+	}
+
+	FNRRoomPort MakePort(const FIntPoint& Cell, ENRGridDirection Side)
+	{
+		FNRRoomPort Port;
+		Port.Cell = Cell;
+		Port.Side = Side;
+		return Port;
+	}
+
+	/** The room every cell gets when there are no templates: one cell, four doorways, never turned. */
+	const FNRRoomTemplateDesc& ImplicitTemplate()
+	{
+		static const FNRRoomTemplateDesc Desc = []
+		{
+			FNRRoomTemplateDesc Made = FNRRoomTemplateDesc::Make(FIntPoint(1, 1), 0b1111, 0b11111);
+			Made.RotationMask = 0b0001;
+			return Made;
+		}();
+		return Desc;
+	}
+
+	/** The templates rooms are placed from: the given ones, or the implicit one-cell room. */
+	TArray<FNRRoomTemplateDesc> Effective(const TArray<FNRRoomTemplateDesc>& Templates)
+	{
+		return Templates.Num() > 0 ? Templates : TArray<FNRRoomTemplateDesc>({ ImplicitTemplate() });
+	}
+
+	/** A template at one of its turns: its size and doorways in world directions, cells counted
+	 *  from the turned footprint's south-west corner. */
+	struct FTurnedRoom
+	{
+		/** Index into the effective template list. */
+		int32 Template = INDEX_NONE;
+		int32 Steps = 0;
+		FIntPoint Size = FIntPoint(1, 1);
+		TArray<FNRRoomPort> Ports;
+
+		bool HasPort(const FIntPoint& Cell, ENRGridDirection Side) const
+		{
+			return Ports.Contains(MakePort(Cell, Side));
+		}
+	};
+
+	FTurnedRoom Turn(const FNRRoomTemplateDesc& Template, int32 TemplateIndex, int32 Steps)
+	{
+		FTurnedRoom Variant;
+		Variant.Template = TemplateIndex;
+		Variant.Steps = Steps;
+		Variant.Size = NRGrid::TurnFootprint(Template.Footprint, Steps);
+		for (const FNRRoomPort& Port : Template.Ports)
+		{
+			Variant.Ports.AddUnique(MakePort(NRGrid::TurnCell(Port.Cell, Template.Footprint, Steps), NRGrid::LocalToWorld(Port.Side, Steps)));
+		}
+		return Variant;
+	}
+
+	/**
+	 * One way a room of some type can stand on the grid: a size, and every doorway place that
+	 * any template of that size has at any of its allowed turns. Which template (and turn) the
+	 * room really is gets chosen at the end, among the turns that have every doorway the room
+	 * ended up using; a doorway is only used while some turn still has all of them.
+	 */
+	struct FShape
+	{
+		FIntPoint Size = FIntPoint(1, 1);
+		TArray<FNRRoomPort> Ports;
+		TArray<const FTurnedRoom*> Turns;
+		float Weight = 0.0f;
+
+		bool HasPort(const FNRRoomPort& Port) const
+		{
+			return Ports.Contains(Port);
+		}
+
+		/** Whether some turn of some template has every one of Used. */
+		bool Covers(const TArray<FNRRoomPort>& Used) const
+		{
+			return Turns.ContainsByPredicate([&Used](const FTurnedRoom* Turned)
+			{
+				return !Used.ContainsByPredicate([Turned](const FNRRoomPort& Port) { return !Turned->HasPort(Port.Cell, Port.Side); });
+			});
+		}
+	};
+
+	/** Every allowed turn of every usable template, and from them the shapes each room type can take. */
+	struct FCatalog
+	{
+		TArray<FTurnedRoom> Turns;
+		/** By ENRGridRoomType. */
+		TArray<FShape> Shapes[5];
+
+		explicit FCatalog(const TArray<FNRRoomTemplateDesc>& Templates)
+		{
+			for (int32 Index = 0; Index < Templates.Num(); ++Index)
+			{
+				const FNRRoomTemplateDesc& Template = Templates[Index];
+				if (Template.Weight <= 0.0f || FNRGridLayoutGenerator::CheckTemplate(Template).Num() > 0)
+				{
+					continue;
+				}
+				for (int32 Steps = 0; Steps < 4; ++Steps)
+				{
+					if (Template.RotationMask & (1 << Steps))
+					{
+						Turns.Add(Turn(Template, Index, Steps));
+					}
+				}
+			}
+
+			// Turns is complete, so pointers into it stay valid from here on.
+			for (int32 Type = 0; Type < 5; ++Type)
+			{
+				TArray<FShape>& TypeShapes = Shapes[Type];
+				for (const FTurnedRoom& Turned : Turns)
+				{
+					if (!(Templates[Turned.Template].TypeMask & (1 << Type)))
+					{
+						continue;
+					}
+					FShape* Shape = TypeShapes.FindByPredicate([&Turned](const FShape& Other) { return Other.Size == Turned.Size; });
+					if (!Shape)
+					{
+						Shape = &TypeShapes.AddDefaulted_GetRef();
+						Shape->Size = Turned.Size;
+					}
+					Shape->Turns.Add(&Turned);
+					for (const FNRRoomPort& Port : Turned.Ports)
+					{
+						Shape->Ports.AddUnique(Port);
+					}
+				}
+
+				// A template's weight is split over the sizes it comes in (a 1x2 room is also 2x1
+				// turned), so a long room is not twice as likely as a square one of equal weight.
+				for (FShape& Shape : TypeShapes)
+				{
+					TArray<int32> Seen;
+					for (const FTurnedRoom* Turned : Shape.Turns)
+					{
+						if (Seen.Contains(Turned->Template))
+						{
+							continue;
+						}
+						Seen.Add(Turned->Template);
+						int32 Sizes = 0;
+						for (const FShape& Other : TypeShapes)
+						{
+							Sizes += Other.Turns.ContainsByPredicate([Turned](const FTurnedRoom* T) { return T->Template == Turned->Template; }) ? 1 : 0;
+						}
+						Shape.Weight += Templates[Turned->Template].Weight / FMath::Max(Sizes, 1);
+					}
+				}
+			}
+		}
+
+		FCatalog(const FCatalog&) = delete;
+		FCatalog& operator=(const FCatalog&) = delete;
+	};
+
+	/** Cells between two footprints' nearest cells, across plus down. */
+	int32 FootprintDistance(const FIntPoint& AnchorA, const FIntPoint& SizeA, const FIntPoint& AnchorB, const FIntPoint& SizeB)
+	{
+		const int32 DX = FMath::Max3(0, AnchorA.X - (AnchorB.X + SizeB.X - 1), AnchorB.X - (AnchorA.X + SizeA.X - 1));
+		const int32 DY = FMath::Max3(0, AnchorA.Y - (AnchorB.Y + SizeB.Y - 1), AnchorB.Y - (AnchorA.Y + SizeA.Y - 1));
+		return DX + DY;
+	}
+
+	/** A room put down: its shape, where its south-west cell is, and the corridor that joins it
+	 *  to the room it was placed against (doorways relative to each room's south-west cell). */
+	struct FPlacement
+	{
+		const FShape* Shape = nullptr;
+		FIntPoint Anchor = FIntPoint::ZeroValue;
+		int32 Parent = INDEX_NONE;
+		FNRRoomPort Exit;
+		FNRRoomPort Entry;
+		FIntPoint FromCell = FIntPoint::ZeroValue;
+		FIntPoint ToCell = FIntPoint::ZeroValue;
+	};
+
+	/** Each option's share: its shape's weight split over that shape's options, so a big room
+	 *  with many ways to fit is not more likely than its weight says. */
+	TArray<float> OptionWeights(const TArray<FPlacement>& Options)
+	{
+		TMap<const FShape*, int32> Counts;
+		for (const FPlacement& Option : Options)
+		{
+			++Counts.FindOrAdd(Option.Shape);
+		}
+		TArray<float> Weights;
+		for (const FPlacement& Option : Options)
+		{
+			Weights.Add(Option.Shape->Weight / Counts[Option.Shape]);
+		}
+		return Weights;
+	}
+
+	int32 PickWeighted(const TArray<float>& Weights, FRandomStream& Stream)
+	{
+		float Total = 0.0f;
+		for (float Weight : Weights)
+		{
+			Total += Weight;
+		}
+		float Roll = Stream.FRand() * Total;
+		for (int32 Index = 0; Index < Weights.Num(); ++Index)
+		{
+			if (Roll < Weights[Index])
+			{
+				return Index;
+			}
+			Roll -= Weights[Index];
+		}
+		return Weights.Num() - 1;
+	}
+
+	/** Options in a weighted random order (each drawn ahead of the rest by its share), for the
+	 *  depth-first main path. */
+	void WeightedOrder(TArray<FPlacement>& Options, FRandomStream& Stream)
+	{
+		const TArray<float> Weights = OptionWeights(Options);
+		TArray<TPair<double, int32>> Keys;
+		for (int32 Index = 0; Index < Options.Num(); ++Index)
+		{
+			const double Roll = FMath::Max(static_cast<double>(Stream.FRand()), 1e-12);
+			Keys.Emplace(FMath::Loge(Roll) / FMath::Max(static_cast<double>(Weights[Index]), 1e-9), Index);
+		}
+		Algo::Sort(Keys, [](const TPair<double, int32>& A, const TPair<double, int32>& B)
+		{
+			return A.Key != B.Key ? A.Key > B.Key : A.Value < B.Value;
+		});
+		TArray<FPlacement> Ordered;
+		for (const TPair<double, int32>& Key : Keys)
+		{
+			Ordered.Add(Options[Key.Value]);
+		}
+		Options = MoveTemp(Ordered);
+	}
+
+	/** The turned template a room becomes: among its shape's turns that have every doorway it
+	 *  uses, by template weight (split over that template's fitting turns). */
+	const FTurnedRoom* PickTurn(const FShape& Shape, const TArray<FNRRoomPort>& Used, const TArray<FNRRoomTemplateDesc>& Templates, FRandomStream& Stream)
+	{
+		TArray<const FTurnedRoom*> Fitting;
+		for (const FTurnedRoom* Turned : Shape.Turns)
+		{
+			if (!Used.ContainsByPredicate([Turned](const FNRRoomPort& Port) { return !Turned->HasPort(Port.Cell, Port.Side); }))
+			{
+				Fitting.Add(Turned);
+			}
+		}
+		if (Fitting.Num() == 0)
+		{
+			return nullptr;
+		}
+		TArray<float> Weights;
+		for (const FTurnedRoom* Turned : Fitting)
+		{
+			const int32 Same = Fitting.FilterByPredicate([Turned](const FTurnedRoom* Other) { return Other->Template == Turned->Template; }).Num();
+			Weights.Add(Templates[Turned->Template].Weight / Same);
+		}
+		return Fitting[PickWeighted(Weights, Stream)];
+	}
 }
 
-bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, FString& OutError)
+TArray<FNRRoomPort> FNRRoomTemplateDesc::OutlinePorts(const FIntPoint& Footprint, uint8 PortMask)
+{
+	TArray<FNRRoomPort> Ports;
+	for (int32 Dir = 0; Dir < 4; ++Dir)
+	{
+		if (!(PortMask & (1 << Dir)))
+		{
+			continue;
+		}
+		const ENRGridDirection Side = static_cast<ENRGridDirection>(Dir);
+		const FIntPoint Offset = NRGrid::ToOffset(Side);
+		for (int32 Y = 0; Y < Footprint.Y; ++Y)
+		{
+			for (int32 X = 0; X < Footprint.X; ++X)
+			{
+				const FIntPoint Out(X + Offset.X, Y + Offset.Y);
+				if (Out.X < 0 || Out.Y < 0 || Out.X >= Footprint.X || Out.Y >= Footprint.Y)
+				{
+					Ports.Add(NRGridGen::MakePort(FIntPoint(X, Y), Side));
+				}
+			}
+		}
+	}
+	return Ports;
+}
+
+FNRRoomTemplateDesc FNRRoomTemplateDesc::Make(const FIntPoint& Footprint, uint8 PortMask, uint8 TypeMask, float Weight)
+{
+	FNRRoomTemplateDesc Desc;
+	Desc.Footprint = Footprint;
+	Desc.Ports = OutlinePorts(Footprint, PortMask);
+	Desc.TypeMask = TypeMask;
+	Desc.Weight = Weight;
+	return Desc;
+}
+
+TArray<FString> FNRGridLayoutGenerator::CheckTemplate(const FNRRoomTemplateDesc& Template)
+{
+	TArray<FString> Problems;
+	if (Template.Footprint.X < 1 || Template.Footprint.Y < 1)
+	{
+		Problems.Add(FString::Printf(TEXT("footprint %dx%d"), Template.Footprint.X, Template.Footprint.Y));
+		return Problems;
+	}
+	if (Template.Ports.Num() == 0)
+	{
+		Problems.Add(TEXT("no doorway"));
+	}
+	for (const FNRRoomPort& Port : Template.Ports)
+	{
+		const FIntPoint Out = Port.Cell + NRGrid::ToOffset(Port.Side);
+		const bool bInside = Port.Cell.X >= 0 && Port.Cell.Y >= 0 && Port.Cell.X < Template.Footprint.X && Port.Cell.Y < Template.Footprint.Y;
+		const bool bOutward = Out.X < 0 || Out.Y < 0 || Out.X >= Template.Footprint.X || Out.Y >= Template.Footprint.Y;
+		if (!bInside || !bOutward)
+		{
+			Problems.Add(FString::Printf(TEXT("doorway %d,%d %s is not on the outline of a %dx%d footprint"),
+				Port.Cell.X, Port.Cell.Y, NRGrid::Letter(Port.Side), Template.Footprint.X, Template.Footprint.Y));
+		}
+	}
+	if ((Template.RotationMask & 0b1111) == 0)
+	{
+		Problems.Add(TEXT("no allowed turn"));
+	}
+	if ((Template.TypeMask & 0b11111) == 0)
+	{
+		Problems.Add(TEXT("no room type"));
+	}
+	return Problems;
+}
+
+bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& Templates, FString& OutError)
 {
 	using namespace NRGridGen;
 	const int32 Cells = Settings.GridSize.X * Settings.GridSize.Y;
@@ -188,16 +535,83 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, FS
 	{
 		OutError = TEXT("a loop needs at least four rooms in a 2x2 square");
 	}
-	else
+	else if (Settings.MinStartBossDistance > Settings.GridSize.X + Settings.GridSize.Y - 2)
+	{
+		OutError = FString::Printf(TEXT("start and boss %d cells apart cannot fit a %dx%d grid"),
+			Settings.MinStartBossDistance, Settings.GridSize.X, Settings.GridSize.Y);
+	}
+	else if (Settings.MaxStartConnections < 1)
+	{
+		OutError = FString::Printf(TEXT("MaxStartConnections %d leaves the start room no way out"), Settings.MaxStartConnections);
+	}
+	if (!OutError.IsEmpty())
+	{
+		return false;
+	}
+	if (Templates.Num() == 0)
 	{
 		return true;
 	}
-	return false;
+
+	// Templates: each usable one well formed, and every room type a map needs placeable.
+	for (int32 Index = 0; Index < Templates.Num(); ++Index)
+	{
+		if (Templates[Index].Weight > 0.0f)
+		{
+			const TArray<FString> Problems = CheckTemplate(Templates[Index]);
+			if (Problems.Num() > 0)
+			{
+				OutError = FString::Printf(TEXT("room template %d: %s"), Index, *FString::Join(Problems, TEXT(", ")));
+				return false;
+			}
+		}
+	}
+
+	TArray<ENRGridRoomType> Needed = { ENRGridRoomType::Start, ENRGridRoomType::Boss };
+	if (Settings.bRequireSafe)
+	{
+		Needed.Add(ENRGridRoomType::Safe);
+	}
+	if (Settings.bRequireElite)
+	{
+		Needed.Add(ENRGridRoomType::Elite);
+	}
+	if (PathMin > RequiredMainPath(Settings) || NeedsBranch(Settings.Shape) || Settings.MinRooms > PathMax)
+	{
+		Needed.Add(ENRGridRoomType::Combat);
+	}
+	for (ENRGridRoomType Type : Needed)
+	{
+		bool bListed = false;
+		bool bFits = false;
+		for (const FNRRoomTemplateDesc& Template : Templates)
+		{
+			if (Template.Weight <= 0.0f || !(Template.TypeMask & TypeBit(Type)))
+			{
+				continue;
+			}
+			bListed = true;
+			for (int32 Steps = 0; Steps < 4; ++Steps)
+			{
+				const FIntPoint Size = NRGrid::TurnFootprint(Template.Footprint, Steps);
+				bFits |= (Template.RotationMask & (1 << Steps)) && Size.X <= Settings.GridSize.X && Size.Y <= Settings.GridSize.Y;
+			}
+		}
+		if (!bListed || !bFits)
+		{
+			OutError = !bListed
+				? FString::Printf(TEXT("no room template for %s rooms"), *TypeName(Type))
+				: FString::Printf(TEXT("no %s room template fits a %dx%d grid at any allowed turn"), *TypeName(Type), Settings.GridSize.X, Settings.GridSize.Y);
+			return false;
+		}
+	}
+	return true;
 }
 
-bool FNRGridLayoutGenerator::Generate(const FNRMapGenSettings& Settings, int32 Seed, FNRGeneratedLayout& OutLayout, FString& OutError)
+bool FNRGridLayoutGenerator::Generate(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& Templates, int32 Seed,
+	FNRGeneratedLayout& OutLayout, FString& OutError)
 {
-	if (!CheckSettings(Settings, OutError))
+	if (!CheckSettings(Settings, Templates, OutError))
 	{
 		OutError = FString::Printf(TEXT("settings: %s"), *OutError);
 		return false;
@@ -209,7 +623,7 @@ bool FNRGridLayoutGenerator::Generate(const FNRMapGenSettings& Settings, int32 S
 		const int32 AttemptSeed = Attempt == 0 ? Seed : static_cast<int32>(HashCombine(GetTypeHash(Seed), GetTypeHash(Attempt)));
 		FNRGeneratedLayout Layout;
 		FString Reason;
-		if (TryGenerate(Settings, AttemptSeed, Layout, Reason))
+		if (TryGenerate(Settings, Templates, AttemptSeed, Layout, Reason))
 		{
 			Layout.Seed = Seed;
 			Layout.Attempt = Attempt;
@@ -230,10 +644,13 @@ bool FNRGridLayoutGenerator::Generate(const FNRMapGenSettings& Settings, int32 S
 	return false;
 }
 
-bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, int32 AttemptSeed, FNRGeneratedLayout& OutLayout, FString& OutReason)
+bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& InTemplates, int32 AttemptSeed,
+	FNRGeneratedLayout& OutLayout, FString& OutReason)
 {
 	using namespace NRGridGen;
 	FRandomStream Stream(AttemptSeed);
+	const TArray<FNRRoomTemplateDesc> Templates = Effective(InTemplates);
+	const FCatalog Catalog(Templates);
 
 	int32 PathMin = 0;
 	int32 PathMax = 0;
@@ -243,122 +660,261 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, int3
 		? PathLength
 		: Stream.RandRange(FMath::Max(Settings.MinRooms, PathLength + (NeedsBranch(Settings.Shape) ? 1 : 0)), Settings.MaxRooms);
 
-	// 1. Main path: depth-first self-avoiding walk, directions shuffled per cell.
-	struct FFrame
-	{
-		FIntPoint Cell;
-		int32 Order[4] = { 0, 1, 2, 3 };
-		int32 Next = 0;
-	};
-	auto MakeFrame = [&Stream](const FIntPoint& Cell)
-	{
-		FFrame Frame;
-		Frame.Cell = Cell;
-		for (int32 Index = 3; Index > 0; --Index)
-		{
-			Swap(Frame.Order[Index], Frame.Order[Stream.RandRange(0, Index)]);
-		}
-		return Frame;
-	};
-
-	TSet<FIntPoint> Occupied;
-	TArray<FFrame> Path;
-	const FIntPoint StartCell(Stream.RandRange(0, Settings.GridSize.X - 1), Stream.RandRange(0, Settings.GridSize.Y - 1));
-	Path.Add(MakeFrame(StartCell));
-	Occupied.Add(StartCell);
-	int32 Budget = Settings.MainPathSearchBudget;
-	while (Path.Num() < PathLength)
-	{
-		if (Path.Num() == 0 || --Budget < 0)
-		{
-			OutReason = TEXT("main path walk ran out of room");
-			return false;
-		}
-		FFrame& Top = Path.Last();
-		if (Top.Next >= 4)
-		{
-			Occupied.Remove(Top.Cell);
-			Path.Pop();
-			continue;
-		}
-		const FIntPoint Next = Top.Cell + NRGrid::ToOffset(static_cast<ENRGridDirection>(Top.Order[Top.Next++]));
-		if (InGrid(Settings, Next) && !Occupied.Contains(Next))
-		{
-			Occupied.Add(Next);
-			Path.Add(MakeFrame(Next));
-		}
-	}
-
-	FNRGeneratedLayout Layout;
-	Layout.GeneratorVersion = Version;
-	TArray<int32> Depth;
-	TMap<FIntPoint, int32> RoomAt;
-	for (int32 Index = 0; Index < PathLength; ++Index)
-	{
-		FNRGeneratedRoom& Room = Layout.Rooms.AddDefaulted_GetRef();
-		Room.RoomId = Index;
-		Room.Cell = Path[Index].Cell;
-		Room.MainPathIndex = Index;
-		Depth.Add(0);
-		RoomAt.Add(Room.Cell, Index);
-		if (Index > 0)
-		{
-			AddConnection(Layout, Index - 1, Index);
-		}
-	}
+	// Room types along the main path.
 	const int32 BossIndex = PathLength - 1;
-	Layout.Rooms[0].RoomType = ENRGridRoomType::Start;
-	Layout.Rooms[BossIndex].RoomType = ENRGridRoomType::Boss;
+	TArray<ENRGridRoomType> Types;
+	Types.Init(ENRGridRoomType::Combat, PathLength);
+	Types[0] = ENRGridRoomType::Start;
+	Types[BossIndex] = ENRGridRoomType::Boss;
 	if (Settings.bRequireElite)
 	{
-		Layout.Rooms[BossIndex - 1].RoomType = ENRGridRoomType::Elite;
+		Types[BossIndex - 1] = ENRGridRoomType::Elite;
 	}
 	if (Settings.bRequireSafe)
 	{
 		// Middle of what lies between the start and the elite (or the boss).
 		const int32 LastFree = BossIndex - (Settings.bRequireElite ? 2 : 1);
-		Layout.Rooms[FMath::Clamp((1 + LastFree) / 2, 1, LastFree)].RoomType = ENRGridRoomType::Safe;
+		Types[FMath::Clamp((1 + LastFree) / 2, 1, LastFree)] = ENRGridRoomType::Safe;
+	}
+
+	// Rooms placed so far (index = room id), the doorways each one uses, and which room covers
+	// each cell.
+	TArray<FPlacement> Placed;
+	TArray<TArray<FNRRoomPort>> Used;
+	TMap<FIntPoint, int32> RoomAt;
+	auto Fits = [&](const FShape& Shape, const FIntPoint& Anchor)
+	{
+		for (int32 Y = 0; Y < Shape.Size.Y; ++Y)
+		{
+			for (int32 X = 0; X < Shape.Size.X; ++X)
+			{
+				const FIntPoint Cell(Anchor.X + X, Anchor.Y + Y);
+				if (!InGrid(Settings, Cell) || RoomAt.Contains(Cell))
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	};
+	auto Place = [&](const FPlacement& Placement)
+	{
+		const int32 Index = Placed.Add(Placement);
+		TArray<FNRRoomPort>& Mine = Used.AddDefaulted_GetRef();
+		if (Placement.Parent != INDEX_NONE)
+		{
+			Mine.Add(Placement.Entry);
+			Used[Placement.Parent].Add(Placement.Exit);
+		}
+		for (int32 Y = 0; Y < Placement.Shape->Size.Y; ++Y)
+		{
+			for (int32 X = 0; X < Placement.Shape->Size.X; ++X)
+			{
+				RoomAt.Add(FIntPoint(Placement.Anchor.X + X, Placement.Anchor.Y + Y), Index);
+			}
+		}
+	};
+	// Takes back the last room placed (the main path search only ever removes its newest room).
+	auto Unplace = [&]()
+	{
+		const FPlacement Last = Placed.Pop();
+		Used.Pop();
+		if (Last.Parent != INDEX_NONE)
+		{
+			Used[Last.Parent].Pop();
+		}
+		for (int32 Y = 0; Y < Last.Shape->Size.Y; ++Y)
+		{
+			for (int32 X = 0; X < Last.Shape->Size.X; ++X)
+			{
+				RoomAt.Remove(FIntPoint(Last.Anchor.X + X, Last.Anchor.Y + Y));
+			}
+		}
+	};
+	// Every way a room of Type can stand against one doorway of a placed room, meeting it with
+	// a doorway of its own - as long as some template of the placed room still has every
+	// doorway it would then use.
+	auto OptionsAt = [&](int32 Parent, const FNRRoomPort& Exit, ENRGridRoomType Type, TArray<FPlacement>& Out)
+	{
+		const FIntPoint FromCell = Placed[Parent].Anchor + Exit.Cell;
+		const FIntPoint ToCell = FromCell + NRGrid::ToOffset(Exit.Side);
+		if (!InGrid(Settings, ToCell) || RoomAt.Contains(ToCell))
+		{
+			return;
+		}
+		TArray<FNRRoomPort> ParentUsed = Used[Parent];
+		ParentUsed.Add(Exit);
+		if (!Placed[Parent].Shape->Covers(ParentUsed))
+		{
+			return;
+		}
+		const ENRGridDirection EntrySide = NRGrid::Opposite(Exit.Side);
+		for (const FShape& Shape : Catalog.Shapes[static_cast<int32>(Type)])
+		{
+			for (const FNRRoomPort& Entry : Shape.Ports)
+			{
+				const FIntPoint Anchor = ToCell - Entry.Cell;
+				// The boss keeps its distance from the start room.
+				if (Type == ENRGridRoomType::Boss && Placed.Num() > 0
+					&& FootprintDistance(Anchor, Shape.Size, Placed[0].Anchor, Placed[0].Shape->Size) < Settings.MinStartBossDistance)
+				{
+					continue;
+				}
+				if (Entry.Side == EntrySide && Fits(Shape, Anchor))
+				{
+					FPlacement& Option = Out.AddDefaulted_GetRef();
+					Option.Shape = &Shape;
+					Option.Anchor = Anchor;
+					Option.Parent = Parent;
+					Option.Exit = Exit;
+					Option.Entry = Entry;
+					Option.FromCell = FromCell;
+					Option.ToCell = ToCell;
+				}
+			}
+		}
+	};
+
+	// 1. Main path: depth-first, one frame per room with its options in weighted random order.
+	struct FFrame
+	{
+		TArray<FPlacement> Options;
+		int32 Next = 0;
+		bool bPlaced = false;
+	};
+	TArray<FFrame> Frames;
+	{
+		FFrame& First = Frames.AddDefaulted_GetRef();
+		for (const FShape& Shape : Catalog.Shapes[static_cast<int32>(ENRGridRoomType::Start)])
+		{
+			for (int32 Y = 0; Y + Shape.Size.Y <= Settings.GridSize.Y; ++Y)
+			{
+				for (int32 X = 0; X + Shape.Size.X <= Settings.GridSize.X; ++X)
+				{
+					FPlacement& Option = First.Options.AddDefaulted_GetRef();
+					Option.Shape = &Shape;
+					Option.Anchor = FIntPoint(X, Y);
+				}
+			}
+		}
+		WeightedOrder(First.Options, Stream);
+	}
+	int32 Budget = Settings.MainPathSearchBudget;
+	while (true)
+	{
+		if (Frames.Num() == 0 || --Budget < 0)
+		{
+			OutReason = TEXT("main path walk ran out of room");
+			return false;
+		}
+		const int32 Index = Frames.Num() - 1;
+		FFrame& Top = Frames.Last();
+		if (Top.bPlaced)
+		{
+			Unplace();
+			Top.bPlaced = false;
+		}
+		if (Top.Next >= Top.Options.Num())
+		{
+			Frames.Pop();
+			continue;
+		}
+		const FPlacement Option = Top.Options[Top.Next++];
+		if (!Fits(*Option.Shape, Option.Anchor))
+		{
+			continue;
+		}
+		Place(Option);
+		Top.bPlaced = true;
+		if (Index + 1 == PathLength)
+		{
+			break;
+		}
+
+		FFrame Next;
+		for (const FNRRoomPort& Exit : Option.Shape->Ports)
+		{
+			OptionsAt(Index, Exit, Types[Index + 1], Next.Options);
+		}
+		WeightedOrder(Next.Options, Stream);
+		Frames.Add(MoveTemp(Next));
+	}
+
+	TArray<int32> Depth;
+	Depth.Init(0, PathLength);
+
+	// 2. Branches against free doorways of any room but the boss.
+	while (Placed.Num() < TargetRooms)
+	{
+		struct FExit
+		{
+			int32 Room;
+			FNRRoomPort Port;
+		};
+		TArray<FExit> Exits;
+		for (int32 Room = 0; Room < Placed.Num(); ++Room)
+		{
+			// The boss keeps its one corridor; the start room stops at its limit.
+			if (Room == BossIndex || Depth[Room] >= Settings.MaxBranchDepth
+				|| (Room == 0 && Used[Room].Num() >= Settings.MaxStartConnections))
+			{
+				continue;
+			}
+			for (const FNRRoomPort& Port : Placed[Room].Shape->Ports)
+			{
+				const FIntPoint Cell = Placed[Room].Anchor + Port.Cell + NRGrid::ToOffset(Port.Side);
+				if (InGrid(Settings, Cell) && !RoomAt.Contains(Cell))
+				{
+					Exits.Add({ Room, Port });
+				}
+			}
+		}
+
+		bool bPlaced = false;
+		while (Exits.Num() > 0 && !bPlaced)
+		{
+			const int32 Pick = Stream.RandRange(0, Exits.Num() - 1);
+			TArray<FPlacement> Options;
+			OptionsAt(Exits[Pick].Room, Exits[Pick].Port, ENRGridRoomType::Combat, Options);
+			if (Options.Num() == 0)
+			{
+				Exits.RemoveAt(Pick);
+				continue;
+			}
+			const FPlacement Choice = Options[PickWeighted(OptionWeights(Options), Stream)];
+			Place(Choice);
+			Types.Add(ENRGridRoomType::Combat);
+			Depth.Add(Depth[Choice.Parent] + 1);
+			bPlaced = true;
+		}
+		if (!bPlaced)
+		{
+			OutReason = TEXT("no free place left for a branch");
+			return false;
+		}
+	}
+
+	FNRGeneratedLayout Layout;
+	Layout.GeneratorVersion = Version;
+	for (int32 Index = 0; Index < Placed.Num(); ++Index)
+	{
+		const FPlacement& Placement = Placed[Index];
+		FNRGeneratedRoom& Room = Layout.Rooms.AddDefaulted_GetRef();
+		Room.RoomId = Index;
+		Room.Cell = Placement.Anchor;
+		Room.Footprint = Placement.Shape->Size;
+		Room.RoomType = Types[Index];
+		Room.MainPathIndex = Index < PathLength ? Index : INDEX_NONE;
+		if (Placement.Parent != INDEX_NONE)
+		{
+			AddConnection(Layout, Placement.Parent, Index, Placement.FromCell, Placement.ToCell);
+		}
 	}
 	Layout.StartRoomId = 0;
 	Layout.BossRoomId = BossIndex;
 
-	// 2. Branches off any room but the boss, into free neighbouring cells.
-	while (Layout.Rooms.Num() < TargetRooms)
-	{
-		TArray<TPair<int32, FIntPoint>> Candidates;
-		for (int32 Index = 0; Index < Layout.Rooms.Num(); ++Index)
-		{
-			if (Index == BossIndex || Depth[Index] >= Settings.MaxBranchDepth)
-			{
-				continue;
-			}
-			for (int32 Dir = 0; Dir < 4; ++Dir)
-			{
-				const FIntPoint Cell = Layout.Rooms[Index].Cell + NRGrid::ToOffset(static_cast<ENRGridDirection>(Dir));
-				if (InGrid(Settings, Cell) && !RoomAt.Contains(Cell))
-				{
-					Candidates.Emplace(Index, Cell);
-				}
-			}
-		}
-		if (Candidates.Num() == 0)
-		{
-			OutReason = TEXT("no free cell left for a branch");
-			return false;
-		}
-
-		const TPair<int32, FIntPoint>& Pick = Candidates[Stream.RandRange(0, Candidates.Num() - 1)];
-		const int32 NewIndex = Layout.Rooms.Num();
-		FNRGeneratedRoom& Room = Layout.Rooms.AddDefaulted_GetRef();
-		Room.RoomId = NewIndex;
-		Room.Cell = Pick.Value;
-		Depth.Add(Depth[Pick.Key] + 1);
-		RoomAt.Add(Room.Cell, NewIndex);
-		AddConnection(Layout, Pick.Key, NewIndex);
-	}
-
-	// 3. Loops: extra corridors between neighbours, never to the boss, never around a
-	//    required room.
+	// 3. Loops: extra corridors between rooms facing each other doorway to doorway, never to
+	//    the boss, never around a required room.
 	if (NeedsLoop(Settings.Shape))
 	{
 		const int32 SafeIndex = FindOfType(Layout, ENRGridRoomType::Safe);
@@ -366,28 +922,48 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, int3
 		const int32 LoopTarget = Stream.RandRange(Settings.MinLoops, Settings.MaxLoops);
 		for (int32 Loop = 0; Loop < LoopTarget; ++Loop)
 		{
-			TArray<TPair<int32, int32>> Candidates;
-			for (int32 A = 0; A < Layout.Rooms.Num(); ++A)
+			struct FLink
 			{
-				for (int32 Dir = 0; Dir < 2; ++Dir)
+				int32 A;
+				int32 B;
+				FNRRoomPort PortA;
+				FNRRoomPort PortB;
+				FIntPoint CellA;
+				FIntPoint CellB;
+			};
+			TArray<FLink> Candidates;
+			for (int32 A = 0; A < Placed.Num(); ++A)
+			{
+				for (const FNRRoomPort& PortA : Placed[A].Shape->Ports)
 				{
-					// North and East only, so each neighbouring pair is seen once.
-					const FIntPoint Cell = Layout.Rooms[A].Cell + NRGrid::ToOffset(Dir == 0 ? ENRGridDirection::North : ENRGridDirection::East);
-					const int32* B = RoomAt.Find(Cell);
-					if (!B || A == BossIndex || *B == BossIndex || HasConnection(Layout, A, *B))
+					const FIntPoint CellA = Placed[A].Anchor + PortA.Cell;
+					const FIntPoint CellB = CellA + NRGrid::ToOffset(PortA.Side);
+					const int32* B = RoomAt.Find(CellB);
+					// Each pair once, from its lower room.
+					if (!B || *B <= A || A == BossIndex || *B == BossIndex || HasConnection(Layout, A, *B)
+						|| (A == 0 && Used[A].Num() >= Settings.MaxStartConnections))
+					{
+						continue;
+					}
+					const FNRRoomPort PortB = MakePort(CellB - Placed[*B].Anchor, NRGrid::Opposite(PortA.Side));
+					TArray<FNRRoomPort> UsedA = Used[A];
+					TArray<FNRRoomPort> UsedB = Used[*B];
+					UsedA.Add(PortA);
+					UsedB.Add(PortB);
+					if (!Placed[*B].Shape->HasPort(PortB) || !Placed[A].Shape->Covers(UsedA) || !Placed[*B].Shape->Covers(UsedB))
 					{
 						continue;
 					}
 
 					FNRGeneratedLayout Trial = Layout;
-					AddConnection(Trial, A, *B);
+					AddConnection(Trial, A, *B, CellA, CellB);
 					const TArray<TArray<int32>> Neighbours = Adjacency(Trial, IndexRooms(Trial));
 					if ((SafeIndex != INDEX_NONE && Reaches(Neighbours, 0, BossIndex, SafeIndex))
 						|| (EliteIndex != INDEX_NONE && Reaches(Neighbours, 0, BossIndex, EliteIndex)))
 					{
 						continue;
 					}
-					Candidates.Emplace(A, *B);
+					Candidates.Add({ A, *B, PortA, PortB, CellA, CellB });
 				}
 			}
 			if (Candidates.Num() == 0)
@@ -399,25 +975,38 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, int3
 				}
 				break;
 			}
-			const TPair<int32, int32>& Pick = Candidates[Stream.RandRange(0, Candidates.Num() - 1)];
-			AddConnection(Layout, Pick.Key, Pick.Value);
+			const FLink Pick = Candidates[Stream.RandRange(0, Candidates.Num() - 1)];
+			AddConnection(Layout, Pick.A, Pick.B, Pick.CellA, Pick.CellB);
+			Used[Pick.A].Add(Pick.PortA);
+			Used[Pick.B].Add(Pick.PortB);
 		}
 	}
 
-	// Doorway masks for template selection.
+	// 4. Templates: for every room, a turn of a template of its shape with every doorway it uses.
+	for (int32 Index = 0; Index < Placed.Num(); ++Index)
+	{
+		const FTurnedRoom* Turned = PickTurn(*Placed[Index].Shape, Used[Index], Templates, Stream);
+		if (!Turned)
+		{
+			OutReason = FString::Printf(TEXT("no template has every doorway room %d uses"), Index);
+			return false;
+		}
+		Layout.Rooms[Index].TemplateIndex = InTemplates.Num() > 0 ? Turned->Template : INDEX_NONE;
+		Layout.Rooms[Index].RotationSteps = Turned->Steps;
+	}
+
+	// Doorway directions, for logs and one-cell rooms.
 	for (const FNRGeneratedConnection& Connection : Layout.Connections)
 	{
-		FNRGeneratedRoom& A = Layout.Rooms[Connection.RoomA];
-		FNRGeneratedRoom& B = Layout.Rooms[Connection.RoomB];
 		ENRGridDirection Direction;
-		if (NRGrid::DirectionBetween(A.Cell, B.Cell, Direction))
+		if (NRGrid::DirectionBetween(Connection.CellA, Connection.CellB, Direction))
 		{
-			A.ConnectionMask |= 1 << static_cast<int32>(Direction);
-			B.ConnectionMask |= 1 << static_cast<int32>(NRGrid::Opposite(Direction));
+			Layout.Rooms[Connection.RoomA].ConnectionMask |= 1 << static_cast<int32>(Direction);
+			Layout.Rooms[Connection.RoomB].ConnectionMask |= 1 << static_cast<int32>(NRGrid::Opposite(Direction));
 		}
 	}
 
-	const TArray<FString> Problems = Validate(Settings, Layout);
+	const TArray<FString> Problems = Validate(Settings, InTemplates, Layout);
 	if (Problems.Num() > 0)
 	{
 		OutReason = FString::Printf(TEXT("invalid result: %s"), *Problems[0]);
@@ -427,42 +1016,93 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, int3
 	return true;
 }
 
-TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settings, const FNRGeneratedLayout& Layout)
+TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& InTemplates, const FNRGeneratedLayout& Layout)
 {
 	using namespace NRGridGen;
 	TArray<FString> Problems;
 	const TMap<int32, int32> IndexById = IndexRooms(Layout);
+	const TArray<FNRRoomTemplateDesc> Templates = Effective(InTemplates);
 
 	if (IndexById.Num() != Layout.Rooms.Num())
 	{
 		Problems.Add(TEXT("duplicate room id"));
 	}
-	TSet<FIntPoint> Cells;
-	for (const FNRGeneratedRoom& Room : Layout.Rooms)
+
+	// Cells and templates.
+	TMap<FIntPoint, int32> RoomAt;
+	TArray<TOptional<FTurnedRoom>> Turned;
+	Turned.SetNum(Layout.Rooms.Num());
+	for (int32 Index = 0; Index < Layout.Rooms.Num(); ++Index)
 	{
-		bool bDuplicate = false;
-		Cells.Add(Room.Cell, &bDuplicate);
-		if (bDuplicate)
+		const FNRGeneratedRoom& Room = Layout.Rooms[Index];
+		if (Room.Footprint.X < 1 || Room.Footprint.Y < 1)
 		{
-			Problems.Add(FString::Printf(TEXT("two rooms in cell %d,%d"), Room.Cell.X, Room.Cell.Y));
+			Problems.Add(FString::Printf(TEXT("room %d has footprint %dx%d"), Room.RoomId, Room.Footprint.X, Room.Footprint.Y));
+			continue;
 		}
-		if (!InGrid(Settings, Room.Cell))
+		for (int32 Y = 0; Y < Room.Footprint.Y; ++Y)
 		{
-			Problems.Add(FString::Printf(TEXT("room %d outside the grid"), Room.RoomId));
+			for (int32 X = 0; X < Room.Footprint.X; ++X)
+			{
+				const FIntPoint Cell(Room.Cell.X + X, Room.Cell.Y + Y);
+				if (!InGrid(Settings, Cell))
+				{
+					Problems.Add(FString::Printf(TEXT("room %d reaches outside the grid at %d,%d"), Room.RoomId, Cell.X, Cell.Y));
+				}
+				if (const int32* Other = RoomAt.Find(Cell))
+				{
+					Problems.Add(FString::Printf(TEXT("rooms %d and %d overlap at %d,%d"), Layout.Rooms[*Other].RoomId, Room.RoomId, Cell.X, Cell.Y));
+				}
+				else
+				{
+					RoomAt.Add(Cell, Index);
+				}
+			}
 		}
+
+		const int32 TemplateIndex = InTemplates.Num() > 0 ? Room.TemplateIndex : 0;
+		if (InTemplates.Num() == 0 && Room.TemplateIndex != INDEX_NONE)
+		{
+			Problems.Add(FString::Printf(TEXT("room %d names template %d but there are no templates"), Room.RoomId, Room.TemplateIndex));
+			continue;
+		}
+		if (!Templates.IsValidIndex(TemplateIndex))
+		{
+			Problems.Add(FString::Printf(TEXT("room %d has no template"), Room.RoomId));
+			continue;
+		}
+		const FNRRoomTemplateDesc& Template = Templates[TemplateIndex];
+		if (!(Template.TypeMask & TypeBit(Room.RoomType)))
+		{
+			Problems.Add(FString::Printf(TEXT("room %d: template %d does not allow %s"), Room.RoomId, TemplateIndex, *TypeName(Room.RoomType)));
+		}
+		if (Room.RotationSteps < 0 || Room.RotationSteps > 3 || !(Template.RotationMask & (1 << Room.RotationSteps)))
+		{
+			Problems.Add(FString::Printf(TEXT("room %d: template %d does not allow %d quarter turn(s)"), Room.RoomId, TemplateIndex, Room.RotationSteps));
+			continue;
+		}
+		const FIntPoint Size = NRGrid::TurnFootprint(Template.Footprint, Room.RotationSteps);
+		if (Size != Room.Footprint)
+		{
+			Problems.Add(FString::Printf(TEXT("room %d covers %dx%d, its template turned %d covers %dx%d"), Room.RoomId,
+				Room.Footprint.X, Room.Footprint.Y, Room.RotationSteps, Size.X, Size.Y));
+			continue;
+		}
+		Turned[Index] = Turn(Template, TemplateIndex, Room.RotationSteps);
 	}
 	if (Layout.Rooms.Num() < Settings.MinRooms || Layout.Rooms.Num() > Settings.MaxRooms)
 	{
 		Problems.Add(FString::Printf(TEXT("%d rooms, wanted %d-%d"), Layout.Rooms.Num(), Settings.MinRooms, Settings.MaxRooms));
 	}
 
-	// Corridors.
+	// Corridors: between neighbouring cells of the two rooms, doorway to doorway.
 	TSet<TPair<int32, int32>> Pairs;
+	TArray<uint8> Masks;
+	Masks.Init(0, Layout.Rooms.Num());
 	for (const FNRGeneratedConnection& Connection : Layout.Connections)
 	{
 		const int32* A = IndexById.Find(Connection.RoomA);
 		const int32* B = IndexById.Find(Connection.RoomB);
-		ENRGridDirection Direction;
 		if (!A || !B)
 		{
 			Problems.Add(FString::Printf(TEXT("corridor %d-%d to a missing room"), Connection.RoomA, Connection.RoomB));
@@ -472,30 +1112,38 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 		{
 			Problems.Add(FString::Printf(TEXT("corridor %d-%d not in order"), Connection.RoomA, Connection.RoomB));
 		}
-		if (!NRGrid::DirectionBetween(Layout.Rooms[*A].Cell, Layout.Rooms[*B].Cell, Direction))
-		{
-			Problems.Add(FString::Printf(TEXT("corridor %d-%d joins rooms that are not neighbours"), Connection.RoomA, Connection.RoomB));
-		}
 		bool bDuplicate = false;
 		Pairs.Add(TPair<int32, int32>(Connection.RoomA, Connection.RoomB), &bDuplicate);
 		if (bDuplicate)
 		{
 			Problems.Add(FString::Printf(TEXT("corridor %d-%d twice"), Connection.RoomA, Connection.RoomB));
 		}
-	}
 
-	// Doorway masks agree with the corridors.
-	TArray<uint8> Masks;
-	Masks.Init(0, Layout.Rooms.Num());
-	for (const FNRGeneratedConnection& Connection : Layout.Connections)
-	{
-		const int32* A = IndexById.Find(Connection.RoomA);
-		const int32* B = IndexById.Find(Connection.RoomB);
+		const FNRGeneratedRoom& RoomA = Layout.Rooms[*A];
+		const FNRGeneratedRoom& RoomB = Layout.Rooms[*B];
 		ENRGridDirection Direction;
-		if (A && B && NRGrid::DirectionBetween(Layout.Rooms[*A].Cell, Layout.Rooms[*B].Cell, Direction))
+		if (!RoomA.Covers(Connection.CellA) || !RoomB.Covers(Connection.CellB))
 		{
-			Masks[*A] |= 1 << static_cast<int32>(Direction);
-			Masks[*B] |= 1 << static_cast<int32>(NRGrid::Opposite(Direction));
+			Problems.Add(FString::Printf(TEXT("corridor %d-%d runs from cells %d,%d to %d,%d outside its rooms"), Connection.RoomA, Connection.RoomB,
+				Connection.CellA.X, Connection.CellA.Y, Connection.CellB.X, Connection.CellB.Y));
+			continue;
+		}
+		if (!NRGrid::DirectionBetween(Connection.CellA, Connection.CellB, Direction))
+		{
+			Problems.Add(FString::Printf(TEXT("corridor %d-%d joins cells that are not neighbours"), Connection.RoomA, Connection.RoomB));
+			continue;
+		}
+		Masks[*A] |= 1 << static_cast<int32>(Direction);
+		Masks[*B] |= 1 << static_cast<int32>(NRGrid::Opposite(Direction));
+		if (Turned[*A].IsSet() && !Turned[*A]->HasPort(Connection.CellA - RoomA.Cell, Direction))
+		{
+			Problems.Add(FString::Printf(TEXT("corridor %d-%d leaves room %d at %d,%d %s where it has no doorway"), Connection.RoomA, Connection.RoomB,
+				RoomA.RoomId, Connection.CellA.X, Connection.CellA.Y, NRGrid::Letter(Direction)));
+		}
+		if (Turned[*B].IsSet() && !Turned[*B]->HasPort(Connection.CellB - RoomB.Cell, NRGrid::Opposite(Direction)))
+		{
+			Problems.Add(FString::Printf(TEXT("corridor %d-%d enters room %d at %d,%d %s where it has no doorway"), Connection.RoomA, Connection.RoomB,
+				RoomB.RoomId, Connection.CellB.X, Connection.CellB.Y, NRGrid::Letter(NRGrid::Opposite(Direction))));
 		}
 	}
 	for (int32 Index = 0; Index < Layout.Rooms.Num(); ++Index)
@@ -546,6 +1194,15 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 	if (Neighbours[*BossIndex].Num() != 1)
 	{
 		Problems.Add(FString::Printf(TEXT("boss has %d corridors, wanted 1"), Neighbours[*BossIndex].Num()));
+	}
+	const int32 StartBoss = CellDistance(Layout.Rooms[*StartIndex], Layout.Rooms[*BossIndex]);
+	if (StartBoss < Settings.MinStartBossDistance)
+	{
+		Problems.Add(FString::Printf(TEXT("start and boss are %d cell(s) apart, at least %d wanted"), StartBoss, Settings.MinStartBossDistance));
+	}
+	if (Neighbours[*StartIndex].Num() > Settings.MaxStartConnections)
+	{
+		Problems.Add(FString::Printf(TEXT("start has %d corridors, at most %d allowed"), Neighbours[*StartIndex].Num(), Settings.MaxStartConnections));
 	}
 	for (ENRGridRoomType Required : { ENRGridRoomType::Safe, ENRGridRoomType::Elite })
 	{
@@ -637,6 +1294,11 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 	return Problems;
 }
 
+int32 FNRGridLayoutGenerator::CellDistance(const FNRGeneratedRoom& A, const FNRGeneratedRoom& B)
+{
+	return NRGridGen::FootprintDistance(A.Cell, A.Footprint, B.Cell, B.Footprint);
+}
+
 int32 FNRGridLayoutGenerator::CountLoops(const FNRGeneratedLayout& Layout)
 {
 	return Layout.Rooms.Num() > 0 ? FMath::Max(Layout.Connections.Num() - Layout.Rooms.Num() + 1, 0) : 0;
@@ -666,7 +1328,13 @@ FString FNRGridLayoutGenerator::ToAscii(const FNRMapGenSettings& Settings, const
 	}
 
 	// Row 0 of the text is the grid's top (largest Y), so north is up.
-	auto At = [&Rows, Height](int32 X, int32 Y) -> TCHAR& { return Rows[Height - 1 - Y][X]; };
+	auto Put = [&Rows, Width, Height](int32 X, int32 Y, TCHAR Mark)
+	{
+		if (X >= 0 && Y >= 0 && X < Width && Y < Height)
+		{
+			Rows[Height - 1 - Y][X] = Mark;
+		}
+	};
 	for (const FNRGeneratedRoom& Room : Layout.Rooms)
 	{
 		TCHAR Mark = Room.MainPathIndex == INDEX_NONE ? TEXT('b') : TEXT('C');
@@ -678,16 +1346,19 @@ FString FNRGridLayoutGenerator::ToAscii(const FNRMapGenSettings& Settings, const
 		case ENRGridRoomType::Boss: Mark = TEXT('B'); break;
 		default: break;
 		}
-		At(Room.Cell.X * 2, Room.Cell.Y * 2) = Mark;
+		// The room's cells, and = over the gaps between them.
+		for (int32 Y = 0; Y < Room.Footprint.Y * 2 - 1; ++Y)
+		{
+			for (int32 X = 0; X < Room.Footprint.X * 2 - 1; ++X)
+			{
+				Put(Room.Cell.X * 2 + X, Room.Cell.Y * 2 + Y, (X % 2 == 0 && Y % 2 == 0) ? Mark : TEXT('='));
+			}
+		}
 	}
 	for (const FNRGeneratedConnection& Connection : Layout.Connections)
 	{
-		const FNRGeneratedRoom* A = Layout.FindRoom(Connection.RoomA);
-		const FNRGeneratedRoom* B = Layout.FindRoom(Connection.RoomB);
-		if (A && B)
-		{
-			At(A->Cell.X + B->Cell.X, A->Cell.Y + B->Cell.Y) = A->Cell.X == B->Cell.X ? TEXT('|') : TEXT('-');
-		}
+		Put(Connection.CellA.X + Connection.CellB.X, Connection.CellA.Y + Connection.CellB.Y,
+			Connection.CellA.X == Connection.CellB.X ? TEXT('|') : TEXT('-'));
 	}
 	return FString::Join(Rows, TEXT("\n"));
 }
@@ -703,15 +1374,18 @@ bool FNRGridLayoutGenerator::Identical(const FNRGeneratedLayout& A, const FNRGen
 	{
 		const FNRGeneratedRoom& RoomA = A.Rooms[Index];
 		const FNRGeneratedRoom& RoomB = B.Rooms[Index];
-		if (RoomA.RoomId != RoomB.RoomId || RoomA.Cell != RoomB.Cell || RoomA.RoomType != RoomB.RoomType
-			|| RoomA.ConnectionMask != RoomB.ConnectionMask || RoomA.MainPathIndex != RoomB.MainPathIndex)
+		if (RoomA.RoomId != RoomB.RoomId || RoomA.Cell != RoomB.Cell || RoomA.Footprint != RoomB.Footprint || RoomA.RoomType != RoomB.RoomType
+			|| RoomA.ConnectionMask != RoomB.ConnectionMask || RoomA.MainPathIndex != RoomB.MainPathIndex
+			|| RoomA.TemplateIndex != RoomB.TemplateIndex || RoomA.RotationSteps != RoomB.RotationSteps)
 		{
 			return false;
 		}
 	}
 	for (int32 Index = 0; Index < A.Connections.Num(); ++Index)
 	{
-		if (A.Connections[Index].RoomA != B.Connections[Index].RoomA || A.Connections[Index].RoomB != B.Connections[Index].RoomB)
+		const FNRGeneratedConnection& LinkA = A.Connections[Index];
+		const FNRGeneratedConnection& LinkB = B.Connections[Index];
+		if (LinkA.RoomA != LinkB.RoomA || LinkA.RoomB != LinkB.RoomB || LinkA.CellA != LinkB.CellA || LinkA.CellB != LinkB.CellB)
 		{
 			return false;
 		}
@@ -727,91 +1401,4 @@ FString FNRGridLayoutGenerator::MaskToString(uint8 Mask)
 		Text += (Mask & (1 << Dir)) ? NRGrid::Letter(static_cast<ENRGridDirection>(Dir)) : TEXT("-");
 	}
 	return Text;
-}
-
-bool FNRGridLayoutGenerator::AssignTemplates(const TArray<FNRRoomTemplateDesc>& Templates, FNRGeneratedLayout& Layout, FString& OutError)
-{
-	// Its own stream, so choosing templates never changes the graph a seed gives.
-	FRandomStream Stream(static_cast<int32>(HashCombine(HashCombine(GetTypeHash(Layout.Seed), GetTypeHash(Layout.Attempt)), GetTypeHash(0x7E3A11))));
-	const UEnum* TypeEnum = StaticEnum<ENRGridRoomType>();
-
-	for (FNRGeneratedRoom& Room : Layout.Rooms)
-	{
-		struct FOption
-		{
-			int32 Template;
-			int32 Steps;
-			float Weight;
-		};
-		TArray<FOption> Options;
-		float Total = 0.0f;
-		for (int32 Index = 0; Index < Templates.Num(); ++Index)
-		{
-			const FNRRoomTemplateDesc& Template = Templates[Index];
-			if (Template.Weight <= 0.0f || !(Template.TypeMask & (1 << static_cast<int32>(Room.RoomType))))
-			{
-				continue;
-			}
-			for (int32 Steps = 0; Steps < 4; ++Steps)
-			{
-				const uint8 Turned = NRGrid::RotateMask(Template.PortMask, Steps);
-				if ((Template.RotationMask & (1 << Steps)) && (Turned & Room.ConnectionMask) == Room.ConnectionMask)
-				{
-					Options.Add({ Index, Steps, Template.Weight });
-					Total += Template.Weight;
-				}
-			}
-		}
-
-		if (Options.Num() == 0)
-		{
-			OutError = FString::Printf(TEXT("no room template fits room %d (%s, doorways %s)"), Room.RoomId,
-				*TypeEnum->GetNameStringByValue(static_cast<int64>(Room.RoomType)), *MaskToString(Room.ConnectionMask));
-			return false;
-		}
-
-		float Roll = Stream.FRand() * Total;
-		const FOption* Pick = &Options.Last();
-		for (const FOption& Option : Options)
-		{
-			if (Roll < Option.Weight)
-			{
-				Pick = &Option;
-				break;
-			}
-			Roll -= Option.Weight;
-		}
-		Room.TemplateIndex = Pick->Template;
-		Room.RotationSteps = Pick->Steps;
-	}
-	return true;
-}
-
-TArray<FString> FNRGridLayoutGenerator::ValidateTemplates(const TArray<FNRRoomTemplateDesc>& Templates, const FNRGeneratedLayout& Layout)
-{
-	TArray<FString> Problems;
-	for (const FNRGeneratedRoom& Room : Layout.Rooms)
-	{
-		if (!Templates.IsValidIndex(Room.TemplateIndex))
-		{
-			Problems.Add(FString::Printf(TEXT("room %d has no template"), Room.RoomId));
-			continue;
-		}
-		const FNRRoomTemplateDesc& Template = Templates[Room.TemplateIndex];
-		const uint8 Turned = NRGrid::RotateMask(Template.PortMask, Room.RotationSteps);
-		if (!(Template.TypeMask & (1 << static_cast<int32>(Room.RoomType))))
-		{
-			Problems.Add(FString::Printf(TEXT("room %d: template %d does not allow its type"), Room.RoomId, Room.TemplateIndex));
-		}
-		if (!(Template.RotationMask & (1 << Room.RotationSteps)))
-		{
-			Problems.Add(FString::Printf(TEXT("room %d: template %d does not allow %d quarter turn(s)"), Room.RoomId, Room.TemplateIndex, Room.RotationSteps));
-		}
-		if ((Turned & Room.ConnectionMask) != Room.ConnectionMask)
-		{
-			Problems.Add(FString::Printf(TEXT("room %d: template %d turned %d has doorways %s, needs %s"), Room.RoomId, Room.TemplateIndex,
-				Room.RotationSteps, *MaskToString(Turned), *MaskToString(Room.ConnectionMask)));
-		}
-	}
-	return Problems;
 }

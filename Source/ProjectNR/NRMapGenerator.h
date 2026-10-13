@@ -109,6 +109,12 @@ public:
 	/** World position of a cell's centre, on the floor. */
 	FVector GetCellCenter(const FIntPoint& Cell) const;
 
+	/** World position of a room's centre (the middle of its footprint), on the floor. */
+	FVector GetRoomCenter(const FNRGeneratedRoom& Room) const;
+
+	/** Template descriptions of the Config's rooms, index for index. Empty without a Config. */
+	TArray<FNRRoomTemplateDesc> DescribeTemplates() const;
+
 	/** Logs every module, the doorway and floor checks, navigation and the placement signature. */
 	void LogStatus() const;
 
@@ -120,8 +126,8 @@ public:
 	FString BuildSignature() const;
 
 	/**
-	 * Generates a connection graph only, for debugging (nothing is loaded). Uses Config, or
-	 * InlineSettings without one; ShapeOverride replaces the shape when set.
+	 * Generates a layout only, for debugging (nothing is loaded). Uses Config and its templates,
+	 * or InlineSettings and one-cell rooms without one; ShapeOverride replaces the shape when set.
 	 */
 	bool GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride = {});
 
@@ -172,7 +178,8 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation")
 	bool bStartOnBeginPlay = true;
 
-	/** Moves the player to the start room once the map is ready. */
+	/** Moves the player to the start room once the modules are set up; the map is ready only
+	 *  after the player has arrived there. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation")
 	bool bMovePlayerToStartOnReady = true;
 
@@ -192,9 +199,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Fixed")
 	TSoftObjectPtr<UWorld> CorridorLevel;
 
-	/** Outer size of a room, in cm. Every room template must match it. */
+	/** Outer size of one cell of a room, in cm. Every room template must match it. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Spec", meta = (ClampMin = "100.0"))
-	float RoomSize = 2400.0f;
+	float RoomSize = 3600.0f;
 
 	/** Corridor length when the Config has no corridor template, in cm. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Spec", meta = (ClampMin = "0.0"))
@@ -212,9 +219,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Loading", meta = (ClampMin = "1.0"))
 	float LoadTimeout = 30.0f;
 
-	/** Seconds to wait for navigation to join the start room to the boss room. */
+	/** Seconds to wait for navigation to join the start room to the boss room. A large grid
+	 *  rebuilt in a world that already held a map can take 20-25 s in the editor. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Loading", meta = (ClampMin = "1.0"))
-	float NavigationTimeout = 30.0f;
+	float NavigationTimeout = 60.0f;
 
 	/** How high above the floor DrawLayout draws, in cm. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Debug")
@@ -253,9 +261,6 @@ private:
 
 	ULevelStreamingDynamic* LoadModule(const TSoftObjectPtr<UWorld>& Level, const FTransform& Transform, const FString& Name);
 
-	/** Template descriptions of the Config's rooms, for the chooser. Empty without a Config. */
-	TArray<FNRRoomTemplateDesc> DescribeTemplates() const;
-
 	TSoftObjectPtr<UWorld> GetRoomLevel(const FNRGeneratedRoom& Room) const;
 	TSoftObjectPtr<UWorld> GetCorridorLevel() const;
 	float GetCorridorLength() const;
@@ -266,7 +271,7 @@ private:
 	int32 FindCorridorModule(int32 ConnectionIndex) const;
 
 	FTransform GetRoomTransform(const FNRGeneratedRoom& Room) const;
-	FTransform GetCorridorTransform(const FNRGeneratedRoom& A, const FNRGeneratedRoom& B) const;
+	FTransform GetCorridorTransform(const FNRGeneratedConnection& Connection) const;
 
 	/** Whether navigation joins the start room to the boss room (or the first two rooms). */
 	bool HasNavigationPath(float* OutLength = nullptr, bool* OutBuilding = nullptr) const;

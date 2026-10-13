@@ -63,6 +63,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Room")
 	int32 GetTotalEnemies() const { return RoomEnemies.Num(); }
 
+	/** The room's own enemies, dead ones included. */
+	const TArray<TObjectPtr<AActor>>& GetEnemies() const { return RoomEnemies; }
+
 	/** Seconds since the room was cleared; negative while it is not. */
 	UFUNCTION(BlueprintPure, Category = "Room")
 	float GetTimeSinceCleared() const;

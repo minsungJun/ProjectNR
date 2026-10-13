@@ -88,6 +88,23 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Sensor")
 	bool IsDormant() const { return bDormant; }
 
+	/**
+	 * Shooter just fired along a line passing near us - the moment of the shot, not its flight,
+	 * so a fast round can still be dodged. Called by whoever traced the shot (the game, not this
+	 * module). For ShotFlinchDuration the enemy reads an incoming-shot threat from the side the
+	 * line passes (LinePoint is the line's closest point to us), and the brain dodges away from
+	 * it. A flinch already under way, or one within ShotFlinchCooldown, is not restarted.
+	 * Ignored while dormant or dead.
+	 */
+	void NotifyShotAt(AActor* Shooter, const FVector& LinePoint);
+
+	/**
+	 * A shot by Shooter was heard. Like an ally's alert, the shooter is sensed for AlertDuration
+	 * without being seen. Who hears it is the caller's decision (the room it was fired in).
+	 * Ignored while dormant or dead. True when this is news (no live alert was running).
+	 */
+	bool HearShot(AActor* Shooter);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -102,6 +119,9 @@ protected:
 
 	void UpdateSelfSenses(float DeltaTime);
 
+	/** A shot fired our way: the flinch threat, written over the projectile threats it outweighs. */
+	void UpdateShotSense(float DeltaTime);
+
 	/** Finds the actor to treat as a target and checks range plus line of sight. */
 	AActor* AcquireTarget(const FVector& SelfLocation) const;
 
@@ -110,8 +130,9 @@ protected:
 	UFUNCTION()
 	void HandleOwnerDamaged(float Damage, AActor* DamageInstigator, const FVector& HitDirection);
 
+	/** Raised from 30 m for 36 m rooms, whose diagonal is about 51 m. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor", meta = (ClampMin = "100.0"))
-	float DetectionRange = 3000.0f;
+	float DetectionRange = 4500.0f;
 
 	/** Allies within this distance of a direct sighting are alerted. 0 disables alerting. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Alert", meta = (ClampMin = "0.0"))
@@ -160,6 +181,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Projectile", meta = (ClampMin = "10.0"))
 	float ProjectileMissRadius = 250.0f;
 
+	/** Threat read during a shot flinch: high enough to launch a dodge, below a shot about to land. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Shot", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ShotFlinchThreat = 0.8f;
+
+	/** Seconds one flinch keeps the threat up. Short: a jink, not a retreat. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Shot", meta = (ClampMin = "0.05"))
+	float ShotFlinchDuration = 0.3f;
+
+	/** Seconds after a flinch before another shot can start one, so steady fire does not keep the
+	 *  enemy from ever closing in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Shot", meta = (ClampMin = "0.0"))
+	float ShotFlinchCooldown = 0.5f;
+
+	/** A shot line passing closer to us than this is dead centre: the flinch goes the way we are
+	 *  already moving, or either way, instead of away from the line. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Shot", meta = (ClampMin = "0.0"))
+	float ShotCentreTolerance = 30.0f;
+
 	/** Sensor refresh period. Matches the brain's 20Hz step so no reading is stale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor", meta = (ClampMin = "0.01"))
 	float SensorInterval = 0.05f;
@@ -198,6 +237,12 @@ private:
 
 	TWeakObjectPtr<AActor> AlertTarget;
 	float AlertExpireTime = -1.0f;
+
+	/** The flinch under way: seconds left, which threat side it lights (+1 right, -1 left), and
+	 *  when the next may start. */
+	float ShotFlinchRemaining = 0.0f;
+	int32 ShotFlinchSide = 0;
+	float ShotFlinchReadyTime = 0.0f;
 
 	/** Every live sensor, so alerts reach allies without an overlap query per sighting. */
 	static TArray<TWeakObjectPtr<UEnemySensorComponent>> ActiveSensors;

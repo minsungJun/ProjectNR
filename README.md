@@ -64,12 +64,13 @@ Unreal Engine 5.8 3인칭 액션 프로토타입. **Game Animation Sample**(Move
 | `NRInteractable` / `NRInteractionComponent` | 범용 상호작용(E). 가장 가까운 대상 선택, 샘플 `IA_Interact`보다 우선 |
 | `NRLootChest` | E로 여는 상자. 뚜껑이 열리고 앞에 아이템을 떨어뜨린다 |
 | `NRStatsComponent` / `NRStaminaComponent` / `NRStatsPanel` | 경험치·레벨·스탯 포인트, 스테미나(구르기 15), Tab 메뉴의 스탯 강화 탭 |
-| `NRGridTypes` / `NRMapGenerationConfig` / `NRGridTemplateData` | 그리드 런 타입, 생성 설정, 방·통로 템플릿 DataAsset |
-| `NRGridLayoutGenerator` / `NRGridLayoutTests` | 순수 레이아웃 그래프 생성·검증·템플릿 배정, 자동화 테스트 `ProjectNR.Grid.LayoutGenerator` |
+| `NRGridTypes` / `NRMapGenerationConfig` / `NRGridTemplateData` | 그리드 런 타입, 생성 설정, 방·통로 템플릿 DataAsset(여러 칸 footprint·칸별 출입구) |
+| `NRGridLayoutGenerator` / `NRGridLayoutTests` | 순수 레이아웃 생성(1×1~여러 칸 방 배치, 연결, 템플릿·회전 선택)·검증, 자동화 테스트 `ProjectNR.Grid.LayoutGenerator` |
 | `NRMapGenerator` | 생성 맵을 레벨 인스턴스로 로드·초기화하고 런과 연결 (→ `docs/GRID_RUN.md`) |
+| `NREnemyAwarenessSubsystem` | 적이 플레이어의 사격을 읽는 곳: 발사 순간 레이 근처 적의 회피(flinch), 같은 방 적에게만 들리는 총소리 |
 | `NRPlayerPawn` | 이전 C++ 폰 (비교용) |
 
-`Source/NeuralAI/` — 적 AI: 센서 → 신경망(25뉴런) → 컨트롤러, StateTree 노드, `UHealthComponent`.
+`Source/NeuralAI/` — 적 AI: 센서 → 신경망(25뉴런) → 컨트롤러, StateTree 노드, `UHealthComponent`, 전투 슬롯(`Combat/`: 플레이어 둘레 자리 배정과 공격 토큰).
 
 ## 빌드
 

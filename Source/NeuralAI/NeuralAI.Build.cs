@@ -27,7 +27,9 @@ public class NeuralAI : ModuleRules
 			"GameplayStateTreeModule",
 			// Public: the test player's header exposes UInputAction / UInputMappingContext.
 			"InputCore",
-			"EnhancedInput"
+			"EnhancedInput",
+			// UEnemyCombatSlotSettings (Project Settings > Game > Enemy Combat Slots).
+			"DeveloperSettings"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

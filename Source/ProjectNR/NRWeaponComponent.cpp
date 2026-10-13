@@ -17,6 +17,7 @@
 #include "GameFramework/PlayerController.h"
 #include "NRAimComponent.h"
 #include "NRAttackInput.h"
+#include "NREnemyAwarenessSubsystem.h"
 #include "NRMeleeComponent.h"
 #include "NRProjectiles.h"
 #include "NRWeaponPartComponent.h"
@@ -760,6 +761,15 @@ int32 UNRWeaponComponent::Fire()
 				AnimInstance->Montage_Play(FireMontage, Weapon->FireMontagePlayRate);
 			}
 		}
+	}
+
+	// The bang reaches the enemies of the room it was fired in; the shot's line reaches those it
+	// passes near, who can dodge it now rather than when the round arrives.
+	if (UNREnemyAwarenessSubsystem* Awareness = World->GetSubsystem<UNREnemyAwarenessSubsystem>())
+	{
+		Awareness->NotifyGunshot(GetOwner());
+		Awareness->NotifyShotRay(GetOwner(), MuzzleLocation, FireDirection, SpreadRadians,
+			Weapon->ProjectileClass->GetDefaultObject<AAITestProjectile>()->GetFlightRange());
 	}
 
 	UE_LOG(LogNRWeapon, Log, TEXT("%s fired %s: %d projectile(s), %d crit, %.1f damage total, ammo %d/%d, next in %.2fs"),

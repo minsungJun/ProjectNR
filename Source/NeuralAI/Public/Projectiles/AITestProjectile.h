@@ -51,6 +51,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Projectile")
 	float GetCollisionRadius() const;
 
+	/** How far the shot flies before it is removed, in cm: MaxRange, or speed x lifetime without one. */
+	UFUNCTION(BlueprintPure, Category = "Projectile")
+	float GetFlightRange() const { return MaxRange > 0.0f ? MaxRange : InitialSpeed * LifeSeconds; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

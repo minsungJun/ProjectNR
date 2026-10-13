@@ -4,10 +4,10 @@
 
 ANRRifleBullet::ANRRifleBullet()
 {
-	// The same flight as the original test projectile, with its 5s lifetime restated as the
-	// distance it covered: 2000 cm/s for 5s.
+	// 80 m/s, so a shot lands within about half a second across a 36 m room; it flies 100 m
+	// before it is gone.
 	Damage = 20.0f;
-	InitialSpeed = 2000.0f;
+	InitialSpeed = 8000.0f;
 	CollisionRadius = 12.0f;
 	MaxRange = 10000.0f;
 

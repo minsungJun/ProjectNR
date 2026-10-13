@@ -87,6 +87,7 @@ void UEnemySensorComponent::UpdateSensorData(float DeltaTime)
 
 	UpdateTargetSenses(SelfLocation, Forward, Right);
 	UpdateProjectileSenses(SelfLocation, Owner->GetVelocity(), Forward, Right);
+	UpdateShotSense(DeltaTime);
 	UpdateSelfSenses(DeltaTime);
 }
 
@@ -277,6 +278,74 @@ void UEnemySensorComponent::UpdateProjectileSenses(const FVector& SelfLocation, 
 	}
 }
 
+void UEnemySensorComponent::UpdateShotSense(float DeltaTime)
+{
+	if (ShotFlinchRemaining <= 0.0f)
+	{
+		return;
+	}
+	ShotFlinchRemaining -= DeltaTime;
+	if (bDormant)
+	{
+		ShotFlinchRemaining = 0.0f;
+		return;
+	}
+	// Max, like two real shots: the flinch never weakens a projectile already coming in.
+	float& Threat = ShotFlinchSide > 0 ? SensorData.ProjectileThreatRight : SensorData.ProjectileThreatLeft;
+	Threat = FMath::Max(Threat, ShotFlinchThreat);
+}
+
+void UEnemySensorComponent::NotifyShotAt(AActor* Shooter, const FVector& LinePoint)
+{
+	const UWorld* World = GetWorld();
+	const AActor* Owner = GetOwner();
+	if (!World || !Owner || !Shooter || bDormant || (OwnerHealth && OwnerHealth->IsDead()))
+	{
+		return;
+	}
+	const float Now = World->GetTimeSeconds();
+	if (ShotFlinchRemaining > 0.0f || Now < ShotFlinchReadyTime)
+	{
+		return;
+	}
+
+	// Away from the shot line: a line passing on our right reads as a shot from the right, which
+	// the brain answers by breaking left. Dead centre picks a side too - the way we are already
+	// moving, or either - because a frontal threat splits across both dodges and barely clears
+	// the controller's threshold.
+	const FVector Right = FlattenAndNormalize(Owner->GetActorRightVector());
+	FVector Offset = LinePoint - Owner->GetActorLocation();
+	Offset.Z = 0.0f;
+	const float Side = FVector::DotProduct(Offset, Right);
+	if (FMath::Abs(Side) > ShotCentreTolerance)
+	{
+		ShotFlinchSide = Side > 0.0f ? 1 : -1;
+	}
+	else
+	{
+		// Moving right: the threat goes on the left, so the dodge carries on to the right.
+		const float Drift = FVector::DotProduct(Owner->GetVelocity(), Right);
+		ShotFlinchSide = FMath::Abs(Drift) > 50.0f ? (Drift > 0.0f ? -1 : 1) : (FMath::RandBool() ? 1 : -1);
+	}
+	ShotFlinchRemaining = ShotFlinchDuration;
+	ShotFlinchReadyTime = Now + ShotFlinchDuration + ShotFlinchCooldown;
+	UE_LOG(LogNeuralAI, Log, TEXT("%s saw %s fire (line %.0f cm to the %s): flinching %s"), *GetNameSafe(Owner),
+		*GetNameSafe(Shooter), FMath::Abs(Side), Side > 0.0f ? TEXT("right") : TEXT("left"), ShotFlinchSide > 0 ? TEXT("left") : TEXT("right"));
+}
+
+bool UEnemySensorComponent::HearShot(AActor* Shooter)
+{
+	const UWorld* World = GetWorld();
+	if (!World || !Shooter || bDormant || (OwnerHealth && OwnerHealth->IsDead()))
+	{
+		return false;
+	}
+	const bool bNews = AlertTarget.Get() != Shooter || World->GetTimeSeconds() >= AlertExpireTime;
+	AlertTarget = Shooter;
+	AlertExpireTime = World->GetTimeSeconds() + AlertDuration;
+	return bNews;
+}
+
 void UEnemySensorComponent::UpdateSelfSenses(float DeltaTime)
 {
 	if (OwnerHealth)
@@ -399,6 +468,7 @@ void UEnemySensorComponent::SetDormant(bool bInDormant)
 	{
 		AlertTarget = nullptr;
 		bSawTargetDirectly = false;
+		ShotFlinchRemaining = 0.0f;
 	}
 }
 

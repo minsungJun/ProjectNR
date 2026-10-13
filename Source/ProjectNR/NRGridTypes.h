@@ -30,7 +30,24 @@ enum class ENRGridRoomType : uint8
 	Boss
 };
 
-/** One room of a layout: which cell it occupies and how its template is turned. */
+/** A doorway place on a room's outline: one side of one of its cells. */
+USTRUCT(BlueprintType)
+struct PROJECTNR_API FNRRoomPort
+{
+	GENERATED_BODY()
+
+	/** Cell within the room's footprint, (0, 0) being its south-west corner. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
+	FIntPoint Cell = FIntPoint::ZeroValue;
+
+	/** Side of that cell. Must face out of the footprint. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
+	ENRGridDirection Side = ENRGridDirection::North;
+
+	bool operator==(const FNRRoomPort& Other) const { return Cell == Other.Cell && Side == Other.Side; }
+};
+
+/** One room of a layout: which cells it occupies and how its template is turned. */
 USTRUCT(BlueprintType)
 struct PROJECTNR_API FNRGeneratedRoom
 {
@@ -39,8 +56,13 @@ struct PROJECTNR_API FNRGeneratedRoom
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
 	int32 RoomId = 0;
 
+	/** South-west (lowest X and Y) cell of the room's footprint. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
 	FIntPoint Cell = FIntPoint::ZeroValue;
+
+	/** Cells the room covers along X and Y once turned: (1, 1) for a one-cell room. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid", meta = (ClampMin = "1"))
+	FIntPoint Footprint = FIntPoint(1, 1);
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
 	ENRGridRoomType RoomType = ENRGridRoomType::Combat;
@@ -49,7 +71,8 @@ struct PROJECTNR_API FNRGeneratedRoom
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid", meta = (ClampMin = "0", ClampMax = "3"))
 	int32 RotationSteps = 0;
 
-	/** World directions this room is joined in, one bit per ENRGridDirection. Filled by the generator. */
+	/** World directions this room is joined in, one bit per ENRGridDirection, from any of its
+	 *  cells. Filled by the generator. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Grid")
 	uint8 ConnectionMask = 0;
 
@@ -57,13 +80,21 @@ struct PROJECTNR_API FNRGeneratedRoom
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Grid")
 	int32 MainPathIndex = INDEX_NONE;
 
-	/** Index into the config's room templates, chosen with RotationSteps to fit ConnectionMask.
+	/** Index into the config's room templates, chosen with RotationSteps when the room was placed.
 	 *  INDEX_NONE for a hand-made layout, which uses the generator's fallback room level. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Grid")
 	int32 TemplateIndex = INDEX_NONE;
+
+	bool Covers(const FIntPoint& At) const
+	{
+		return At.X >= Cell.X && At.Y >= Cell.Y && At.X < Cell.X + Footprint.X && At.Y < Cell.Y + Footprint.Y;
+	}
 };
 
-/** A corridor between two rooms in neighbouring cells. Generated ones keep RoomA < RoomB. */
+/**
+ * A corridor between two rooms, across the side two of their cells share. Generated ones keep
+ * RoomA < RoomB. Two rooms have at most one corridor between them.
+ */
 USTRUCT(BlueprintType)
 struct PROJECTNR_API FNRGeneratedConnection
 {
@@ -74,6 +105,14 @@ struct PROJECTNR_API FNRGeneratedConnection
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
 	int32 RoomB = 0;
+
+	/** Cell of RoomA the corridor leaves from. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
+	FIntPoint CellA = FIntPoint::ZeroValue;
+
+	/** Cell of RoomB it arrives at, next to CellA. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
+	FIntPoint CellB = FIntPoint::ZeroValue;
 };
 
 /** A whole map: rooms, the corridors between them, and which rooms start and end the run. */
@@ -98,7 +137,7 @@ struct PROJECTNR_API FNRGeneratedLayout
 	int32 BossRoomId = INDEX_NONE;
 
 	/** Generator version the layout came from. A seed reproduces a layout only for the same
-	 *  settings and version. 0 for a hand-made layout. */
+	 *  settings, templates and version. 0 for a hand-made layout. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Grid")
 	int32 GeneratorVersion = 0;
 
@@ -152,6 +191,40 @@ namespace NRGrid
 	{
 		// +90 yaw is counter-clockwise, one step back in the clockwise list.
 		return static_cast<ENRGridDirection>(((static_cast<int32>(Local) - Steps) % 4 + 4) % 4);
+	}
+
+	/** The template direction that ends up facing World once turned by Steps. */
+	inline ENRGridDirection WorldToLocal(ENRGridDirection World, int32 Steps)
+	{
+		return static_cast<ENRGridDirection>(((static_cast<int32>(World) + Steps) % 4 + 4) % 4);
+	}
+
+	/** A footprint's size once turned by Steps quarter turns: odd turns swap X and Y. */
+	inline FIntPoint TurnFootprint(const FIntPoint& Footprint, int32 Steps)
+	{
+		return (Steps & 1) ? FIntPoint(Footprint.Y, Footprint.X) : Footprint;
+	}
+
+	/**
+	 * Where a cell of a footprint ends up, counted from the turned footprint's south-west corner,
+	 * once the footprint is turned about its centre by Steps quarter turns of yaw.
+	 */
+	inline FIntPoint TurnCell(const FIntPoint& Cell, const FIntPoint& Footprint, int32 Steps)
+	{
+		switch (((Steps % 4) + 4) % 4)
+		{
+		case 1: return FIntPoint(Footprint.Y - 1 - Cell.Y, Cell.X);
+		case 2: return FIntPoint(Footprint.X - 1 - Cell.X, Footprint.Y - 1 - Cell.Y);
+		case 3: return FIntPoint(Cell.Y, Footprint.X - 1 - Cell.X);
+		default: return Cell;
+		}
+	}
+
+	/** The template cell (in its own, unturned footprint) that ends up at Turned. */
+	inline FIntPoint UnturnCell(const FIntPoint& Turned, const FIntPoint& Footprint, int32 Steps)
+	{
+		const int32 Back = (4 - ((Steps % 4) + 4) % 4) % 4;
+		return TurnCell(Turned, TurnFootprint(Footprint, Steps), Back);
 	}
 
 	/** A port mask (one bit per ENRGridDirection, in a template's own frame) once the template
