@@ -20,7 +20,6 @@ namespace
 {
 	/** Seconds without a RequestSlot before a claim lapses. */
 	constexpr float PositionalSlotClaimLapse = 0.3f;
-
 	bool ShouldDrawDebug()
 	{
 		return CVarPositionalSlotDebug.GetValueOnGameThread() != 0 || GetDefault<UPositionalSlotSettings>()->bDrawDebug;
@@ -88,7 +87,7 @@ void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const 
 			return;
 		}
 		// Switched targets: leave the old ring.
-		ReleaseSlot(Enemy);
+		ReleaseSlot(Enemy, TEXT("switched targets"));
 	}
 
 	FTargetSlots* Entry = Targets.FindByPredicate([Target](const FTargetSlots& Candidate) { return Candidate.Target.Get() == Target; });
@@ -106,14 +105,14 @@ void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const 
 	Entry->bDirty = true;
 }
 
-void UPositionalSlotSubsystem::ReleaseSlot(AActor* Enemy)
+void UPositionalSlotSubsystem::ReleaseSlot(AActor* Enemy, const TCHAR* Reason)
 {
 	for (FTargetSlots& Entry : Targets)
 	{
 		const int32 ClaimIndex = Entry.Claims.IndexOfByPredicate([Enemy](const FClaim& Claim) { return Claim.Enemy.Get() == Enemy; });
 		if (ClaimIndex != INDEX_NONE)
 		{
-			LogRelease(Entry, Entry.Claims[ClaimIndex], TEXT("released (died or unpossessed)"));
+			LogRelease(Entry, Entry.Claims[ClaimIndex], Reason);
 			Entry.Claims.RemoveAt(ClaimIndex);
 			UpdateOccupancy(Entry);
 		}
@@ -287,6 +286,7 @@ void UPositionalSlotSubsystem::Reassign(FTargetSlots& Entry, float Now)
 			const bool bWasReachable = Entry.Slots.IsValidIndex(Claim.Slot) && Entry.Slots[Claim.Slot].bReachable;
 			LogRelease(Entry, Claim, !bWasReachable ? TEXT("slot unreachable")
 				: Assigned[Index] == INDEX_NONE ? TEXT("taken by a nearer enemy") : TEXT("moved to a better slot"));
+			SlotChanges += Claim.Slot != INDEX_NONE && Assigned[Index] != INDEX_NONE ? 1 : 0;
 			Claim.Slot = Assigned[Index];
 			Claim.SlotSince = Now;
 		}
@@ -355,6 +355,73 @@ void UPositionalSlotSubsystem::Tick(float DeltaTime)
 			DrawDebug(Entry);
 		}
 	}
+
+	if (Now < WatchUntil && Now - LastWatchLog >= 0.5f)
+	{
+		LastWatchLog = Now;
+		for (const FTargetSlots& Entry : Targets)
+		{
+			LogWatch(Entry);
+		}
+		SlotChanges = 0;
+	}
+}
+
+void UPositionalSlotSubsystem::Watch(float Seconds)
+{
+	const UWorld* World = GetWorld();
+	WatchUntil = World ? World->GetTimeSeconds() + Seconds : -1.0f;
+	LastWatchLog = -1.0f;
+	SlotChanges = 0;
+}
+
+void UPositionalSlotSubsystem::LogWatch(const FTargetSlots& Entry) const
+{
+	const AActor* Target = Entry.Target.Get();
+	if (!Target)
+	{
+		return;
+	}
+	const FVector Center = Target->GetActorLocation();
+	int32 WithSlot = 0;
+	int32 Arrived = 0;
+	float SumOff = 0.0f;
+	float MaxOff = 0.0f;
+	float NearestTarget = TNumericLimits<float>::Max();
+	float NearestPair = TNumericLimits<float>::Max();
+	const float Arrival = GetDefault<UPositionalSlotSettings>()->ArrivalRadius;
+	for (int32 Index = 0; Index < Entry.Claims.Num(); ++Index)
+	{
+		const AActor* Enemy = Entry.Claims[Index].Enemy.Get();
+		if (!Enemy)
+		{
+			continue;
+		}
+		const FVector Location = Enemy->GetActorLocation();
+		FVector Stand;
+		bool bHasSlot = false;
+		if (GetStandPoint(Enemy, Stand, bHasSlot))
+		{
+			const float Off = FVector::Dist2D(Location, Stand);
+			SumOff += Off;
+			MaxOff = FMath::Max(MaxOff, Off);
+			Arrived += Off <= Arrival ? 1 : 0;
+		}
+		WithSlot += bHasSlot ? 1 : 0;
+		NearestTarget = FMath::Min(NearestTarget, FVector::Dist2D(Location, Center));
+		for (int32 Other = Index + 1; Other < Entry.Claims.Num(); ++Other)
+		{
+			if (const AActor* OtherEnemy = Entry.Claims[Other].Enemy.Get())
+			{
+				NearestPair = FMath::Min(NearestPair, FVector::Dist2D(Location, OtherEnemy->GetActorLocation()));
+			}
+		}
+	}
+	const int32 Count = FMath::Max(Entry.Claims.Num(), 1);
+	UE_LOG(LogNeuralAI, Log, TEXT("Watch %s: %d enemy(s), %d with a slot, %d at their place | off by %.0f avg, %.0f max | nearest to target %.0f, nearest pair %.0f | slot changes %d"),
+		*GetNameSafe(Target), Entry.Claims.Num(), WithSlot, Arrived, SumOff / Count, MaxOff,
+		NearestTarget == TNumericLimits<float>::Max() ? -1.0f : NearestTarget,
+		NearestPair == TNumericLimits<float>::Max() ? -1.0f : NearestPair, SlotChanges);
 }
 
 void UPositionalSlotSubsystem::DrawDebug(const FTargetSlots& Entry) const
@@ -379,10 +446,12 @@ void UPositionalSlotSubsystem::DrawDebug(const FTargetSlots& Entry) const
 		{
 			DrawDebugLine(World, Holder->GetActorLocation(), Location, Color, false, -1.0f, 0, 1.5f);
 		}
+		// Number, score and holder above the slot. A zero duration would be dropped before the HUD
+		// draws it; a few frames of overlap do no harm.
 		const FString Label = Holder
 			? FString::Printf(TEXT("#%d %.2f %s"), Slot.Index, Slot.Score, *Holder->GetName())
 			: FString::Printf(TEXT("#%d"), Slot.Index);
-		DrawDebugString(World, Location + FVector(0.0f, 0.0f, 45.0f), Label, nullptr, Color, 0.0f, true);
+		DrawDebugString(World, Location + FVector(0.0f, 0.0f, 45.0f), Label, nullptr, Color, 0.05f, true, 1.2f);
 	}
 	// Enemies without a slot, to where they wait.
 	for (const FClaim& Claim : Entry.Claims)
@@ -431,6 +500,16 @@ void UPositionalSlotSubsystem::LogStatus() const
 		}
 	}
 }
+
+static FAutoConsoleCommandWithWorldAndArgs GNeuralAIPositionalSlotsWatchCommand(TEXT("NeuralAI.PositionalSlots.Watch"),
+	TEXT("NeuralAI.PositionalSlots.Watch [seconds]: log twice a second how well the ring holds (default 10 s)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (UPositionalSlotSubsystem* Slots = World ? World->GetSubsystem<UPositionalSlotSubsystem>() : nullptr)
+		{
+			Slots->Watch(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 10.0f);
+		}
+	}));
 
 static FAutoConsoleCommandWithWorldAndArgs GNeuralAIPositionalSlotsStatusCommand(TEXT("NeuralAI.PositionalSlots.Status"),
 	TEXT("Log every target's positional slots and who holds them."),

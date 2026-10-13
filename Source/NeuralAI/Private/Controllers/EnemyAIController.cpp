@@ -440,7 +440,6 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	{
 		return;
 	}
-	LastPathUpdateTime = Now;
 
 	const UEnemySensorComponent* Sensor = ControlledEnemy->GetSensorComponent();
 	AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
@@ -450,14 +449,28 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 		return;
 	}
 
-	// With a positional slot the route goes to the slot, not into the target.
-	FVector SlotLocation;
-	UNavigationPath* Path = GetDrivingSlot(SlotLocation)
-		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), SlotLocation)
+	// With a positional slot the route goes to the slot - round the target, not through it - and
+	// is rebuilt only once the slot has moved on, not every update while the target stands still.
+	FVector Goal;
+	const bool bSlotGoal = GetDrivingSlot(Goal);
+	if (bSlotGoal)
+	{
+		const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
+		Goal = GetSteerPoint(Goal);
+		if (CachedPathPoints.Num() > 0 && FVector::Dist2D(Goal, LastPathGoal) < Settings->RepathDistance
+			&& Now - LastPathUpdateTime < Settings->MaxPathAge + PathUpdateInterval)
+		{
+			return;
+		}
+	}
+	LastPathGoal = Goal;
+	UNavigationPath* Path = bSlotGoal
+		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), Goal)
 		: UNavigationSystemV1::FindPathToActorSynchronously(this, ControlledEnemy->GetActorLocation(), Target);
 
 	// A partial path still helps: it walks the enemy as far towards the target as the
 	// navmesh allows, which beats pushing straight into whatever is in the way.
+	LastPathUpdateTime = Now;
 	if (Path && Path->IsValid() && Path->PathPoints.Num() > 1)
 	{
 		CachedPathPoints = Path->PathPoints;
@@ -475,7 +488,7 @@ FVector AEnemyAIController::GetApproachDirection() const
 	FVector SlotLocation;
 	if (GetDrivingSlot(SlotLocation))
 	{
-		StraightLine = (SlotLocation - ControlledEnemy->GetActorLocation()).GetSafeNormal2D();
+		StraightLine = (GetSteerPoint(SlotLocation) - ControlledEnemy->GetActorLocation()).GetSafeNormal2D();
 	}
 
 	if (CVarNeuralPathfinding.GetValueOnGameThread() == 0 || CachedPathPoints.Num() == 0)
@@ -531,7 +544,7 @@ void AEnemyAIController::UpdatePositionalSlot()
 	}
 	else
 	{
-		Slots->ReleaseSlot(ControlledEnemy);
+		Slots->ReleaseSlot(ControlledEnemy, TEXT("target lost or dormant"));
 	}
 }
 
@@ -543,6 +556,35 @@ bool AEnemyAIController::GetDrivingSlot(FVector& OutLocation) const
 	return Slots && ControlledEnemy && Slots->IsDriving() && Slots->GetStandPoint(ControlledEnemy, OutLocation, bHasSlot);
 }
 
+FVector AEnemyAIController::GetSteerPoint(const FVector& Goal) const
+{
+	const UEnemySensorComponent* Sensor = ControlledEnemy ? ControlledEnemy->GetSensorComponent() : nullptr;
+	const AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
+	if (!Target)
+	{
+		return Goal;
+	}
+	const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
+	const FVector Center = Target->GetActorLocation();
+	const FVector From = ControlledEnemy->GetActorLocation();
+
+	// Does the straight line pass close to the target? Worked out flat, at the target's height.
+	const FVector Closest = FMath::ClosestPointOnSegment(Center, FVector(From.X, From.Y, Center.Z), FVector(Goal.X, Goal.Y, Center.Z));
+	if (FVector::Dist2D(Closest, Center) >= Settings->SlotRadius * Settings->OrbitClearance)
+	{
+		return Goal;
+	}
+
+	// Step round the ring towards the goal's side, the shorter way, no further than the goal.
+	const float FromBearing = FMath::RadiansToDegrees(FMath::Atan2(From.Y - Center.Y, From.X - Center.X));
+	const float GoalBearing = FMath::RadiansToDegrees(FMath::Atan2(Goal.Y - Center.Y, Goal.X - Center.X));
+	const float Step = FMath::Clamp(FMath::FindDeltaAngleDegrees(FromBearing, GoalBearing), -Settings->OrbitStepDegrees, Settings->OrbitStepDegrees);
+	const float Bearing = FMath::DegreesToRadians(FromBearing + Step);
+	// Round at about the ring's distance: not hugging the target, not swinging wide either.
+	const float Ring = FMath::Clamp(FVector::Dist2D(From, Center), Settings->SlotRadius, Settings->SlotRadius * 1.6f);
+	return FVector(Center.X + FMath::Cos(Bearing) * Ring, Center.Y + FMath::Sin(Bearing) * Ring, Goal.Z);
+}
+
 void AEnemyAIController::ReleaseSlotAndToken()
 {
 	UWorld* World = GetWorld();
@@ -552,7 +594,7 @@ void AEnemyAIController::ReleaseSlotAndToken()
 	}
 	if (UPositionalSlotSubsystem* Slots = World->GetSubsystem<UPositionalSlotSubsystem>())
 	{
-		Slots->ReleaseSlot(ControlledEnemy);
+		Slots->ReleaseSlot(ControlledEnemy, TEXT("died or unpossessed"));
 	}
 	if (UAttackTokenSubsystem* Tokens = World->GetSubsystem<UAttackTokenSubsystem>())
 	{

@@ -125,6 +125,13 @@ protected:
 	/** Gives back the positional slot and any attack token: dead or no longer controlled. */
 	void ReleaseSlotAndToken();
 
+	/**
+	 * Where to head for on the way to Goal (a slot or hold point): Goal itself, or - when the
+	 * straight line would pass through the target - a point further round the ring on the shorter
+	 * side, so the enemy circles the target instead of walking into it.
+	 */
+	FVector GetSteerPoint(const FVector& Goal) const;
+
 	/** Within the arrival radius of the slot held. */
 	bool IsAtSlot(const FVector& SlotLocation) const;
 
@@ -217,6 +224,9 @@ private:
 	/** Corner points of the route to the target, nearest first. Empty means no path. */
 	TArray<FVector> CachedPathPoints;
 	float LastPathUpdateTime = -1000.0f;
+
+	/** Where the cached route leads, to tell whether a moving slot needs a new one. */
+	FVector LastPathGoal = FVector::ZeroVector;
 
 	float LastDodgeTime = -1000.0f;
 

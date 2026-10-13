@@ -3,9 +3,10 @@
 // Test tools for positional slots, typed in the console during play:
 //   NeuralAI.PositionalSlots.Spawn <count> [distance]   crawlers round the player, awake
 //   NeuralAI.PositionalSlots.Clear                      removes the ones Spawn made
-//   NeuralAI.PositionalSlots.DriveTarget <pattern> [speed] [seconds]
+//   NeuralAI.PositionalSlots.DriveTarget <pattern> [speed] [seconds] [yaw]
 //       moves the player by itself so the ring can be watched following it. Patterns:
-//       line (back and forth), zigzag (a sharp turn every second), circle, stop.
+//       line (back and forth), zigzag (a sharp turn every second), circle, straight (on and on,
+//       through doors and corridors), stop. Yaw sets the heading; the player's facing otherwise.
 
 #include "Characters/EnemyCharacter.h"
 #include "Containers/Ticker.h"
@@ -96,7 +97,9 @@ namespace PositionalSlotTest
 		const float Speed = Args.Num() > 1 ? FCString::Atof(*Args[1]) : 500.0f;
 		const float Seconds = Args.Num() > 2 ? FCString::Atof(*Args[2]) : 8.0f;
 		const FVector Start = Player->GetActorLocation();
-		const FVector Forward = Player->GetActorForwardVector().GetSafeNormal2D();
+		const FVector Forward = Args.Num() > 3
+			? FRotator(0.0f, FCString::Atof(*Args[3]), 0.0f).Vector()
+			: Player->GetActorForwardVector().GetSafeNormal2D();
 		const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward);
 		TWeakObjectPtr<APawn> WeakPlayer = Player;
 		TWeakObjectPtr<UWorld> WeakWorld = World;
@@ -154,5 +157,5 @@ static FAutoConsoleCommandWithWorldAndArgs GPositionalSlotClearCommand(TEXT("Neu
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>&, UWorld* World) { PositionalSlotTest::Clear(World); }));
 
 static FAutoConsoleCommandWithWorldAndArgs GPositionalSlotDriveCommand(TEXT("NeuralAI.PositionalSlots.DriveTarget"),
-	TEXT("NeuralAI.PositionalSlots.DriveTarget <line|zigzag|circle|stop> [speed cm/s] [seconds]: moves the player by itself."),
+	TEXT("NeuralAI.PositionalSlots.DriveTarget <line|zigzag|circle|straight|stop> [speed cm/s] [seconds] [yaw]: moves the player by itself."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&PositionalSlotTest::DriveTarget));

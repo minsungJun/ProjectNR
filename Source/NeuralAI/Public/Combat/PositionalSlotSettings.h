@@ -91,6 +91,30 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "10.0"))
 	float ArrivalRadius = 60.0f;
 
+	/**
+	 * Seconds between route updates to a slot are the controller's PathUpdateInterval; on top of
+	 * that the route is only rebuilt once the slot has moved this far (cm) since the last one, so a
+	 * target standing still or shuffling costs nothing.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0"))
+	float RepathDistance = 50.0f;
+
+	/** Seconds after which the route to a slot is rebuilt even if the slot has hardly moved. */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.1"))
+	float MaxPathAge = 1.0f;
+
+	/**
+	 * A route to a slot that would pass closer to the target than this share of SlotRadius goes
+	 * round instead, along the ring, so enemies heading for the far side do not walk through the
+	 * target (the navmesh does not know the target is in the way).
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float OrbitClearance = 0.75f;
+
+	/** How far round the ring, in degrees, each step of going round aims. */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "10.0", ClampMax = "90.0"))
+	float OrbitStepDegrees = 60.0f;
+
 	/** Share of the brain's strafe still applied once arrived: a little sway, not a walk away. */
 	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ArrivedStrafeScale = 0.3f;

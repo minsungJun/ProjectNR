@@ -46,8 +46,8 @@ public:
 	 */
 	void RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent = FPositionalSlotAssigner::FIntent());
 
-	/** Enemy no longer fights: its slot goes back. */
-	void ReleaseSlot(AActor* Enemy);
+	/** Enemy no longer fights: its slot goes back. Reason is only for the debug log. */
+	void ReleaseSlot(AActor* Enemy, const TCHAR* Reason = TEXT("released"));
 
 	/** Where Enemy should stand now. False without a slot. */
 	bool GetSlot(const AActor* Enemy, FVector& OutLocation) const;
@@ -60,6 +60,9 @@ public:
 
 	/** Logs every target's slots and who holds them. */
 	void LogStatus() const;
+
+	/** For Seconds, log twice a second how well the ring holds: arrivals, spacing, slot changes. */
+	void Watch(float Seconds);
 
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
@@ -111,6 +114,13 @@ private:
 
 	void DrawDebug(const FTargetSlots& Entry) const;
 
+	void LogWatch(const FTargetSlots& Entry) const;
+
 	TArray<FTargetSlots> Targets;
 	int32 NextClaimId = 1;
+
+	/** Watch: until when, the last line, and slot changes (an enemy moving from one slot to another) since. */
+	float WatchUntil = -1.0f;
+	float LastWatchLog = -1.0f;
+	mutable int32 SlotChanges = 0;
 };
