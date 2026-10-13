@@ -517,7 +517,17 @@ void AEnemyAIController::UpdatePositionalSlot()
 	AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
 	if (Slots->IsAssigning() && Target && !Sensor->IsDormant())
 	{
-		Slots->RequestSlot(ControlledEnemy, Target);
+		// The brain does not pick the slot, but what it wants tilts the choice: closing in favours
+		// near slots, strafing the neighbour on that side, caution the target's flanks.
+		FPositionalSlotAssigner::FIntent Intent;
+		if (const UNeuralBrainComponent* Brain = ControlledEnemy->GetNeuralBrain())
+		{
+			const FNeuralBrainOutput& Output = Brain->GetOutput();
+			Intent.Approach = Output.Approach;
+			Intent.Strafe = Output.StrafeRight - Output.StrafeLeft;
+			Intent.Caution = Brain->GetActivation(ENeuronId::Caution);
+		}
+		Slots->RequestSlot(ControlledEnemy, Target, Intent);
 	}
 	else
 	{

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Combat/PositionalSlotAssigner.h"
 #include "Combat/PositionalSlotTypes.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "PositionalSlotSubsystem.generated.h"
@@ -39,8 +40,11 @@ public:
 	/** Enemies move to their slots (settings on, mode 2). */
 	bool IsDriving() const;
 
-	/** Enemy is fighting Target and wants a slot. Call every update while it does. */
-	void RequestSlot(AActor* Enemy, AActor* Target);
+	/**
+	 * Enemy is fighting Target and wants a slot. Call every update while it does. Intent is what
+	 * its brain wants right now (approach, strafe, caution), which tilts the slot it is given.
+	 */
+	void RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent = FPositionalSlotAssigner::FIntent());
 
 	/** Enemy no longer fights: its slot goes back. */
 	void ReleaseSlot(AActor* Enemy);
@@ -73,6 +77,9 @@ private:
 		float LastRequest = 0.0f;
 		/** From the target to where it waits while it has no slot. */
 		FVector HoldOffset = FVector::ZeroVector;
+		FPositionalSlotAssigner::FIntent Intent;
+		/** Score of the slot held, as of the last assignment. */
+		FPositionalSlotAssigner::FScore Score;
 	};
 
 	/** The slots around one target and the enemies after them. */

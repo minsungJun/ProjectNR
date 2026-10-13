@@ -2,7 +2,6 @@
 
 #include "Combat/PositionalSlotSubsystem.h"
 
-#include "Combat/PositionalSlotAssigner.h"
 #include "Combat/PositionalSlotSettings.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
@@ -70,7 +69,7 @@ const UPositionalSlotSubsystem::FTargetSlots* UPositionalSlotSubsystem::FindSlot
 	return nullptr;
 }
 
-void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target)
+void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent)
 {
 	const UWorld* World = GetWorld();
 	if (!World || !Enemy || !Target)
@@ -85,6 +84,7 @@ void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target)
 		if (Current->Target.Get() == Target)
 		{
 			Current->Claims[ClaimIndex].LastRequest = Now;
+			Current->Claims[ClaimIndex].Intent = Intent;
 			return;
 		}
 		// Switched targets: leave the old ring.
@@ -101,6 +101,7 @@ void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target)
 	Claim.Enemy = Enemy;
 	Claim.Id = NextClaimId++;
 	Claim.LastRequest = Now;
+	Claim.Intent = Intent;
 	// A newcomer should not wait for the next round to know where to go.
 	Entry->bDirty = true;
 }
@@ -255,12 +256,28 @@ void UPositionalSlotSubsystem::Reassign(FTargetSlots& Entry, float Now)
 		Claimant.Location = Claim.Enemy->GetActorLocation();
 		Claimant.CurrentSlot = Claim.Slot;
 		Claimant.HeldFor = Now - Claim.SlotSince;
+		Claimant.Intent = Claim.Intent;
 	}
 
 	FPositionalSlotAssigner::FParams Params;
 	Params.Target = Entry.Target->GetActorLocation();
+	Params.TargetForward = Entry.Target->GetActorForwardVector();
 	Params.HoldTime = Settings->HoldTime;
-	const TArray<int32> Assigned = FPositionalSlotAssigner::Assign(Slots, Claimants, Params);
+	Params.Weights.Separation = Settings->SeparationWeight;
+	Params.Weights.Flank = Settings->FlankWeight;
+	Params.Weights.Distance = Settings->DistanceWeight;
+	Params.Weights.DistanceScale = Settings->DistanceScale;
+	Params.Weights.CurrentSlotBonus = Settings->CurrentSlotBonus;
+	Params.Weights.SwitchThreshold = Settings->SwitchThreshold;
+	Params.Weights.Strafe = Settings->StrafeWeight;
+	Params.Weights.ShorterWalkReward = Settings->ShorterWalkReward;
+	const TArray<FPositionalSlotAssigner::FResult> Results = FPositionalSlotAssigner::Assign(Slots, Claimants, Params);
+	TArray<int32> Assigned;
+	for (int32 Index = 0; Index < Results.Num(); ++Index)
+	{
+		Assigned.Add(Results[Index].Slot);
+		Entry.Claims[Index].Score = Results[Index].Score;
+	}
 
 	for (int32 Index = 0; Index < Entry.Claims.Num(); ++Index)
 	{
@@ -291,6 +308,7 @@ void UPositionalSlotSubsystem::UpdateOccupancy(FTargetSlots& Entry) const
 		const AActor* Enemy = Holder ? Holder->Enemy.Get() : nullptr;
 		Slot.ReservedEnemy = Holder ? Holder->Enemy : nullptr;
 		Slot.ReservationTime = Holder ? Holder->SlotSince : 0.0f;
+		Slot.Score = Holder ? Holder->Score.Total : 0.0f;
 		Slot.bOccupied = Enemy && Target
 			&& FVector::Dist2D(Enemy->GetActorLocation(), Target->GetActorLocation() + Slot.Offset) <= Arrival;
 	}
@@ -362,7 +380,7 @@ void UPositionalSlotSubsystem::DrawDebug(const FTargetSlots& Entry) const
 			DrawDebugLine(World, Holder->GetActorLocation(), Location, Color, false, -1.0f, 0, 1.5f);
 		}
 		const FString Label = Holder
-			? FString::Printf(TEXT("#%d %s"), Slot.Index, *Holder->GetName())
+			? FString::Printf(TEXT("#%d %.2f %s"), Slot.Index, Slot.Score, *Holder->GetName())
 			: FString::Printf(TEXT("#%d"), Slot.Index);
 		DrawDebugString(World, Location + FVector(0.0f, 0.0f, 45.0f), Label, nullptr, Color, 0.0f, true);
 	}
@@ -405,7 +423,9 @@ void UPositionalSlotSubsystem::LogStatus() const
 			const float FromTarget = Entry.Target.IsValid() && Claim.Enemy.IsValid()
 				? FVector::Dist2D(Claim.Enemy->GetActorLocation(), Entry.Target->GetActorLocation()) : -1.0f;
 			const FString Where = bHasSlot
-				? FString::Printf(TEXT("slot %d (%.0f deg), %.0f cm from it"), Claim.Slot, Entry.Slots[Claim.Slot].AngleDegrees, Off)
+				? FString::Printf(TEXT("slot %d (%.0f deg), %.0f cm from it, score %.2f = sep %.2f + flank %.2f + dist %.2f + strafe %.2f"),
+					Claim.Slot, Entry.Slots[Claim.Slot].AngleDegrees, Off,
+					Claim.Score.Total, Claim.Score.Separation, Claim.Score.Flank, Claim.Score.Distance, Claim.Score.Strafe)
 				: FString::Printf(TEXT("no slot, %.0f cm from its hold point"), FromHold);
 			UE_LOG(LogNeuralAI, Log, TEXT("    %s: %s, %.0f cm from the target"), *GetNameSafe(Claim.Enemy.Get()), *Where, FromTarget);
 		}
