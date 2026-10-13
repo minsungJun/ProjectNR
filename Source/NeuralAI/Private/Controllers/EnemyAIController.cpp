@@ -528,7 +528,9 @@ void AEnemyAIController::UpdatePositionalSlot()
 bool AEnemyAIController::GetDrivingSlot(FVector& OutLocation) const
 {
 	const UPositionalSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UPositionalSlotSubsystem>() : nullptr;
-	return Slots && ControlledEnemy && Slots->IsDriving() && Slots->GetSlot(ControlledEnemy, OutLocation);
+	bool bHasSlot = false;
+	// Without a slot of its own the enemy still has a place: its hold point, out of the way.
+	return Slots && ControlledEnemy && Slots->IsDriving() && Slots->GetStandPoint(ControlledEnemy, OutLocation, bHasSlot);
 }
 
 void AEnemyAIController::ReleaseSlotAndToken()

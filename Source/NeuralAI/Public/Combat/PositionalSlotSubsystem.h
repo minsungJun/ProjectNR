@@ -18,6 +18,12 @@
  * which slots are unreachable (off the navmesh, behind a wall from the target), is worked out
  * every ReassignInterval, or straight away when an enemy without a slot asks.
  *
+ * Reservation: being assigned a slot reserves it - no one else is given it - and arriving within
+ * ArrivalRadius occupies it. An enemy holds one slot at most. It goes back when the enemy dies or
+ * is unpossessed, stops asking (target lost, dormant), is moved to a better slot, or the slot
+ * becomes unreachable. Enemies beyond the free slots get a hold point NoSlotHoldDistance out on
+ * their own side, and ask again every round.
+ *
  * NeuralAI.PositionalSlots.Mode 0 turns it off, 1 assigns slots without moving anyone (to watch
  * with NeuralAI.PositionalSlots.Debug 1), 2 (default) drives movement.
  */
@@ -42,6 +48,12 @@ public:
 	/** Where Enemy should stand now. False without a slot. */
 	bool GetSlot(const AActor* Enemy, FVector& OutLocation) const;
 
+	/**
+	 * Where Enemy should go: its slot, or its hold point when every slot is taken. False when it
+	 * has not asked for a slot (or the target is gone). bOutHasSlot tells the two apart.
+	 */
+	bool GetStandPoint(const AActor* Enemy, FVector& OutLocation, bool& bOutHasSlot) const;
+
 	/** Logs every target's slots and who holds them. */
 	void LogStatus() const;
 
@@ -59,6 +71,8 @@ private:
 		int32 Slot = INDEX_NONE;
 		float SlotSince = 0.0f;
 		float LastRequest = 0.0f;
+		/** From the target to where it waits while it has no slot. */
+		FVector HoldOffset = FVector::ZeroVector;
 	};
 
 	/** The slots around one target and the enemies after them. */
@@ -81,6 +95,12 @@ private:
 
 	/** Copies who holds what onto the slots, and whether each holder has arrived. */
 	void UpdateOccupancy(FTargetSlots& Entry) const;
+
+	/** Out on the enemy's side of the target, NoSlotHoldDistance away, on the navmesh. */
+	FVector FindHoldOffset(const AActor* Target, const AActor* Enemy) const;
+
+	/** With NeuralAI.PositionalSlots.Debug, logs a slot going back and why. */
+	void LogRelease(const FTargetSlots& Entry, const FClaim& Claim, const TCHAR* Reason) const;
 
 	void DrawDebug(const FTargetSlots& Entry) const;
 

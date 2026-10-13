@@ -119,7 +119,7 @@ protected:
 	/** Asks for a positional slot while a target is sensed, gives it back otherwise. */
 	void UpdatePositionalSlot();
 
-	/** The positional slot to walk to, when slots drive movement and one is held. */
+	/** Where to walk when slots drive movement: the slot held, or the hold point while every slot is taken. */
 	bool GetDrivingSlot(FVector& OutLocation) const;
 
 	/** Gives back the positional slot and any attack token: dead or no longer controlled. */

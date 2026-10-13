@@ -47,6 +47,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Assignment", meta = (ClampMin = "0.0"))
 	float HoldTime = 1.0f;
 
+	/** Enemies left without a slot wait this far from the target, on their own side, in cm. */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "100.0"))
+	float NoSlotHoldDistance = 650.0f;
+
 	/** Distance from its slot, in cm, at which an enemy counts as arrived. */
 	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "10.0"))
 	float ArrivalRadius = 60.0f;

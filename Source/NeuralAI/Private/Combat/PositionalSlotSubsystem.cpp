@@ -109,11 +109,22 @@ void UPositionalSlotSubsystem::ReleaseSlot(AActor* Enemy)
 {
 	for (FTargetSlots& Entry : Targets)
 	{
-		const int32 Removed = Entry.Claims.RemoveAll([Enemy](const FClaim& Claim) { return Claim.Enemy.Get() == Enemy; });
-		if (Removed > 0)
+		const int32 ClaimIndex = Entry.Claims.IndexOfByPredicate([Enemy](const FClaim& Claim) { return Claim.Enemy.Get() == Enemy; });
+		if (ClaimIndex != INDEX_NONE)
 		{
+			LogRelease(Entry, Entry.Claims[ClaimIndex], TEXT("released (died or unpossessed)"));
+			Entry.Claims.RemoveAt(ClaimIndex);
 			UpdateOccupancy(Entry);
 		}
+	}
+}
+
+void UPositionalSlotSubsystem::LogRelease(const FTargetSlots& Entry, const FClaim& Claim, const TCHAR* Reason) const
+{
+	if (Claim.Slot != INDEX_NONE && CVarPositionalSlotDebug.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogNeuralAI, Log, TEXT("%s gives back slot %d of %s: %s"), *GetNameSafe(Claim.Enemy.Get()), Claim.Slot,
+			*GetNameSafe(Entry.Target.Get()), Reason);
 	}
 }
 
@@ -133,6 +144,45 @@ bool UPositionalSlotSubsystem::GetSlot(const AActor* Enemy, FVector& OutLocation
 	}
 	OutLocation = Target->GetActorLocation() + Entry->Slots[Slot].Offset;
 	return true;
+}
+
+bool UPositionalSlotSubsystem::GetStandPoint(const AActor* Enemy, FVector& OutLocation, bool& bOutHasSlot) const
+{
+	bOutHasSlot = GetSlot(Enemy, OutLocation);
+	if (bOutHasSlot)
+	{
+		return true;
+	}
+	int32 ClaimIndex = INDEX_NONE;
+	const FTargetSlots* Entry = FindSlotsOf(Enemy, &ClaimIndex);
+	const AActor* Target = Entry ? Entry->Target.Get() : nullptr;
+	if (!Target || Entry->Claims[ClaimIndex].HoldOffset.IsNearlyZero())
+	{
+		return false;
+	}
+	OutLocation = Target->GetActorLocation() + Entry->Claims[ClaimIndex].HoldOffset;
+	return true;
+}
+
+FVector UPositionalSlotSubsystem::FindHoldOffset(const AActor* Target, const AActor* Enemy) const
+{
+	const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
+	const FVector Center = Target->GetActorLocation();
+	FVector Away = (Enemy->GetActorLocation() - Center).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = FVector::ForwardVector;
+	}
+	FVector Point = Center + Away * Settings->NoSlotHoldDistance;
+	const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	FNavLocation Projected;
+	if (Navigation && Navigation->ProjectPointToNavigation(Point, Projected, FVector(150.0f, 150.0f, Settings->NavProjectionHeight)))
+	{
+		Point = Projected.Location;
+	}
+	// Never on top of the target, even when the navmesh only has room close by.
+	const FVector Offset = Point - Center;
+	return Offset.Size2D() < 100.0f ? Away * Settings->NoSlotHoldDistance : Offset;
 }
 
 void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
@@ -217,9 +267,14 @@ void UPositionalSlotSubsystem::Reassign(FTargetSlots& Entry, float Now)
 		FClaim& Claim = Entry.Claims[Index];
 		if (Assigned[Index] != Claim.Slot)
 		{
+			const bool bWasReachable = Entry.Slots.IsValidIndex(Claim.Slot) && Entry.Slots[Claim.Slot].bReachable;
+			LogRelease(Entry, Claim, !bWasReachable ? TEXT("slot unreachable")
+				: Assigned[Index] == INDEX_NONE ? TEXT("taken by a nearer enemy") : TEXT("moved to a better slot"));
 			Claim.Slot = Assigned[Index];
 			Claim.SlotSince = Now;
 		}
+		// Without a slot it waits out on its own side, clear of the ring, and asks again next round.
+		Claim.HoldOffset = Claim.Slot == INDEX_NONE ? FindHoldOffset(Entry.Target.Get(), Claim.Enemy.Get()) : FVector::ZeroVector;
 	}
 	Entry.LastAssign = Now;
 	Entry.bDirty = false;
@@ -255,6 +310,13 @@ void UPositionalSlotSubsystem::Tick(float DeltaTime)
 	{
 		// Enemies that stopped asking (lost the target, fell asleep) give their slot back.
 		const int32 Before = Entry.Claims.Num();
+		for (const FClaim& Claim : Entry.Claims)
+		{
+			if (Claim.Enemy.IsValid() && Now - Claim.LastRequest > PositionalSlotClaimLapse)
+			{
+				LogRelease(Entry, Claim, TEXT("stopped asking (target lost or dormant)"));
+			}
+		}
 		Entry.Claims.RemoveAll([Now](const FClaim& Claim) { return !Claim.Enemy.IsValid() || Now - Claim.LastRequest > PositionalSlotClaimLapse; });
 		Entry.bDirty |= Entry.Claims.Num() != Before;
 	}
@@ -304,6 +366,16 @@ void UPositionalSlotSubsystem::DrawDebug(const FTargetSlots& Entry) const
 			: FString::Printf(TEXT("#%d"), Slot.Index);
 		DrawDebugString(World, Location + FVector(0.0f, 0.0f, 45.0f), Label, nullptr, Color, 0.0f, true);
 	}
+	// Enemies without a slot, to where they wait.
+	for (const FClaim& Claim : Entry.Claims)
+	{
+		if (Claim.Slot == INDEX_NONE && Claim.Enemy.IsValid() && !Claim.HoldOffset.IsNearlyZero())
+		{
+			const FVector Hold = Center + Claim.HoldOffset;
+			DrawDebugBox(World, Hold, FVector(15.0f), FColor(160, 160, 160), false, -1.0f, 0, 2.0f);
+			DrawDebugLine(World, Claim.Enemy->GetActorLocation(), Hold, FColor(160, 160, 160), false, -1.0f, 0, 1.0f);
+		}
+	}
 }
 
 void UPositionalSlotSubsystem::LogStatus() const
@@ -328,8 +400,14 @@ void UPositionalSlotSubsystem::LogStatus() const
 			const bool bHasSlot = Entry.Slots.IsValidIndex(Claim.Slot);
 			const float Off = bHasSlot && Entry.Target.IsValid() && Claim.Enemy.IsValid()
 				? FVector::Dist2D(Claim.Enemy->GetActorLocation(), Entry.Target->GetActorLocation() + Entry.Slots[Claim.Slot].Offset) : -1.0f;
-			UE_LOG(LogNeuralAI, Log, TEXT("    %s: %s, %.0f cm from it"), *GetNameSafe(Claim.Enemy.Get()),
-				bHasSlot ? *FString::Printf(TEXT("slot %d (%.0f deg)"), Claim.Slot, Entry.Slots[Claim.Slot].AngleDegrees) : TEXT("no slot"), Off);
+			const float FromHold = !bHasSlot && Entry.Target.IsValid() && Claim.Enemy.IsValid()
+				? FVector::Dist2D(Claim.Enemy->GetActorLocation(), Entry.Target->GetActorLocation() + Claim.HoldOffset) : -1.0f;
+			const float FromTarget = Entry.Target.IsValid() && Claim.Enemy.IsValid()
+				? FVector::Dist2D(Claim.Enemy->GetActorLocation(), Entry.Target->GetActorLocation()) : -1.0f;
+			const FString Where = bHasSlot
+				? FString::Printf(TEXT("slot %d (%.0f deg), %.0f cm from it"), Claim.Slot, Entry.Slots[Claim.Slot].AngleDegrees, Off)
+				: FString::Printf(TEXT("no slot, %.0f cm from its hold point"), FromHold);
+			UE_LOG(LogNeuralAI, Log, TEXT("    %s: %s, %.0f cm from the target"), *GetNameSafe(Claim.Enemy.Get()), *Where, FromTarget);
 		}
 	}
 }
