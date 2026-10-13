@@ -1,10 +1,10 @@
 // Neural Enemy AI prototype module.
 
-#include "Combat/EnemySlotAssigner.h"
+#include "Combat/PositionalSlotAssigner.h"
 
 #include "Algo/Sort.h"
 
-TArray<FVector> FEnemySlotAssigner::RingPositions(const FVector& Center, int32 Count, float Radius)
+TArray<FVector> FPositionalSlotAssigner::RingPositions(const FVector& Center, int32 Count, float Radius)
 {
 	TArray<FVector> Positions;
 	for (int32 Index = 0; Index < Count; ++Index)
@@ -15,7 +15,7 @@ TArray<FVector> FEnemySlotAssigner::RingPositions(const FVector& Center, int32 C
 	return Positions;
 }
 
-float FEnemySlotAssigner::Cost(const FVector& Target, const FVector& From, const FVector& Slot)
+float FPositionalSlotAssigner::WalkCost(const FVector& Target, const FVector& From, const FVector& Slot)
 {
 	const FVector FromOffset = FVector(From.X - Target.X, From.Y - Target.Y, 0.0f);
 	const FVector SlotOffset = FVector(Slot.X - Target.X, Slot.Y - Target.Y, 0.0f);
@@ -31,14 +31,14 @@ float FEnemySlotAssigner::Cost(const FVector& Target, const FVector& From, const
 	return Straight + Angle * SlotOffset.Size();
 }
 
-TArray<int32> FEnemySlotAssigner::Assign(const TArray<FSlot>& Slots, const TArray<FClaimant>& Claimants, const FParams& Params)
+TArray<int32> FPositionalSlotAssigner::Assign(const TArray<FSlot>& Slots, const TArray<FClaimant>& Claimants, const FParams& Params)
 {
 	TArray<int32> Result;
 	Result.Init(INDEX_NONE, Claimants.Num());
 	TArray<bool> Taken;
 	Taken.Init(false, Slots.Num());
 
-	auto Holdable = [&Slots](int32 Slot) { return Slots.IsValidIndex(Slot) && Slots[Slot].bUsable; };
+	auto Holdable = [&Slots](int32 Slot) { return Slots.IsValidIndex(Slot) && Slots[Slot].bReachable; };
 
 	// Nearest the target first: whoever is closest has first pick.
 	TArray<int32> Order;
@@ -72,23 +72,15 @@ TArray<int32> FEnemySlotAssigner::Assign(const TArray<FSlot>& Slots, const TArra
 			continue;
 		}
 		const FClaimant& Claimant = Claimants[Index];
-		const bool bAttackFree = Slots.ContainsByPredicate([&](const FSlot& Slot)
-		{
-			const int32 SlotIndex = static_cast<int32>(&Slot - Slots.GetData());
-			return Slot.Ring == 0 && Slot.bUsable && !Taken[SlotIndex];
-		});
-		const int32 WantRing = bAttackFree ? 0 : 1;
-
 		int32 Best = INDEX_NONE;
 		float BestCost = TNumericLimits<float>::Max();
 		for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
 		{
-			const FSlot& Slot = Slots[SlotIndex];
-			if (!Slot.bUsable || Taken[SlotIndex] || Slot.Ring != WantRing)
+			if (!Slots[SlotIndex].bReachable || Taken[SlotIndex])
 			{
 				continue;
 			}
-			const float SlotCost = Cost(Params.Target, Claimant.Location, Slot.Location);
+			const float SlotCost = WalkCost(Params.Target, Claimant.Location, Slots[SlotIndex].Location);
 			if (SlotCost < BestCost)
 			{
 				Best = SlotIndex;
@@ -96,13 +88,12 @@ TArray<int32> FEnemySlotAssigner::Assign(const TArray<FSlot>& Slots, const TArra
 			}
 		}
 
-		// Stay put unless the move is clearly better, or it is a step in from the wait ring.
+		// Stay put unless the move is clearly better.
 		const int32 Current = Claimant.CurrentSlot;
 		if (Holdable(Current) && !Taken[Current])
 		{
-			const bool bPromotion = Best != INDEX_NONE && Slots[Current].Ring == 1 && Slots[Best].Ring == 0;
-			const float CurrentCost = Cost(Params.Target, Claimant.Location, Slots[Current].Location);
-			if (!bPromotion && (Best == INDEX_NONE || BestCost >= CurrentCost * (1.0f - Params.SwitchGain)))
+			const float CurrentCost = WalkCost(Params.Target, Claimant.Location, Slots[Current].Location);
+			if (Best == INDEX_NONE || BestCost >= CurrentCost * (1.0f - Params.SwitchGain))
 			{
 				Best = Current;
 			}

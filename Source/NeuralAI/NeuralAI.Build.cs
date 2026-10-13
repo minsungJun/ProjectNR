@@ -28,7 +28,7 @@ public class NeuralAI : ModuleRules
 			// Public: the test player's header exposes UInputAction / UInputMappingContext.
 			"InputCore",
 			"EnhancedInput",
-			// UEnemyCombatSlotSettings (Project Settings > Game > Enemy Combat Slots).
+			// UPositionalSlotSettings and UAttackTokenSettings (Project Settings > Game).
 			"DeveloperSettings"
 		});
 

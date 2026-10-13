@@ -116,11 +116,14 @@ protected:
 	bool IsDirectionNavigable(const FVector& Direction) const;
 	bool FindNavigableDirection(const FVector& Desired, FVector& OutDirection) const;
 
-	/** Asks for a combat slot while a target is sensed, gives it back otherwise. */
-	void UpdateCombatSlot();
+	/** Asks for a positional slot while a target is sensed, gives it back otherwise. */
+	void UpdatePositionalSlot();
 
-	/** The combat slot to walk to, when slots drive movement and one is held. */
-	bool GetDrivingSlot(FVector& OutLocation, bool& bOutAttackRing) const;
+	/** The positional slot to walk to, when slots drive movement and one is held. */
+	bool GetDrivingSlot(FVector& OutLocation) const;
+
+	/** Gives back the positional slot and any attack token: dead or no longer controlled. */
+	void ReleaseSlotAndToken();
 
 	/** Within the arrival radius of the slot held. */
 	bool IsAtSlot(const FVector& SlotLocation) const;

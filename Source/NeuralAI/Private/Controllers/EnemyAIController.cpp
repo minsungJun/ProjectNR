@@ -3,8 +3,9 @@
 #include "Controllers/EnemyAIController.h"
 
 #include "Characters/EnemyCharacter.h"
-#include "Combat/EnemyCombatSlotSettings.h"
-#include "Combat/EnemyCombatSlotSubsystem.h"
+#include "Combat/AttackTokenSubsystem.h"
+#include "Combat/PositionalSlotSettings.h"
+#include "Combat/PositionalSlotSubsystem.h"
 #include "Components/EnemySensorComponent.h"
 #include "Components/HealthComponent.h"
 #include "Components/NeuralBrainComponent.h"
@@ -114,10 +115,7 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 
 void AEnemyAIController::OnUnPossess()
 {
-	if (UEnemyCombatSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UEnemyCombatSlotSubsystem>() : nullptr)
-	{
-		Slots->ReleaseSlot(ControlledEnemy);
-	}
+	ReleaseSlotAndToken();
 	ControlledEnemy = nullptr;
 	DesiredMovement = FVector::ZeroVector;
 	CurrentAction = EEnemyActionType::None;
@@ -143,10 +141,7 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 	const UWorld* World = GetWorld();
 	if (!World || !ControlledEnemy || ControlledEnemy->IsDead())
 	{
-		if (UEnemyCombatSlotSubsystem* Slots = World && ControlledEnemy ? World->GetSubsystem<UEnemyCombatSlotSubsystem>() : nullptr)
-		{
-			Slots->ReleaseSlot(ControlledEnemy);
-		}
+		ReleaseSlotAndToken();
 		DesiredMovement = FVector::ZeroVector;
 		CurrentAction = EEnemyActionType::None;
 		return;
@@ -182,7 +177,7 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 	}
 
 	// Before the stun check: a stunned enemy keeps its slot and goes back to it afterwards.
-	UpdateCombatSlot();
+	UpdatePositionalSlot();
 
 	// A stunned enemy keeps sensing and thinking - memory should still accumulate while
 	// it is helpless - but nothing it wants is allowed to reach the body.
@@ -322,22 +317,12 @@ void AEnemyAIController::TryAttack(float Now, float ImmediateThreat)
 		return;
 	}
 
-	// With combat slots, only an enemy standing in an attack slot strikes, and only with a token:
-	// the ones waiting their turn hold their ground instead of piling in.
-	FVector SlotLocation;
-	bool bAttackRing = false;
-	if (GetDrivingSlot(SlotLocation, bAttackRing))
+	// Which of the enemies in reach strikes, and in what order, is the attack tokens' call. Where
+	// the enemy stands (its positional slot) plays no part in it.
+	UAttackTokenSubsystem* Tokens = GetWorld()->GetSubsystem<UAttackTokenSubsystem>();
+	if (Tokens && !Tokens->TryTakeToken(ControlledEnemy, Sensor->GetCurrentTarget()))
 	{
-		const float Arrival = GetDefault<UEnemyCombatSlotSettings>()->ArrivalRadius;
-		if (!bAttackRing || FVector::Dist2D(ControlledEnemy->GetActorLocation(), SlotLocation) > Arrival * 2.0f)
-		{
-			return;
-		}
-		UEnemyCombatSlotSubsystem* Slots = GetWorld()->GetSubsystem<UEnemyCombatSlotSubsystem>();
-		if (!Slots || !Slots->TryTakeAttackToken(ControlledEnemy))
-		{
-			return;
-		}
+		return;
 	}
 
 	ControlledEnemy->PerformAttack();
@@ -375,11 +360,10 @@ void AEnemyAIController::ApplyNeuralMovement(float Now)
 	// In its slot the enemy stops closing in: Approach would only push it into the target or a
 	// neighbour. Backing off still works, and a little strafe keeps it from standing like a post.
 	FVector SlotLocation;
-	bool bAttackRing = false;
-	if (GetDrivingSlot(SlotLocation, bAttackRing) && IsAtSlot(SlotLocation))
+	if (GetDrivingSlot(SlotLocation) && IsAtSlot(SlotLocation))
 	{
 		Blended = -Sensor->GetTargetDirection() * Output.Retreat
-			+ EnemyRight * (Output.StrafeRight - Output.StrafeLeft) * GetDefault<UEnemyCombatSlotSettings>()->ArrivedStrafeScale;
+			+ EnemyRight * (Output.StrafeRight - Output.StrafeLeft) * GetDefault<UPositionalSlotSettings>()->ArrivedStrafeScale;
 	}
 
 	const float Magnitude = Blended.Size();
@@ -466,10 +450,9 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 		return;
 	}
 
-	// With a combat slot the route goes to the slot, not into the target.
+	// With a positional slot the route goes to the slot, not into the target.
 	FVector SlotLocation;
-	bool bAttackRing = false;
-	UNavigationPath* Path = GetDrivingSlot(SlotLocation, bAttackRing)
+	UNavigationPath* Path = GetDrivingSlot(SlotLocation)
 		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), SlotLocation)
 		: UNavigationSystemV1::FindPathToActorSynchronously(this, ControlledEnemy->GetActorLocation(), Target);
 
@@ -490,8 +473,7 @@ FVector AEnemyAIController::GetApproachDirection() const
 	const UEnemySensorComponent* Sensor = ControlledEnemy->GetSensorComponent();
 	FVector StraightLine = Sensor ? Sensor->GetTargetDirection() : FVector::ZeroVector;
 	FVector SlotLocation;
-	bool bAttackRing = false;
-	if (GetDrivingSlot(SlotLocation, bAttackRing))
+	if (GetDrivingSlot(SlotLocation))
 	{
 		StraightLine = (SlotLocation - ControlledEnemy->GetActorLocation()).GetSafeNormal2D();
 	}
@@ -524,9 +506,9 @@ FVector AEnemyAIController::GetApproachDirection() const
 	return StraightLine;
 }
 
-void AEnemyAIController::UpdateCombatSlot()
+void AEnemyAIController::UpdatePositionalSlot()
 {
-	UEnemyCombatSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UEnemyCombatSlotSubsystem>() : nullptr;
+	UPositionalSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UPositionalSlotSubsystem>() : nullptr;
 	if (!Slots || !ControlledEnemy)
 	{
 		return;
@@ -543,29 +525,45 @@ void AEnemyAIController::UpdateCombatSlot()
 	}
 }
 
-bool AEnemyAIController::GetDrivingSlot(FVector& OutLocation, bool& bOutAttackRing) const
+bool AEnemyAIController::GetDrivingSlot(FVector& OutLocation) const
 {
-	const UEnemyCombatSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UEnemyCombatSlotSubsystem>() : nullptr;
-	return Slots && ControlledEnemy && Slots->IsDriving() && Slots->GetSlot(ControlledEnemy, OutLocation, bOutAttackRing);
+	const UPositionalSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UPositionalSlotSubsystem>() : nullptr;
+	return Slots && ControlledEnemy && Slots->IsDriving() && Slots->GetSlot(ControlledEnemy, OutLocation);
+}
+
+void AEnemyAIController::ReleaseSlotAndToken()
+{
+	UWorld* World = GetWorld();
+	if (!World || !ControlledEnemy)
+	{
+		return;
+	}
+	if (UPositionalSlotSubsystem* Slots = World->GetSubsystem<UPositionalSlotSubsystem>())
+	{
+		Slots->ReleaseSlot(ControlledEnemy);
+	}
+	if (UAttackTokenSubsystem* Tokens = World->GetSubsystem<UAttackTokenSubsystem>())
+	{
+		Tokens->Release(ControlledEnemy);
+	}
 }
 
 bool AEnemyAIController::IsAtSlot(const FVector& SlotLocation) const
 {
 	return ControlledEnemy
-		&& FVector::Dist2D(ControlledEnemy->GetActorLocation(), SlotLocation) <= GetDefault<UEnemyCombatSlotSettings>()->ArrivalRadius;
+		&& FVector::Dist2D(ControlledEnemy->GetActorLocation(), SlotLocation) <= GetDefault<UPositionalSlotSettings>()->ArrivalRadius;
 }
 
 void AEnemyAIController::FaceTargetAtSlot(float DeltaTime)
 {
 	FVector SlotLocation;
-	bool bAttackRing = false;
 	const UEnemySensorComponent* Sensor = ControlledEnemy ? ControlledEnemy->GetSensorComponent() : nullptr;
-	if (!Sensor || !GetDrivingSlot(SlotLocation, bAttackRing) || !IsAtSlot(SlotLocation) || Sensor->GetTargetDirection().IsNearlyZero())
+	if (!Sensor || !GetDrivingSlot(SlotLocation) || !IsAtSlot(SlotLocation) || Sensor->GetTargetDirection().IsNearlyZero())
 	{
 		return;
 	}
 	const FRotator Current = ControlledEnemy->GetActorRotation();
 	const FRotator Wanted(0.0f, Sensor->GetTargetDirection().Rotation().Yaw, 0.0f);
 	ControlledEnemy->SetActorRotation(FMath::RInterpConstantTo(Current, Wanted, DeltaTime,
-		GetDefault<UEnemyCombatSlotSettings>()->FaceTurnRate));
+		GetDefault<UPositionalSlotSettings>()->FaceTurnRate));
 }
