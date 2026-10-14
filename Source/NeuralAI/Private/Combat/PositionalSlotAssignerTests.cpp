@@ -233,6 +233,23 @@ bool FPositionalSlotAssignerTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("caution leaves the slot in front"), FAssigner::ScoreSlot(Slots, 0, Claimant, None, Params).Flank, 0.0f, 0.001f);
 	}
 
+	// Distance alone (the project's setting): enemies coming from one side take the nearest slots
+	// on that side, the nearest enemy the very nearest slot.
+	{
+		FAssigner::FParams Nearest = Params;
+		Nearest.Weights.Separation = 0.0f;
+		Nearest.Weights.Flank = 0.0f;
+		const TArray<FAssigner::FClaimant> Bunch = MakeBunch(4);
+		const TArray<int32> Assigned = SlotsOf(FAssigner::Assign(Slots, Bunch, Nearest));
+		bool bNearSide = true;
+		for (const int32 Slot : Assigned)
+		{
+			bNearSide &= FAssigner::AngleBetween(FAssigner::BearingDegrees(FVector::ZeroVector, Slots[Slot].Location), 0.0f) <= 90.0f;
+		}
+		TestTrue(TEXT("nearest: all four on the near side"), bNearSide && AllDistinct(Assigned));
+		TestEqual(TEXT("nearest: the nearest enemy gets slot 0"), Assigned[0], 0);
+	}
+
 	// The same input gives the same answer.
 	{
 		const TArray<FAssigner::FClaimant> Claimants = MakeBunch(11, 33.0f, 20.0f, 650.0f);

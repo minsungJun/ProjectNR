@@ -84,13 +84,20 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Assignment", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ShorterWalkReward = 0.25f;
 
-	/** Spreading out from the other enemies: the smallest angle to their slots over 180 degrees. */
+	/**
+	 * Spreading out from the other enemies: the smallest angle to their slots over 180 degrees.
+	 * 0 since 2026-10-14 (was 2.0): with Flank also 0, each enemy takes the nearest free slot
+	 * (by the walk there), nearest enemy first. Raise both again to have them surround the target.
+	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Scoring", meta = (ClampMin = "0.0"))
-	float SeparationWeight = 2.0f;
+	float SeparationWeight = 0.0f;
 
-	/** The target's sides and back over its front: 0 in front, 0.5 at the side, 1 behind. Caution raises it. */
+	/**
+	 * The target's sides and back over its front: 0 in front, 0.5 at the side, 1 behind. Caution
+	 * raises it. 0 since 2026-10-14 (was 1.5).
+	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Scoring", meta = (ClampMin = "0.0"))
-	float FlankWeight = 1.5f;
+	float FlankWeight = 0.0f;
 
 	/** Minus the walk to the slot over DistanceScale. Approach raises it. */
 	UPROPERTY(Config, EditAnywhere, Category = "Scoring", meta = (ClampMin = "0.0"))
