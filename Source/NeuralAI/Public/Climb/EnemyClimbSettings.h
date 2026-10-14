@@ -82,6 +82,29 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Links", meta = (ClampMin = "20.0"))
 	float LinkTriggerDistance = 150.0f;
 
+	/** The target counts as up high once its feet are this many cm above the enemy's. */
+	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.0"))
+	float ElevatedTargetHeight = 150.0f;
+
+	/**
+	 * Climbing where there is no link, to a target up high that can be walked to: only when the
+	 * way up the wall is shorter than this share of the walk. Keeps it from climbing for a hair's gain.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.1", ClampMax = "1.0"))
+	float ShortcutGain = 0.8f;
+
+	/** In weighing a way up a wall, each cm climbed counts as this many cm walked (as UNavArea_Climb's cost). */
+	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "1.0"))
+	float ClimbCostFactor = 1.5f;
+
+	/** Seconds between one enemy's looks for a wall to climb where its path does not reach. */
+	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.1"))
+	float OnDemandInterval = 1.0f;
+
+	/** Seconds a wall given up on is left out of the looks. */
+	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.0"))
+	float FailedWallCooldown = 5.0f;
+
 	/** Draw what the probe found and the climb under way. Same as NeuralAI.Climb.Debug 1. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug")
 	bool bDrawDebug = false;

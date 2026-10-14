@@ -10,6 +10,11 @@
 // none; a path onto the 4 m platform goes up its wall, and leaves it out for an enemy that does
 // not climb; onto the platform with a ramp the path takes the ramp from near its foot and the wall
 // from the far side; and a crawler chasing the player onto the platform climbs up after them.
+//
+// NeuralAI.Climb.OnDemand, in the same map with no links: a crawler chasing the player across the
+// floor never climbs; with the player up on the 4 m platform or the 2 m block (no path up) it
+// climbs the wall on its own; with the player on the platform with the ramp it climbs from the
+// far side (the wall is much shorter than walking round) and walks up the ramp from near its foot.
 
 #include "Characters/EnemyCharacter.h"
 #include "Climb/EnemyClimbComponent.h"
@@ -345,6 +350,114 @@ bool FEnemyClimbLinksTest::RunTest(const FString& Parameters)
 		return true;
 	}));
 
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	return true;
+}
+
+namespace EnemyClimbWorldTest
+{
+	struct FChaseCase
+	{
+		const TCHAR* Name;
+		FVector PlayerAt;
+		FVector2D CrawlerAt;
+		bool bExpectClimb;
+		/** Capsule height it must get up to: on top of what the player stands on, or 0 to stay on the floor. */
+		float ExpectHeight;
+	};
+
+	struct FChaseRun
+	{
+		TWeakObjectPtr<AEnemyCharacter> Crawler;
+		float MaxZ = 0.0f;
+		bool bClimbed = false;
+	};
+
+	/** Latent commands for one chase: player put up, crawler set on them, watched until done or out of time. */
+	void AddChase(FAutomationTestBase* Test, const FChaseCase& Case, float Timeout)
+	{
+		TSharedRef<FChaseRun> Run = MakeShared<FChaseRun>();
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Test, Case, Run]()
+		{
+			UWorld* World = AutomationCommon::GetAnyGameWorld();
+			APawn* Player = World ? UGameplayStatics::GetPlayerPawn(World, 0) : nullptr;
+			if (!Player)
+			{
+				Test->AddError(TEXT("no player"));
+				return true;
+			}
+			Player->SetActorLocation(Case.PlayerAt, false, nullptr, ETeleportType::TeleportPhysics);
+			Run->Crawler = SpawnCrawler(World, Case.CrawlerAt, 0.0f);
+			if (Run->Crawler.IsValid())
+			{
+				Run->Crawler->GetSensorComponent()->ReceiveAlert(Player, nullptr);
+			}
+			return true;
+		}));
+		ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([Case, Run]()
+		{
+			const AEnemyCharacter* Crawler = Run->Crawler.Get();
+			if (!Crawler)
+			{
+				return true;
+			}
+			Run->MaxZ = FMath::Max(Run->MaxZ, static_cast<float>(Crawler->GetActorLocation().Z));
+			Run->bClimbed |= Crawler->GetClimbComponent()->IsClimbing();
+			// Done once up where it should be; a crawler that should stay down is watched to the end.
+			return Case.ExpectHeight > 0.0f && Run->MaxZ > Case.ExpectHeight && !Crawler->GetClimbComponent()->IsClimbing();
+		}, Timeout));
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Test, Case, Run]()
+		{
+			AEnemyCharacter* Crawler = Run->Crawler.Get();
+			const FString Where = Crawler ? Crawler->GetActorLocation().ToCompactString() : TEXT("gone");
+			Test->TestEqual(FString::Printf(TEXT("%s: climbed (highest %.0f, at %s)"), Case.Name, Run->MaxZ, *Where), Run->bClimbed, Case.bExpectClimb);
+			if (Case.ExpectHeight > 0.0f)
+			{
+				Test->TestTrue(FString::Printf(TEXT("%s: got up (highest %.0f, at %s)"), Case.Name, Run->MaxZ, *Where), Run->MaxZ > Case.ExpectHeight);
+			}
+			if (Crawler)
+			{
+				Crawler->Destroy();
+			}
+			return true;
+		}));
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyClimbOnDemandTest, "NeuralAI.Climb.OnDemand",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FEnemyClimbOnDemandTest::RunTest(const FString& Parameters)
+{
+	using namespace EnemyClimbWorldTest;
+
+	// No links: every climb here is the controller's own decision.
+	UEnemyClimbSettings* Settings = GetMutableDefault<UEnemyClimbSettings>();
+	const bool bLinks = Settings->bBuildClimbLinks;
+	Settings->bBuildClimbLinks = false;
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+		FNavLocation Projected;
+		return Navigation && !Navigation->IsNavigationBuildInProgress()
+			&& Navigation->ProjectPointToNavigation(FVector(1000.0f, -1200.0f, 462.0f), Projected, FVector(50.0f, 50.0f, 150.0f))
+			&& Navigation->ProjectPointToNavigation(FVector(-2000.0f, 0.0f, 62.0f), Projected, FVector(50.0f, 50.0f, 150.0f));
+	}, 30.0f));
+
+	AddChase(this, { TEXT("flat floor"), FVector(-2000.0f, -300.0f, 150.0f), FVector2D(-2000.0f, 1500.0f), false, 0.0f }, 5.0f);
+	AddChase(this, { TEXT("4 m platform, no way up"), FVector(1000.0f, -1250.0f, 520.0f), FVector2D(1000.0f, -300.0f), true, 450.0f }, 12.0f);
+	AddChase(this, { TEXT("2 m block, no way up"), FVector(-1000.0f, 1200.0f, 320.0f), FVector2D(-1000.0f, 500.0f), true, 250.0f }, 12.0f);
+	AddChase(this, { TEXT("ramp platform from the far side"), FVector(1000.0f, 1250.0f, 520.0f), FVector2D(1700.0f, 1200.0f), true, 450.0f }, 12.0f);
+	AddChase(this, { TEXT("ramp platform from the ramp's foot"), FVector(1000.0f, 1250.0f, 520.0f), FVector2D(-400.0f, 1200.0f), false, 450.0f }, 15.0f);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([bLinks]()
+	{
+		GetMutableDefault<UEnemyClimbSettings>()->bBuildClimbLinks = bLinks;
+		return true;
+	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	return true;
 }

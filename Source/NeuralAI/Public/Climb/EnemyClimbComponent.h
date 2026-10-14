@@ -63,6 +63,9 @@ public:
 
 	const FEnemyClimbLedge& GetLedge() const { return Ledge; }
 
+	/** Wall was given up on less than FailedWallCooldown ago. */
+	bool IsWallExcluded(const AActor* Wall) const;
+
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
@@ -94,4 +97,8 @@ private:
 	float LastProgressTime = 0.0f;
 
 	FString LastBlocker;
+
+	/** The last wall given up on, and when. */
+	TWeakObjectPtr<AActor> FailedWall;
+	float FailedWallTime = -1000.0f;
 };

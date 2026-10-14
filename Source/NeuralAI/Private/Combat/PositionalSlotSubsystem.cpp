@@ -242,6 +242,10 @@ void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
 	const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 	const FVector Extent(50.0f, 50.0f, Settings->NavProjectionHeight);
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(PositionalSlot), false, Target);
+
+	// The floor the target stands on, to keep slots on it.
+	FNavLocation TargetFloor;
+	const bool bTargetOnNav = Navigation && Navigation->ProjectPointToNavigation(Center, TargetFloor, Extent);
 	for (int32 Index = 0; Index < Positions.Num(); ++Index)
 	{
 		FPositionalSlot& Slot = Entry.Slots[Index];
@@ -252,10 +256,11 @@ void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
 		Slot.WorldLocation = Positions[Index];
 
 		FNavLocation Projected;
-		const bool bOnNav = !Navigation || Navigation->ProjectPointToNavigation(Positions[Index], Projected, Extent);
+		bool bOnNav = !Navigation || Navigation->ProjectPointToNavigation(Positions[Index], Projected, Extent);
 		if (Navigation && bOnNav)
 		{
 			Slot.WorldLocation = Projected.Location;
+			bOnNav = !bTargetOnNav || FMath::Abs(Projected.Location.Z - TargetFloor.Location.Z) <= Settings->MaxSlotHeightGap;
 		}
 		FHitResult Hit;
 		const bool bBlocked = Settings->bRequireLineOfSight

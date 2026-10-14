@@ -6,6 +6,7 @@
 #include "Climb/EnemyClimbComponent.h"
 #include "Climb/EnemyClimbLinkSubsystem.h"
 #include "Climb/EnemyClimbNavTypes.h"
+#include "Climb/EnemyClimbProbe.h"
 #include "Climb/EnemyClimbSettings.h"
 #include "NavMesh/NavMeshPath.h"
 #include "Combat/AttackTokenSubsystem.h"
@@ -202,7 +203,7 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 	}
 
 	UpdatePathToTarget(Now);
-	if (TryClimbAlongPath())
+	if (TryClimbAlongPath() || TryClimbOnDemand(Now))
 	{
 		return;
 	}
@@ -496,6 +497,8 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	// navmesh allows, which beats pushing straight into whatever is in the way.
 	LastPathUpdateTime = Now;
 	CachedClimbLinkIndex = INDEX_NONE;
+	bCachedPathPartial = Path && Path->IsPartial();
+	CachedPathLength = Path && Path->IsValid() ? Path->GetPathLength() : 0.0f;
 	if (Path && Path->IsValid() && Path->PathPoints.Num() > 1)
 	{
 		CachedPathPoints = Path->PathPoints;
@@ -519,6 +522,84 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	{
 		CachedPathPoints.Reset();
 	}
+}
+
+bool AEnemyAIController::IsTargetElevated() const
+{
+	const UEnemySensorComponent* Sensor = ControlledEnemy ? ControlledEnemy->GetSensorComponent() : nullptr;
+	const AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
+	if (!Target)
+	{
+		return false;
+	}
+	const float TargetFeet = Target->GetActorLocation().Z - Target->GetSimpleCollisionHalfHeight();
+	const float OwnFeet = ControlledEnemy->GetActorLocation().Z - ControlledEnemy->GetSimpleCollisionHalfHeight();
+	return TargetFeet - OwnFeet >= GetDefault<UEnemyClimbSettings>()->ElevatedTargetHeight;
+}
+
+bool AEnemyAIController::TryClimbOnDemand(float Now)
+{
+	const UEnemyClimbSettings* Settings = GetDefault<UEnemyClimbSettings>();
+	UEnemyClimbComponent* Climb = ControlledEnemy->GetClimbComponent();
+	const UEnemySensorComponent* Sensor = ControlledEnemy->GetSensorComponent();
+	AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
+	if (!Target || !Climb || Climb->IsClimbing() || !ControlledEnemy->CanClimb() || Now - LastOnDemandClimbCheck < Settings->OnDemandInterval)
+	{
+		return false;
+	}
+
+	// Only two reasons, and a path that already goes up a link needs neither.
+	const bool bUnreachable = CachedPathPoints.Num() == 0 || bCachedPathPartial;
+	const bool bShortcut = !bUnreachable && CachedClimbLinkIndex == INDEX_NONE && IsTargetElevated();
+	if (!bUnreachable && !bShortcut)
+	{
+		return false;
+	}
+	LastOnDemandClimbCheck = Now;
+
+	// Walls ahead, towards the target and up to 60 degrees either side, each weighed as: walk to its
+	// foot, the climb (dearer than walking), and the route from its top to the target.
+	UWorld* World = GetWorld();
+	const FVector From = ControlledEnemy->GetActorLocation();
+	const FVector Toward = (Target->GetActorLocation() - From).GetSafeNormal2D();
+	FEnemyClimbLedge Best;
+	float BestRoute = TNumericLimits<float>::Max();
+	for (const float Angle : { 0.0f, 30.0f, -30.0f, 60.0f, -60.0f })
+	{
+		FEnemyClimbLedge Ledge;
+		if (FEnemyClimbProbe::ProbeDirection(World, ControlledEnemy, Toward.RotateAngleAxis(Angle, FVector::UpVector), *Settings, Ledge) != EEnemyClimbProbeResult::Ok
+			|| Climb->IsWallExcluded(Ledge.Wall.Get()))
+		{
+			continue;
+		}
+		UNavigationPath* FromTop = UNavigationSystemV1::FindPathToLocationSynchronously(this, Ledge.StandCenter, Target->GetActorLocation());
+		if (!FromTop || !FromTop->IsValid() || FromTop->IsPartial())
+		{
+			continue;
+		}
+		const float Route = Ledge.GetDistanceTo(From) + Ledge.GetHeight() * Settings->ClimbCostFactor + FromTop->GetPathLength();
+		if (Route < BestRoute)
+		{
+			BestRoute = Route;
+			Best = Ledge;
+		}
+	}
+	if (BestRoute == TNumericLimits<float>::Max() || (bShortcut && BestRoute >= CachedPathLength * Settings->ShortcutGain))
+	{
+		return false;
+	}
+	if (!Climb->StartClimb(Best))
+	{
+		return false;
+	}
+	UE_LOG(LogNeuralAI, Log, TEXT("%s climbs on demand (%s): route %.0f cm against a path of %.0f cm"), *GetNameSafe(ControlledEnemy),
+		bUnreachable ? TEXT("no path reaches") : TEXT("shorter than walking round"), BestRoute, CachedPathLength);
+	CachedPathPoints.Reset();
+	CachedClimbLinkIndex = INDEX_NONE;
+	LastPathUpdateTime = -1000.0f;
+	DesiredMovement = FVector::ZeroVector;
+	CurrentAction = EEnemyActionType::Climb;
+	return true;
 }
 
 bool AEnemyAIController::TryClimbAlongPath()
@@ -631,7 +712,13 @@ bool AEnemyAIController::GetDrivingSlot(FVector& OutLocation) const
 	const UPositionalSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UPositionalSlotSubsystem>() : nullptr;
 	bool bHasSlot = false;
 	// Without a slot of its own the enemy still has a place: its hold point, out of the way.
-	return Slots && ControlledEnemy && Slots->IsDriving() && Slots->GetStandPoint(ControlledEnemy, OutLocation, bHasSlot);
+	if (!Slots || !ControlledEnemy || !Slots->IsDriving() || !Slots->GetStandPoint(ControlledEnemy, OutLocation, bHasSlot))
+	{
+		return false;
+	}
+	// Except with the target up high and no slot up there: one that climbs goes for the target
+	// itself, up whatever is in the way, rather than waiting at the foot.
+	return bHasSlot || !ControlledEnemy->CanClimb() || !IsTargetElevated();
 }
 
 FVector AEnemyAIController::GetSteerPoint(const FVector& Goal) const

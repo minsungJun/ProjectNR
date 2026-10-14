@@ -119,6 +119,17 @@ protected:
 	 */
 	bool TryClimbAlongPath();
 
+	/**
+	 * Climbing where no link says to, Left 4 Dead style: when the path does not reach (none, or
+	 * partial), up the shortest climbable wall towards the target; when the target is up high and
+	 * the path walks round without climbing, up a wall only if that is clearly shorter
+	 * (ShortcutGain). Looks once per OnDemandInterval. True when a climb has started.
+	 */
+	bool TryClimbOnDemand(float Now);
+
+	/** The target's feet are ElevatedTargetHeight or more above this enemy's. */
+	bool IsTargetElevated() const;
+
 	bool IsDirectionNavigable(const FVector& Direction) const;
 	bool FindNavigableDirection(const FVector& Desired, FVector& OutDirection) const;
 
@@ -237,6 +248,14 @@ private:
 
 	/** Index in CachedPathPoints where the route first goes up a climb link, or INDEX_NONE. */
 	int32 CachedClimbLinkIndex = INDEX_NONE;
+
+	/** The cached route stops short of its goal. */
+	bool bCachedPathPartial = false;
+
+	/** Length of the cached route, in cm. */
+	float CachedPathLength = 0.0f;
+
+	float LastOnDemandClimbCheck = -1000.0f;
 
 	float LastDodgeTime = -1000.0f;
 

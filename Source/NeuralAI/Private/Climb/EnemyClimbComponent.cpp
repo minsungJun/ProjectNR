@@ -210,7 +210,14 @@ void UEnemyClimbComponent::Cancel(const TCHAR* Reason)
 	}
 	UE_LOG(LogNeuralAI, Log, TEXT("%s gave up climbing after %.2f s at %s: %s"), *GetNameSafe(GetOwner()), Now() - ClimbStartTime,
 		*GetOwner()->GetActorLocation().ToCompactString(), Reason);
+	FailedWall = Ledge.Wall;
+	FailedWallTime = Now();
 	LetGo(IsOnWall());
+}
+
+bool UEnemyClimbComponent::IsWallExcluded(const AActor* Wall) const
+{
+	return Wall && FailedWall.Get() == Wall && Now() - FailedWallTime < GetDefault<UEnemyClimbSettings>()->FailedWallCooldown;
 }
 
 void UEnemyClimbComponent::DropDead()

@@ -56,6 +56,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "10.0"))
 	float NavProjectionHeight = 250.0f;
 
+	/**
+	 * Drop slots whose navmesh is more than this many cm above or below the target's: with the
+	 * target up on a block, the floor round its foot is no place to strike from. Enemies that climb
+	 * then go for the target itself, up the block.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "10.0"))
+	float MaxSlotHeightGap = 100.0f;
+
 	/** Also drop slots the target cannot see straight to (behind a wall or pillar). */
 	UPROPERTY(Config, EditAnywhere, Category = "Slots")
 	bool bRequireLineOfSight = true;
