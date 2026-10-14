@@ -380,7 +380,12 @@ void ANRHUD::DrawRoomStatus()
 	FString Label;
 	FLinearColor Color = NeutralColor;
 	float Scale = 1.4f;
-	if (Room->GetRoomState() == ENRRoomState::Active)
+	if (Room->GetRoomState() == ENRRoomState::Active && Room->IsSpawning())
+	{
+		Label = TEXT("ENEMIES INCOMING");
+		Color = HostileColor;
+	}
+	else if (Room->GetRoomState() == ENRRoomState::Active)
 	{
 		Label = FString::Printf(TEXT("ENEMIES LEFT  %d"), Room->GetRemainingEnemies());
 		Color = HostileColor;
