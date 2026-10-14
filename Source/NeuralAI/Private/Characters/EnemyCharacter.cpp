@@ -2,6 +2,7 @@
 
 #include "Characters/EnemyCharacter.h"
 
+#include "Climb/EnemyClimbComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/OverlapResult.h"
@@ -129,6 +130,7 @@ AEnemyCharacter::AEnemyCharacter()
 	SensorComponent = CreateDefaultSubobject<UEnemySensorComponent>(TEXT("SensorComponent"));
 	NeuralBrain = CreateDefaultSubobject<UNeuralBrainComponent>(TEXT("NeuralBrain"));
 	DebugComponent = CreateDefaultSubobject<UEnemyAIDebugComponent>(TEXT("DebugComponent"));
+	ClimbComponent = CreateDefaultSubobject<UEnemyClimbComponent>(TEXT("ClimbComponent"));
 
 	AIControllerClass = AEnemyAIController::StaticClass();
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
@@ -163,6 +165,11 @@ void AEnemyCharacter::BeginPlay()
 
 	GetCharacterMovement()->MaxWalkSpeed = MovementSpeed;
 
+	if (BodyMesh)
+	{
+		BodyRestTransform = BodyMesh->GetRelativeTransform();
+	}
+
 	if (HealthComponent)
 	{
 		HealthComponent->OnDeath.AddDynamic(this, &AEnemyCharacter::HandleDeath);
@@ -193,6 +200,11 @@ void AEnemyCharacter::ResolveComponentReferences()
 		DebugComponent = FindComponentByClass<UEnemyAIDebugComponent>();
 		Recovered += DebugComponent ? 1 : 0;
 	}
+	if (!ClimbComponent)
+	{
+		ClimbComponent = FindComponentByClass<UEnemyClimbComponent>();
+		Recovered += ClimbComponent ? 1 : 0;
+	}
 
 	if (Recovered > 0)
 	{
@@ -222,8 +234,26 @@ void AEnemyCharacter::HandleDeath(AActor* Killer)
 	GetCharacterMovement()->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
+	// Killed on a wall it lets go and falls instead of hanging there.
+	if (ClimbComponent)
+	{
+		ClimbComponent->DropDead();
+	}
+
 	// The controller checks IsDead() before issuing anything, so unpossessing is not
 	// required. Leave the pawn in place so the death state stays inspectable.
+}
+
+void AEnemyCharacter::SetClimbPose(float Alpha)
+{
+	if (!BodyMesh)
+	{
+		return;
+	}
+	const float A = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	BodyMesh->SetRelativeLocationAndRotation(
+		FMath::Lerp(BodyRestTransform.GetLocation(), ClimbBodyLocation, A),
+		FQuat::Slerp(BodyRestTransform.GetRotation(), ClimbBodyRotation.Quaternion(), A));
 }
 
 int32 AEnemyCharacter::PerformAttack()

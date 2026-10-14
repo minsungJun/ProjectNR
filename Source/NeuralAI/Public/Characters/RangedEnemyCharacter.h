@@ -30,6 +30,9 @@ public:
 	virtual int32 GetPreferredSlotRing() const override { return 1; }
 	virtual bool UsesAttackTokens() const override { return false; }
 
+	/** Shooters keep to the floor and shoot up instead (decided 2026-10-14). */
+	virtual bool CanClimb() const override { return false; }
+
 protected:
 	virtual void BeginPlay() override;
 

@@ -10,6 +10,7 @@ class UHealthComponent;
 class UEnemySensorComponent;
 class UNeuralBrainComponent;
 class UEnemyAIDebugComponent;
+class UEnemyClimbComponent;
 class UStaticMeshComponent;
 class UStateTree;
 class UEnemyAIProfile;
@@ -61,6 +62,18 @@ public:
 
 	/** Whether its attacks take turns through the attack tokens. Close-in strikes do. */
 	virtual bool UsesAttackTokens() const { return true; }
+
+	UFUNCTION(BlueprintPure, Category = "Enemy")
+	UEnemyClimbComponent* GetClimbComponent() const { return ClimbComponent; }
+
+	/** Whether it goes up walls to reach its target. Crawlers do; shooters keep to the floor. */
+	virtual bool CanClimb() const { return true; }
+
+	/**
+	 * Lays the body mesh against the wall: 0 standing as usual, 1 belly to the wall in front,
+	 * head up. Driven by the climb component; the crawler has no animation, so this is the climb.
+	 */
+	void SetClimbPose(float Alpha);
 
 	/**
 	 * State tree that gates this enemy's behaviour, or null to run the controller's own
@@ -130,6 +143,16 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UEnemyAIDebugComponent> DebugComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UEnemyClimbComponent> ClimbComponent;
+
+	/** Body mesh, relative to the capsule, while on a wall: tipped head up, belly to the wall just in front. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Climb")
+	FRotator ClimbBodyRotation = FRotator(90.0f, 0.0f, 0.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Climb")
+	FVector ClimbBodyLocation = FVector(17.0f, 0.0f, 0.0f);
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy", meta = (ClampMin = "1.0"))
 	float MovementSpeed = 400.0f;
 
@@ -162,5 +185,8 @@ protected:
 
 private:
 	bool bStunned = false;
+
+	/** The body mesh's own place on the capsule, to come back to after a climb. */
+	FTransform BodyRestTransform;
 	FTimerHandle StunTimer;
 };

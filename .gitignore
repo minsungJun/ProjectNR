@@ -100,3 +100,5 @@ DerivedDataCache/*
 !/Content/Levels/
 /Content/Levels/*
 !/Content/Levels/GridRun/
+# Test map for enemy climbing, needed by the NeuralAI.Climb.World test.
+!/Content/Levels/Lvl_ClimbTest.umap

@@ -3,6 +3,7 @@
 #include "Controllers/EnemyAIController.h"
 
 #include "Characters/EnemyCharacter.h"
+#include "Climb/EnemyClimbComponent.h"
 #include "Combat/AttackTokenSubsystem.h"
 #include "Combat/PositionalSlotSettings.h"
 #include "Combat/PositionalSlotSubsystem.h"
@@ -178,6 +179,15 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 
 	// Before the stun check: a stunned enemy keeps its slot and goes back to it afterwards.
 	UpdatePositionalSlot();
+
+	// On the way up a wall the climb owns the body - no strikes, no dodges, no walking - until it
+	// is over the top. Sensing, thinking and the slot carry on.
+	if (const UEnemyClimbComponent* Climb = ControlledEnemy->GetClimbComponent(); Climb && Climb->IsClimbing())
+	{
+		DesiredMovement = FVector::ZeroVector;
+		CurrentAction = EEnemyActionType::Climb;
+		return;
+	}
 
 	// A stunned enemy keeps sensing and thinking - memory should still accumulate while
 	// it is helpless - but nothing it wants is allowed to reach the body.

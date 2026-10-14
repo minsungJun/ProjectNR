@@ -33,5 +33,11 @@ public class NeuralAI : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
+
+		// NeuralAI.Climb.World opens a map in PIE and ends it again (FEndPlayMapCommand).
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
 	}
 }

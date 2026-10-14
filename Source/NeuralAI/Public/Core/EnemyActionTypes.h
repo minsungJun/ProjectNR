@@ -18,5 +18,7 @@ enum class EEnemyActionType : uint8
 	None,
 	Move,
 	Dodge,
-	Attack
+	Attack,
+	/** Going up a wall: the climb component owns the body until it is over the top. */
+	Climb
 };
