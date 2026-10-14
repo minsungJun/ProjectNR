@@ -108,6 +108,13 @@ struct NEURALAI_API FEnemyClimbProbe
 	static EEnemyClimbProbeResult ProbeDirection(const UWorld* World, const ACharacter* Character, const FVector& Direction,
 		const UEnemyClimbSettings& Settings, FEnemyClimbLedge& OutLedge);
 
+	/**
+	 * The same for a body of the given size whose capsule centre is at Start, standing on floors
+	 * no steeper than WalkableFloorZ, ignoring Ignore: for probing where no enemy stands yet.
+	 */
+	static EEnemyClimbProbeResult ProbeFrom(const UWorld* World, const FBody& Body, const FVector& Start, const FVector& Direction,
+		const UEnemyClimbSettings& Settings, float WalkableFloorZ, const AActor* Ignore, FEnemyClimbLedge& OutLedge);
+
 	/** Probes Directions ways round the character and gives the climbable wall with the shortest walk to its foot. */
 	static EEnemyClimbProbeResult FindNearest(const UWorld* World, const ACharacter* Character, const UEnemyClimbSettings& Settings,
 		int32 Directions, FEnemyClimbLedge& OutLedge);

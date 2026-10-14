@@ -44,6 +44,7 @@ bool UEnemyClimbComponent::StartClimb(const FEnemyClimbLedge& InLedge)
 	}
 	Ledge = InLedge;
 	ClimbStartTime = Now();
+	LastBlocker = TEXT("nothing");
 	SetComponentTickEnabled(true);
 	UE_LOG(LogNeuralAI, Log, TEXT("%s climbing %s: %.0f cm up, foot %.0f cm away"), *GetNameSafe(GetOwner()),
 		*GetNameSafe(Ledge.Wall.Get()), Ledge.GetHeight(), Ledge.GetDistanceTo(GetOwner()->GetActorLocation()));
@@ -165,6 +166,10 @@ bool UEnemyClimbComponent::MoveBody(const FVector& Location, const FVector& Goal
 	ACharacter* Character = GetCharacter();
 	FHitResult Hit;
 	Character->SetActorLocation(Location, true, &Hit);
+	if (Hit.bBlockingHit)
+	{
+		LastBlocker = FString::Printf(TEXT("%s/%s at %s"), *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()), *Hit.ImpactPoint.ToCompactString());
+	}
 	if (IsStuck(FVector::Dist(Character->GetActorLocation(), Goal)))
 	{
 		Cancel(*FString::Printf(TEXT("stuck %s (%s in the way)"),
@@ -188,8 +193,12 @@ bool UEnemyClimbComponent::IsStuck(float Remaining)
 
 void UEnemyClimbComponent::Finish()
 {
-	UE_LOG(LogNeuralAI, Log, TEXT("%s climbed %.0f cm in %.2f s, now at %s"), *GetNameSafe(GetOwner()), Ledge.GetHeight(),
-		Now() - ClimbStartTime, *GetOwner()->GetActorLocation().ToCompactString());
+	// Something standing on the edge (the player, as often as not) can keep it from getting all the
+	// way in; it lets go there and the movement component sorts out where it lands.
+	const float Short = FVector::Dist2D(GetOwner()->GetActorLocation(), Ledge.StandCenter);
+	UE_LOG(LogNeuralAI, Log, TEXT("%s climbed %.0f cm in %.2f s, now at %s%s"), *GetNameSafe(GetOwner()), Ledge.GetHeight(),
+		Now() - ClimbStartTime, *GetOwner()->GetActorLocation().ToCompactString(),
+		Short > 10.0f ? *FString::Printf(TEXT(", %.0f cm short of where it meant to stand (%s in the way)"), Short, *LastBlocker) : TEXT(""));
 	LetGo(true);
 }
 

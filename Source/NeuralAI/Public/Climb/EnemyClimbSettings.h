@@ -67,6 +67,21 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Climb", meta = (ClampMin = "0.1"))
 	float StuckTime = 2.0f;
 
+	/**
+	 * Put the walls that can be climbed into the navmesh as links, so paths go up them when that is
+	 * the shorter way (UEnemyClimbLinkSubsystem). Read when play starts.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Links")
+	bool bBuildClimbLinks = true;
+
+	/** Distance, in cm, between the spots probed along each side of a block or wall. */
+	UPROPERTY(Config, EditAnywhere, Category = "Links", meta = (ClampMin = "50.0"))
+	float LinkSpacing = 200.0f;
+
+	/** How near, in cm along the floor, an enemy following a path comes to the foot of a climb link before it starts climbing. */
+	UPROPERTY(Config, EditAnywhere, Category = "Links", meta = (ClampMin = "20.0"))
+	float LinkTriggerDistance = 150.0f;
+
 	/** Draw what the probe found and the climb under way. Same as NeuralAI.Climb.Debug 1. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug")
 	bool bDrawDebug = false;

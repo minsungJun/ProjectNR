@@ -92,4 +92,6 @@ private:
 	/** Nearest the phase's goal so far, and when it last got nearer. */
 	float BestRemaining = 0.0f;
 	float LastProgressTime = 0.0f;
+
+	FString LastBlocker;
 };

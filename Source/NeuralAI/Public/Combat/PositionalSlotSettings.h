@@ -144,6 +144,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0"))
 	float OrbitMargin = 150.0f;
 
+	/**
+	 * Going round only happens on the target's own floor: with the goal more than this many cm above
+	 * or below the enemy (the target up on a platform), it heads for the goal by the navmesh, up a
+	 * wall or a ramp, instead of circling at the foot.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0"))
+	float OrbitMaxHeightGap = 100.0f;
+
 	/** How far round the ring, in degrees, each step of going round aims. */
 	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "10.0", ClampMax = "90.0"))
 	float OrbitStepDegrees = 60.0f;

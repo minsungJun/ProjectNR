@@ -97,16 +97,27 @@ FEnemyClimbProbe::FBody FEnemyClimbProbe::GetBody(const ACharacter* Character)
 EEnemyClimbProbeResult FEnemyClimbProbe::ProbeDirection(const UWorld* World, const ACharacter* Character, const FVector& Direction,
 	const UEnemyClimbSettings& Settings, FEnemyClimbLedge& OutLedge)
 {
+	if (!Character)
+	{
+		OutLedge = FEnemyClimbLedge();
+		return EEnemyClimbProbeResult::NoWall;
+	}
+	const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+	return ProbeFrom(World, GetBody(Character), Character->GetActorLocation(), Direction, Settings,
+		Movement ? Movement->GetWalkableFloorZ() : 0.71f, Character, OutLedge);
+}
+
+EEnemyClimbProbeResult FEnemyClimbProbe::ProbeFrom(const UWorld* World, const FBody& Body, const FVector& Start, const FVector& Direction,
+	const UEnemyClimbSettings& Settings, float WalkableFloorZ, const AActor* Ignore, FEnemyClimbLedge& OutLedge)
+{
 	OutLedge = FEnemyClimbLedge();
 	const FVector Flat = Direction.GetSafeNormal2D();
-	if (!World || !Character || Flat.IsNearlyZero())
+	if (!World || Flat.IsNearlyZero())
 	{
 		return EEnemyClimbProbeResult::NoWall;
 	}
-	const FBody Body = GetBody(Character);
 	const FCollisionObjectQueryParams Geometry = EnemyClimbProbe::GeometryQuery();
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyClimbProbe), false, Character);
-	const FVector Start = Character->GetActorLocation();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyClimbProbe), false, Ignore);
 
 	// The wall: straight out at body height, an upright face.
 	FHitResult WallHit;
@@ -156,8 +167,7 @@ EEnemyClimbProbeResult FEnemyClimbProbe::ProbeDirection(const UWorld* World, con
 	{
 		return HeightResult;
 	}
-	const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
-	if (TopHit.ImpactNormal.Z < (Movement ? Movement->GetWalkableFloorZ() : 0.71f))
+	if (TopHit.ImpactNormal.Z < WalkableFloorZ)
 	{
 		return EEnemyClimbProbeResult::TopNotWalkable;
 	}

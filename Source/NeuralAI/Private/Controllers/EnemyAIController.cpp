@@ -4,6 +4,10 @@
 
 #include "Characters/EnemyCharacter.h"
 #include "Climb/EnemyClimbComponent.h"
+#include "Climb/EnemyClimbLinkSubsystem.h"
+#include "Climb/EnemyClimbNavTypes.h"
+#include "Climb/EnemyClimbSettings.h"
+#include "NavMesh/NavMeshPath.h"
 #include "Combat/AttackTokenSubsystem.h"
 #include "Combat/PositionalSlotSettings.h"
 #include "Combat/PositionalSlotSubsystem.h"
@@ -198,6 +202,10 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 	}
 
 	UpdatePathToTarget(Now);
+	if (TryClimbAlongPath())
+	{
+		return;
+	}
 
 	// Dodge goes first: it is the only action allowed to pre-empt another.
 	TryDodge(Now, ImmediateThreat);
@@ -459,6 +467,7 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	if (!Target)
 	{
 		CachedPathPoints.Reset();
+		CachedClimbLinkIndex = INDEX_NONE;
 		return;
 	}
 
@@ -477,21 +486,77 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 		}
 	}
 	LastPathGoal = Goal;
+	// Paths may go up walls (climb links); those that do not climb keep to the floor.
+	const TSubclassOf<UNavigationQueryFilter> Filter = ControlledEnemy->CanClimb() ? nullptr : UNavFilter_EnemyNoClimb::StaticClass();
 	UNavigationPath* Path = bSlotGoal
-		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), Goal)
-		: UNavigationSystemV1::FindPathToActorSynchronously(this, ControlledEnemy->GetActorLocation(), Target);
+		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), Goal, nullptr, Filter)
+		: UNavigationSystemV1::FindPathToActorSynchronously(this, ControlledEnemy->GetActorLocation(), Target, 50.0f, nullptr, Filter);
 
 	// A partial path still helps: it walks the enemy as far towards the target as the
 	// navmesh allows, which beats pushing straight into whatever is in the way.
 	LastPathUpdateTime = Now;
+	CachedClimbLinkIndex = INDEX_NONE;
 	if (Path && Path->IsValid() && Path->PathPoints.Num() > 1)
 	{
 		CachedPathPoints = Path->PathPoints;
+
+		// Where the route first goes up a wall: a link point in the climb area.
+		const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+		const ANavigationData* NavData = Navigation ? Navigation->GetDefaultNavDataInstance() : nullptr;
+		const int32 ClimbArea = NavData ? NavData->GetAreaID(UNavArea_Climb::StaticClass()) : INDEX_NONE;
+		const TArray<FNavPathPoint>& Points = Path->GetPath()->GetPathPoints();
+		for (int32 Index = 0; ClimbArea != INDEX_NONE && Index + 1 < Points.Num(); ++Index)
+		{
+			const FNavMeshNodeFlags Flags(Points[Index].Flags);
+			if (Flags.IsNavLink() && Flags.Area == ClimbArea)
+			{
+				CachedClimbLinkIndex = Index;
+				break;
+			}
+		}
 	}
 	else
 	{
 		CachedPathPoints.Reset();
 	}
+}
+
+bool AEnemyAIController::TryClimbAlongPath()
+{
+	if (CachedClimbLinkIndex == INDEX_NONE || CachedClimbLinkIndex + 1 >= CachedPathPoints.Num() || !ControlledEnemy->CanClimb())
+	{
+		return false;
+	}
+	UEnemyClimbComponent* Climb = ControlledEnemy->GetClimbComponent();
+	const UEnemyClimbLinkSubsystem* Links = GetWorld()->GetSubsystem<UEnemyClimbLinkSubsystem>();
+	const FVector Start = CachedPathPoints[CachedClimbLinkIndex];
+	const FVector End = CachedPathPoints[CachedClimbLinkIndex + 1];
+	const FVector Feet = ControlledEnemy->GetActorLocation() - FVector(0.0f, 0.0f, ControlledEnemy->GetSimpleCollisionHalfHeight());
+	if (!Climb || Climb->IsClimbing() || !Links
+		|| FVector::Dist2D(Feet, Start) > GetDefault<UEnemyClimbSettings>()->LinkTriggerDistance || FMath::Abs(Feet.Z - Start.Z) > 100.0f)
+	{
+		return false;
+	}
+
+	FEnemyClimbLedge Ledge;
+	if (!Links->FindLedge(Start, End, Ledge))
+	{
+		UE_LOG(LogNeuralAI, Warning, TEXT("%s: path goes up a climb link at %s with no climb known there"),
+			*GetNameSafe(ControlledEnemy), *Start.ToCompactString());
+		CachedClimbLinkIndex = INDEX_NONE;
+		return false;
+	}
+	if (!Climb->StartClimb(Ledge))
+	{
+		return false;
+	}
+	// Over the top the route is planned afresh.
+	CachedPathPoints.Reset();
+	CachedClimbLinkIndex = INDEX_NONE;
+	LastPathUpdateTime = -1000.0f;
+	DesiredMovement = FVector::ZeroVector;
+	CurrentAction = EEnemyActionType::Climb;
+	return true;
 }
 
 FVector AEnemyAIController::GetApproachDirection() const
@@ -580,6 +645,12 @@ FVector AEnemyAIController::GetSteerPoint(const FVector& Goal) const
 	const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
 	const FVector Center = Target->GetActorLocation();
 	const FVector From = ControlledEnemy->GetActorLocation();
+
+	// Up on a platform (or down from one) the way there is the navmesh's, not round the ring.
+	if (FMath::Abs(Goal.Z - From.Z) > Settings->OrbitMaxHeightGap)
+	{
+		return Goal;
+	}
 
 	// Lined up with the goal, seen from the target: straight in, between the neighbouring slots.
 	const float FromBearing = FMath::RadiansToDegrees(FMath::Atan2(From.Y - Center.Y, From.X - Center.X));

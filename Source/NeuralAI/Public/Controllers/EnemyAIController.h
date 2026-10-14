@@ -113,6 +113,12 @@ protected:
 	 */
 	FVector GetApproachDirection() const;
 
+	/**
+	 * Starts climbing once the enemy comes within LinkTriggerDistance of where its path goes up a
+	 * wall (a climb link, UEnemyClimbLinkSubsystem). True when a climb has started.
+	 */
+	bool TryClimbAlongPath();
+
 	bool IsDirectionNavigable(const FVector& Direction) const;
 	bool FindNavigableDirection(const FVector& Desired, FVector& OutDirection) const;
 
@@ -228,6 +234,9 @@ private:
 
 	/** Where the cached route leads, to tell whether a moving slot needs a new one. */
 	FVector LastPathGoal = FVector::ZeroVector;
+
+	/** Index in CachedPathPoints where the route first goes up a climb link, or INDEX_NONE. */
+	int32 CachedClimbLinkIndex = INDEX_NONE;
 
 	float LastDodgeTime = -1000.0f;
 
