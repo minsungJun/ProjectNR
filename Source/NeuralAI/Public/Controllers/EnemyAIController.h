@@ -162,9 +162,9 @@ protected:
 	float DodgeThreshold = 0.55f;
 
 	/** Seconds from the start of one dodge until the next may start. 1.2 until 2026-10-13, then
-	 *  briefly 0.4. */
+	 *  briefly 0.4, 0.6 until 2026-10-14. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy AI|Dodge", meta = (ClampMin = "0.0"))
-	float DodgeCooldown = 0.6f;
+	float DodgeCooldown = 1.0f;
 
 	/** Sideways launch speed of a dodge, cm/s. The enemy flies for about 0.05 s and then brakes
 	 *  on the ground, so distance is not proportional: 700 carried it about 64 cm, 1000 about

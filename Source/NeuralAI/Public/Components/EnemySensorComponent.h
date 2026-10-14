@@ -190,9 +190,9 @@ protected:
 	float ShotFlinchDuration = 0.3f;
 
 	/** Seconds after a flinch before another shot can start one. With ShotFlinchDuration this
-	 *  makes the shot dodge cycle 0.6 s, matching the controller's DodgeCooldown. */
+	 *  makes the shot dodge cycle 1.0 s, matching the controller's DodgeCooldown. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Shot", meta = (ClampMin = "0.0"))
-	float ShotFlinchCooldown = 0.3f;
+	float ShotFlinchCooldown = 0.7f;
 
 	/** A shot line passing closer to us than this is dead centre: the flinch goes the way we are
 	 *  already moving, or either way, instead of away from the line. */
