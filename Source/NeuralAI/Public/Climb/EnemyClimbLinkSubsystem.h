@@ -8,13 +8,16 @@
 #include "EnemyClimbLinkSubsystem.generated.h"
 
 class ULevel;
+class UStaticMeshComponent;
 
 /**
  * Puts the walls enemies can climb into the navmesh, Left 4 Dead style, so a path takes a wall
  * when it is the shorter way and the controller climbs it where the path says.
  *
  * When play starts, and whenever a level is added (grid run rooms stream in), every static mesh
- * in the level that blocks pawns is probed along each of its sides, every LinkSpacing cm, the way
+ * in the level that blocks pawns and stays put (Mobility Static, or blocking one of
+ * MovableClimbChannels, as LevelBlock_Traversable does) is probed along each of its sides, every
+ * LinkSpacing cm, the way
  * a crawler would (FEnemyClimbProbe). Each climbable spot gets two navmesh links, kept on a
  * transient ANavLinkProxy of its own in that level: up from the foot of the wall to the top (UNavArea_Climb,
  * so it costs more than walking and shooters' paths leave it out), and down the other way (plain
@@ -35,6 +38,15 @@ public:
 
 	/** Probes Level's geometry and adds its climb links, once per level. Returns the climbs found. */
 	int32 BuildLinks(ULevel* Level);
+
+	/**
+	 * Probes one actor's blocks and adds their climb links, in its level: for a block put down
+	 * during play. Returns the climbs found.
+	 */
+	int32 AddLinksFor(AActor* Actor);
+
+	/** Whether Mesh is a block to climb: it blocks pawns and stays put (see MovableClimbChannels). */
+	static bool IsClimbGeometry(const UStaticMeshComponent* Mesh);
 
 	/**
 	 * The climb a link up was made for: its foot (link start) within Tolerance of Start and its
@@ -70,6 +82,9 @@ private:
 
 	void HandleLevelAdded(ULevel* Level, UWorld* World);
 	void HandleLevelRemoved(ULevel* Level, UWorld* World);
+
+	/** Probes Actor's blocks and adds a link for each climbable spot. Returns the probes made. */
+	int32 ProbeActor(ULevel* Level, AActor* Actor);
 
 	/** The navmesh links of one climb, up and down, on a transient ANavLinkProxy in Level. */
 	void SpawnLinkHolder(UWorld* World, ULevel* Level, const FVector& Start, const FVector& End);

@@ -7,6 +7,7 @@
 class ACharacter;
 class AActor;
 class UEnemyClimbSettings;
+class UPrimitiveComponent;
 class UWorld;
 
 /** Why a wall can or cannot be climbed. */
@@ -29,7 +30,9 @@ enum class EEnemyClimbProbeResult : uint8
 	/** Not enough room to stand on top. */
 	NoRoomOnTop,
 	/** Something sticks out of the wall on the way up, or over the edge. */
-	Blocked
+	Blocked,
+	/** The wall is tagged not to be climbed (NoClimbTag). */
+	Excluded
 };
 
 /**
@@ -79,6 +82,9 @@ struct NEURALAI_API FEnemyClimbProbe
 
 	/** A surface with this normal is a wall: it leans up by no more than MaxNormalZ. */
 	static bool IsUpright(const FVector& Normal, float MaxNormalZ);
+
+	/** The hit actor or component carries the settings' NoClimbTag. */
+	static bool IsExcluded(const AActor* Actor, const UPrimitiveComponent* Component);
 
 	/**
 	 * Leeway on the height limits, in cm: a floor a hair below zero must not put a 6 m wall over a

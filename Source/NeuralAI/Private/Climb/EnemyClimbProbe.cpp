@@ -35,6 +35,7 @@ const TCHAR* FEnemyClimbProbe::ToString(EEnemyClimbProbeResult Result)
 	case EEnemyClimbProbeResult::TopNotWalkable: return TEXT("top too steep");
 	case EEnemyClimbProbeResult::NoRoomOnTop:    return TEXT("no room on top");
 	case EEnemyClimbProbeResult::Blocked:        return TEXT("blocked on the way");
+	case EEnemyClimbProbeResult::Excluded:       return TEXT("tagged not to climb");
 	}
 	return TEXT("?");
 }
@@ -42,6 +43,12 @@ const TCHAR* FEnemyClimbProbe::ToString(EEnemyClimbProbeResult Result)
 bool FEnemyClimbProbe::IsUpright(const FVector& Normal, float MaxNormalZ)
 {
 	return FMath::Abs(Normal.Z) <= MaxNormalZ && !Normal.GetSafeNormal2D().IsNearlyZero();
+}
+
+bool FEnemyClimbProbe::IsExcluded(const AActor* Actor, const UPrimitiveComponent* Component)
+{
+	const FName Tag = GetDefault<UEnemyClimbSettings>()->NoClimbTag;
+	return !Tag.IsNone() && ((Actor && Actor->ActorHasTag(Tag)) || (Component && Component->ComponentHasTag(Tag)));
 }
 
 EEnemyClimbProbeResult FEnemyClimbProbe::CheckHeight(float Height, float MinHeight, float MaxHeight)
@@ -127,6 +134,10 @@ EEnemyClimbProbeResult FEnemyClimbProbe::ProbeFrom(const UWorld* World, const FB
 	}
 	OutLedge.Wall = WallHit.GetActor();
 	OutLedge.WallPoint = WallHit.ImpactPoint;
+	if (IsExcluded(WallHit.GetActor(), WallHit.GetComponent()))
+	{
+		return EEnemyClimbProbeResult::Excluded;
+	}
 	if (!IsUpright(WallHit.ImpactNormal, Settings.MaxWallNormalZ))
 	{
 		return EEnemyClimbProbeResult::NotUpright;

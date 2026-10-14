@@ -18,6 +18,12 @@
 //
 // NeuralAI.Climb.Crowd, with links: eight crawlers after the player on the 4 m platform go up its
 // wall side by side - never two bodies on the wall in each other - and all get up.
+//
+// NeuralAI.Climb.Traversable: blocks put down during play get links (AddLinksFor) when they never
+// move or block the "Traversable" channel - a Movable block that does gets links and a path up its
+// wall, a Movable block that does not gets none, and LevelBlock_Traversable (sample content, half
+// sunk into the floor as placed by default) gets links when the asset is there. One tagged NoClimb
+// gets none.
 
 #include "Characters/EnemyCharacter.h"
 #include "Climb/EnemyClimbComponent.h"
@@ -27,6 +33,9 @@
 #include "Climb/EnemyClimbSettings.h"
 #include "Components/EnemySensorComponent.h"
 #include "Components/HealthComponent.h"
+#include "Engine/CollisionProfile.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
@@ -566,6 +575,111 @@ bool FEnemyClimbCrowdTest::RunTest(const FString& Parameters)
 			AddInfo(FString::Printf(TEXT("closest two side by side on the wall: %.0f cm (%s)"), Crowd->Closest, *Crowd->ClosestWhere));
 			TestTrue(FString::Printf(TEXT("never two bodies on the wall in each other (closest %.0f cm across)"), Crowd->Closest), Crowd->Closest >= 83.0f);
 		}
+		return true;
+	}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	return true;
+}
+
+namespace EnemyClimbWorldTest
+{
+	/** A Movable 2 x 2 x 2.5 m block standing on the floor at At, blocking the channel named Channel if given. */
+	AStaticMeshActor* SpawnMovableBlock(UWorld* World, const FVector2D& At, FName Channel)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AStaticMeshActor* Block = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FVector(At.X, At.Y, 125.0f), FRotator::ZeroRotator, Params);
+		if (!Block)
+		{
+			return nullptr;
+		}
+		UStaticMeshComponent* Mesh = Block->GetStaticMeshComponent();
+		Mesh->SetMobility(EComponentMobility::Movable);
+		Mesh->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+		Mesh->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+		Block->SetActorScale3D(FVector(2.0f, 2.0f, 2.5f));
+		for (int32 Index = 0; Channel != NAME_None && Index < ECC_MAX; ++Index)
+		{
+			if (UCollisionProfile::Get()->ReturnChannelNameFromContainerIndex(Index) == Channel)
+			{
+				Mesh->SetCollisionResponseToChannel(static_cast<ECollisionChannel>(Index), ECR_Block);
+			}
+		}
+		return Block;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyClimbTraversableTest, "NeuralAI.Climb.Traversable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FEnemyClimbTraversableTest::RunTest(const FString& Parameters)
+{
+	using namespace EnemyClimbWorldTest;
+
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		return IsComplete(UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(1000.0f, -300.0f, 62.0f), FVector(1000.0f, -1200.0f, 462.0f)));
+	}, 30.0f));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		UEnemyClimbLinkSubsystem* Links = World ? World->GetSubsystem<UEnemyClimbLinkSubsystem>() : nullptr;
+		if (!Links)
+		{
+			AddError(TEXT("no climb link subsystem"));
+			return true;
+		}
+		AStaticMeshActor* Traversable = SpawnMovableBlock(World, FVector2D(-2200.0f, -1300.0f), TEXT("Traversable"));
+		AStaticMeshActor* Plain = SpawnMovableBlock(World, FVector2D(-2200.0f, 1300.0f), NAME_None);
+		AStaticMeshActor* Tagged = SpawnMovableBlock(World, FVector2D(-2600.0f, -1300.0f), TEXT("Traversable"));
+		Tagged->Tags.Add(GetDefault<UEnemyClimbSettings>()->NoClimbTag);
+		const int32 TraversableLinks = Links->AddLinksFor(Traversable);
+		const int32 PlainLinks = Links->AddLinksFor(Plain);
+		const int32 TaggedLinks = Links->AddLinksFor(Tagged);
+		TestEqual(TEXT("a block tagged NoClimb gets none"), TaggedLinks, 0);
+		TestTrue(FString::Printf(TEXT("a Movable block that blocks Traversable gets links (%d)"), TraversableLinks), TraversableLinks > 0);
+		TestEqual(TEXT("a Movable block that does not gets none"), PlainLinks, 0);
+
+		// The sample block itself, where the project has it: dropped in with its middle on the floor.
+		if (UClass* SampleClass = LoadClass<AActor>(nullptr, TEXT("/Game/Levels/LevelPrototyping/LevelBlock_Traversable.LevelBlock_Traversable_C")))
+		{
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			AActor* Sample = World->SpawnActor<AActor>(SampleClass, FVector(-2200.0f, 600.0f, 0.0f), FRotator::ZeroRotator, Params);
+			const int32 SampleLinks = Links->AddLinksFor(Sample);
+			TestTrue(FString::Printf(TEXT("LevelBlock_Traversable, half sunk, gets links (%d)"), SampleLinks), SampleLinks > 0);
+			for (const FEnemyClimbLedge& Ledge : Links->GetLedges())
+			{
+				if (Ledge.Wall.Get() == Sample)
+				{
+					AddInfo(FString::Printf(TEXT("LevelBlock_Traversable: %.0f cm up, foot %s"), Ledge.GetHeight(), *Ledge.BaseCenter.ToCompactString()));
+					break;
+				}
+			}
+		}
+		else
+		{
+			AddInfo(TEXT("LevelBlock_Traversable is not in this project: that part is skipped"));
+		}
+		return true;
+	}));
+
+	// Once the navmesh round the new block is rebuilt, a path onto it goes up its wall.
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		return GoesUpWall(World, UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(-2200.0f, -800.0f, 62.0f), FVector(-2200.0f, -1300.0f, 312.0f)));
+	}, 15.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		UNavigationPath* Path = UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(-2200.0f, -800.0f, 62.0f), FVector(-2200.0f, -1300.0f, 312.0f));
+		TestTrue(TEXT("a path onto the Traversable block"), IsComplete(Path));
+		TestTrue(TEXT("it goes up the block's wall"), GoesUpWall(World, Path));
 		return true;
 	}));
 

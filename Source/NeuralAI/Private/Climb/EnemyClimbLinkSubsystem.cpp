@@ -6,6 +6,7 @@
 #include "Climb/EnemyClimbNavTypes.h"
 #include "Climb/EnemyClimbSettings.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/CollisionProfile.h"
 #include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -86,6 +87,34 @@ bool UEnemyClimbLinkSubsystem::HasLinkNear(const FEnemyClimbLedge& Ledge) const
 	});
 }
 
+bool UEnemyClimbLinkSubsystem::IsClimbGeometry(const UStaticMeshComponent* Mesh)
+{
+	if (!Mesh || !Mesh->GetStaticMesh() || !Mesh->IsCollisionEnabled() || Mesh->IsSimulatingPhysics()
+		|| Mesh->GetCollisionResponseToChannel(ECC_Pawn) != ECR_Block || FEnemyClimbProbe::IsExcluded(Mesh->GetOwner(), Mesh))
+	{
+		return false;
+	}
+	// Fixed level geometry: doors and other movers would leave links hanging. A Movable block
+	// counts when it blocks a channel that marks blocks made to be climbed over.
+	if (Mesh->Mobility == EComponentMobility::Static)
+	{
+		return true;
+	}
+	const UCollisionProfile* Profile = UCollisionProfile::Get();
+	for (const FName& Name : GetDefault<UEnemyClimbSettings>()->MovableClimbChannels)
+	{
+		for (int32 Channel = 0; Channel < ECC_MAX; ++Channel)
+		{
+			if (Profile->ReturnChannelNameFromContainerIndex(Channel) == Name
+				&& Mesh->GetCollisionResponseToChannel(static_cast<ECollisionChannel>(Channel)) == ECR_Block)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 int32 UEnemyClimbLinkSubsystem::BuildLinks(ULevel* Level)
 {
 	UWorld* World = GetWorld();
@@ -94,12 +123,6 @@ int32 UEnemyClimbLinkSubsystem::BuildLinks(ULevel* Level)
 		return 0;
 	}
 	BuiltLevels.Add(Level);
-
-	// Probe as a crawler would: its capsule, its floors.
-	const UEnemyClimbSettings& Settings = *GetDefault<UEnemyClimbSettings>();
-	const AEnemyCharacter* Crawler = GetDefault<AEnemyCharacter>();
-	const FEnemyClimbProbe::FBody Body = FEnemyClimbProbe::GetBody(Crawler);
-	const float WalkableFloorZ = Crawler->GetCharacterMovement() ? Crawler->GetCharacterMovement()->GetWalkableFloorZ() : 0.71f;
 	const double StartTime = FPlatformTime::Seconds();
 
 	int32 Probes = 0;
@@ -107,78 +130,119 @@ int32 UEnemyClimbLinkSubsystem::BuildLinks(ULevel* Level)
 	const TArray<TObjectPtr<AActor>> Actors = Level->Actors;
 	for (AActor* Actor : Actors)
 	{
-		if (!Actor || Actor->IsA<APawn>())
-		{
-			continue;
-		}
-		TInlineComponentArray<UStaticMeshComponent*> Meshes(Actor);
-		for (const UStaticMeshComponent* Mesh : Meshes)
-		{
-			// Fixed level geometry only: doors and other movers would leave links hanging.
-			if (!Mesh->GetStaticMesh() || Mesh->Mobility != EComponentMobility::Static || !Mesh->IsCollisionEnabled()
-				|| Mesh->GetCollisionResponseToChannel(ECC_Pawn) != ECR_Block)
-			{
-				continue;
-			}
-			const FBox Local = Mesh->GetStaticMesh()->GetBoundingBox();
-			const FTransform& Transform = Mesh->GetComponentTransform();
-			const FBox Bounds = Local.TransformBy(Transform);
-			if (Bounds.GetSize().Z < Settings.MinClimbHeight - FEnemyClimbProbe::HeightTolerance)
-			{
-				continue;
-			}
-
-			// Each upright side of the box, sampled along its length clear of the corners, probed
-			// straight at from just outside it, feet at the bottom of the box.
-			const FVector Center = Local.GetCenter();
-			const FVector Extent = Local.GetExtent();
-			const FVector Scale = Transform.GetScale3D().GetAbs();
-			for (int32 Side = 0; Side < 4; ++Side)
-			{
-				const bool bAlongX = Side < 2;
-				const float Sign = Side % 2 == 0 ? 1.0f : -1.0f;
-				const FVector LocalNormal = bAlongX ? FVector(Sign, 0.0f, 0.0f) : FVector(0.0f, Sign, 0.0f);
-				const FVector LocalAxis = bAlongX ? FVector(0.0f, 1.0f, 0.0f) : FVector(1.0f, 0.0f, 0.0f);
-				const FVector Normal = Transform.TransformVectorNoScale(LocalNormal);
-				if (!FEnemyClimbProbe::IsUpright(Normal, Settings.MaxWallNormalZ))
-				{
-					continue;
-				}
-				const FVector Out = Normal.GetSafeNormal2D();
-				const float HalfLength = bAlongX ? Extent.Y * Scale.Y : Extent.X * Scale.X;
-				const float Usable = HalfLength - Body.Radius - 10.0f;
-				const int32 Count = Usable > 0.0f ? FMath::FloorToInt32(2.0f * Usable / Settings.LinkSpacing) + 1 : 1;
-				for (int32 Index = 0; Index < Count; ++Index)
-				{
-					const float Along = Count > 1 ? -Usable + 2.0f * Usable * Index / (Count - 1) : 0.0f;
-					const FVector LocalFace = Center + LocalNormal * (bAlongX ? Extent.X : Extent.Y) + LocalAxis * (Along / (bAlongX ? Scale.Y : Scale.X));
-					const FVector Face = Transform.TransformPosition(LocalFace);
-					const FVector Start(Face.X + Out.X * (Body.Radius + Settings.WallGap + 30.0f), Face.Y + Out.Y * (Body.Radius + Settings.WallGap + 30.0f),
-						Bounds.Min.Z + Body.HalfHeight + 5.0f);
-
-					FEnemyClimbLedge Ledge;
-					++Probes;
-					if (FEnemyClimbProbe::ProbeFrom(World, Body, Start, -Out, Settings, WalkableFloorZ, nullptr, Ledge) != EEnemyClimbProbeResult::Ok
-						|| HasLinkNear(Ledge))
-					{
-						continue;
-					}
-					FClimbLink& Link = Links.AddDefaulted_GetRef();
-					Link.Level = Level;
-					Link.Ledge = Ledge;
-					Link.Start = FVector(Ledge.BaseCenter.X, Ledge.BaseCenter.Y, Ledge.FloorZ + 5.0f);
-					Link.End = FVector(Ledge.StandCenter.X, Ledge.StandCenter.Y, Ledge.TopZ + 5.0f);
-
-					SpawnLinkHolder(World, Level, Link.Start, Link.End);
-				}
-			}
-		}
+		Probes += ProbeActor(Level, Actor);
 	}
 
 	const int32 Found = Links.FilterByPredicate([Level](const FClimbLink& Link) { return Link.Level.Get() == Level; }).Num();
 	UE_LOG(LogNeuralAI, Log, TEXT("Climb links: %d climb(s) in %s from %d probes, %.1f ms"), Found, *GetNameSafe(Level->GetOuter()),
 		Probes, (FPlatformTime::Seconds() - StartTime) * 1000.0);
 	return Found;
+}
+
+int32 UEnemyClimbLinkSubsystem::AddLinksFor(AActor* Actor)
+{
+	ULevel* Level = Actor ? Actor->GetLevel() : nullptr;
+	if (!Level)
+	{
+		return 0;
+	}
+	const int32 Before = Links.Num();
+	ProbeActor(Level, Actor);
+	UE_LOG(LogNeuralAI, Log, TEXT("Climb links: %d climb(s) on %s"), Links.Num() - Before, *GetNameSafe(Actor));
+	return Links.Num() - Before;
+}
+
+int32 UEnemyClimbLinkSubsystem::ProbeActor(ULevel* Level, AActor* Actor)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Actor || Actor->IsA<APawn>())
+	{
+		return 0;
+	}
+
+	// Probe as a crawler would: its capsule, its floors.
+	const UEnemyClimbSettings& Settings = *GetDefault<UEnemyClimbSettings>();
+	const AEnemyCharacter* Crawler = GetDefault<AEnemyCharacter>();
+	const FEnemyClimbProbe::FBody Body = FEnemyClimbProbe::GetBody(Crawler);
+	const float WalkableFloorZ = Crawler->GetCharacterMovement() ? Crawler->GetCharacterMovement()->GetWalkableFloorZ() : 0.71f;
+
+	int32 Probes = 0;
+	TInlineComponentArray<UStaticMeshComponent*> Meshes(Actor);
+	for (const UStaticMeshComponent* Mesh : Meshes)
+	{
+		if (!IsClimbGeometry(Mesh))
+		{
+			continue;
+		}
+		const FBox Local = Mesh->GetStaticMesh()->GetBoundingBox();
+		const FTransform& Transform = Mesh->GetComponentTransform();
+		const FBox Bounds = Local.TransformBy(Transform);
+		if (Bounds.GetSize().Z < Settings.MinClimbHeight - FEnemyClimbProbe::HeightTolerance)
+		{
+			continue;
+		}
+
+		// Each upright side of the box, sampled along its length clear of the corners, probed
+		// straight at from just outside it, feet on the floor there.
+		const FVector Center = Local.GetCenter();
+		const FVector Extent = Local.GetExtent();
+		const FVector Scale = Transform.GetScale3D().GetAbs();
+		for (int32 Side = 0; Side < 4; ++Side)
+		{
+			const bool bAlongX = Side < 2;
+			const float Sign = Side % 2 == 0 ? 1.0f : -1.0f;
+			const FVector LocalNormal = bAlongX ? FVector(Sign, 0.0f, 0.0f) : FVector(0.0f, Sign, 0.0f);
+			const FVector LocalAxis = bAlongX ? FVector(0.0f, 1.0f, 0.0f) : FVector(1.0f, 0.0f, 0.0f);
+			const FVector Normal = Transform.TransformVectorNoScale(LocalNormal);
+			if (!FEnemyClimbProbe::IsUpright(Normal, Settings.MaxWallNormalZ))
+			{
+				continue;
+			}
+			const FVector Out = Normal.GetSafeNormal2D();
+			const float HalfLength = bAlongX ? Extent.Y * Scale.Y : Extent.X * Scale.X;
+			const float Usable = HalfLength - Body.Radius - 10.0f;
+			const int32 Count = Usable > 0.0f ? FMath::FloorToInt32(2.0f * Usable / Settings.LinkSpacing) + 1 : 1;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				const float Along = Count > 1 ? -Usable + 2.0f * Usable * Index / (Count - 1) : 0.0f;
+				const FVector LocalFace = Center + LocalNormal * (bAlongX ? Extent.X : Extent.Y) + LocalAxis * (Along / (bAlongX ? Scale.Y : Scale.X));
+				const FVector Face = Transform.TransformPosition(LocalFace);
+				const FVector Outside(Face.X + Out.X * (Body.Radius + Settings.WallGap + 30.0f), Face.Y + Out.Y * (Body.Radius + Settings.WallGap + 30.0f), 0.0f);
+
+				// Feet on the floor beside the block, wherever its bottom is: a block sunk into the
+				// floor (LevelBlock_Traversable's pivot is its middle) would otherwise be probed from
+				// under the floor.
+				FHitResult FloorHit;
+				FCollisionObjectQueryParams Geometry;
+				Geometry.AddObjectTypesToQuery(ECC_WorldStatic);
+				Geometry.AddObjectTypesToQuery(ECC_WorldDynamic);
+				if (!World->LineTraceSingleByObjectType(FloorHit, FVector(Outside.X, Outside.Y, Bounds.Max.Z + 10.0f),
+					FVector(Outside.X, Outside.Y, Bounds.Min.Z - 10.0f), Geometry, FCollisionQueryParams(SCENE_QUERY_STAT(EnemyClimbLinkFloor), false)))
+				{
+					continue;
+				}
+				const FVector Start(Outside.X, Outside.Y, FloorHit.ImpactPoint.Z + Body.HalfHeight + 5.0f);
+
+				FEnemyClimbLedge Ledge;
+				++Probes;
+				if (FEnemyClimbProbe::ProbeFrom(World, Body, Start, -Out, Settings, WalkableFloorZ, nullptr, Ledge) != EEnemyClimbProbeResult::Ok
+					|| HasLinkNear(Ledge))
+				{
+					continue;
+				}
+				FClimbLink& Link = Links.AddDefaulted_GetRef();
+				Link.Level = Level;
+				Link.Ledge = Ledge;
+				Link.Start = FVector(Ledge.BaseCenter.X, Ledge.BaseCenter.Y, Ledge.FloorZ + 5.0f);
+				Link.End = FVector(Ledge.StandCenter.X, Ledge.StandCenter.Y, Ledge.TopZ + 5.0f);
+
+				SpawnLinkHolder(World, Level, Link.Start, Link.End);
+				UE_LOG(LogNeuralAI, Verbose, TEXT("Climb link on %s (%s): %.0f cm up, foot %s"), *GetNameSafe(Actor), *GetNameSafe(Mesh),
+					Ledge.GetHeight(), *Link.Start.ToCompactString());
+			}
+		}
+	}
+	return Probes;
 }
 
 void UEnemyClimbLinkSubsystem::SpawnLinkHolder(UWorld* World, ULevel* Level, const FVector& Start, const FVector& End)

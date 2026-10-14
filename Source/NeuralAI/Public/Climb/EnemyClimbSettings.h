@@ -74,6 +74,21 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Links")
 	bool bBuildClimbLinks = true;
 
+	/**
+	 * Blocks are probed for links only when they never move (Mobility Static) - or when they block
+	 * one of these collision channels, which marks them as level blocks made to be climbed over
+	 * whatever their mobility: LevelBlock_Traversable is Movable but blocks "Traversable".
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Links")
+	TArray<FName> MovableClimbChannels = { TEXT("Traversable") };
+
+	/**
+	 * An actor or component with this tag is never climbed, link or no link: for walls that pass
+	 * every test but are not meant to be stood on (the tall corridor walls by a doorway, say).
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Links")
+	FName NoClimbTag = TEXT("NoClimb");
+
 	/** Distance, in cm, between the spots probed along each side of a block or wall. */
 	UPROPERTY(Config, EditAnywhere, Category = "Links", meta = (ClampMin = "50.0"))
 	float LinkSpacing = 200.0f;
