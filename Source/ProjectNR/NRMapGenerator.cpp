@@ -24,7 +24,11 @@
 #include "NRDoor.h"
 #include "NRGridTemplateData.h"
 #include "NRRoom.h"
+#include "NREncounterData.h"
+#include "NRMapGenerationConfig.h"
 #include "NRRunSubsystem.h"
+#include "NRSpawnPoint.h"
+#include "NRSpawnSubsystem.h"
 #include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRMapGen, Log, All);
@@ -597,6 +601,7 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 
 		TArray<ANRRoom*> RoomActors;
 		TArray<AActor*> Enemies;
+		TArray<ANRSpawnPoint*> SpawnPoints;
 		for (AActor* Actor : Level->Actors)
 		{
 			if (ANRRoom* RoomActor = Cast<ANRRoom>(Actor))
@@ -606,6 +611,10 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 			else if (Cast<AEnemyCharacter>(Actor))
 			{
 				Enemies.Add(Actor);
+			}
+			else if (ANRSpawnPoint* Point = Cast<ANRSpawnPoint>(Actor))
+			{
+				SpawnPoints.Add(Point);
 			}
 		}
 
@@ -626,20 +635,23 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 				Enemy->Destroy();
 			}
 			Enemies.Reset();
+			SpawnPoints.Reset();
 			DebugEmptyRoomId = INDEX_NONE;
 		}
 
 		const bool bFights = Room.RoomType == ENRGridRoomType::Combat || Room.RoomType == ENRGridRoomType::Elite || Room.RoomType == ENRGridRoomType::Boss;
-		if (bFights && Enemies.Num() == 0)
+		// Enemies come placed in the level or from its spawn points; a fighting room needs one or
+		// the other, a safe one neither.
+		if (bFights && Enemies.Num() == 0 && SpawnPoints.Num() == 0)
 		{
-			Errors.Add(FString::Printf(TEXT("room %d (%s): fighting room without an enemy"), Room.RoomId,
+			Errors.Add(FString::Printf(TEXT("room %d (%s): fighting room without an enemy or a spawn point"), Room.RoomId,
 				*UEnum::GetValueAsString(Room.RoomType)));
 			continue;
 		}
-		if (!bFights && Enemies.Num() > 0)
+		if (!bFights && (Enemies.Num() > 0 || SpawnPoints.Num() > 0))
 		{
-			Errors.Add(FString::Printf(TEXT("room %d (%s): %d enemy(s) in a room meant to be safe"), Room.RoomId,
-				*UEnum::GetValueAsString(Room.RoomType), Enemies.Num()));
+			Errors.Add(FString::Printf(TEXT("room %d (%s): %d enemy(s) and %d spawn point(s) in a room meant to be safe"), Room.RoomId,
+				*UEnum::GetValueAsString(Room.RoomType), Enemies.Num(), SpawnPoints.Num()));
 			continue;
 		}
 
@@ -689,7 +701,7 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 			continue;
 		}
 
-		RoomActors[0]->InitializeGenerated(Room.RoomId, Room.RoomType, Room.RoomId == ActiveLayout.BossRoomId, Doors, Enemies);
+		RoomActors[0]->InitializeGenerated(Room.RoomId, Room.RoomType, Room.RoomId == ActiveLayout.BossRoomId, Doors, Enemies, SpawnPoints);
 		GeneratedRooms.Add(RoomActors[0]);
 	}
 }
@@ -905,6 +917,13 @@ void ANRMapGenerator::BecomeReady()
 		Generation, ActiveLayout.Seed, ActiveLayout.Rooms.Num(), ActiveLayout.Connections.Num(),
 		GetWorld()->GetTimeSeconds() - LoadStartTime, Length);
 	UE_LOG(LogNRMapGen, Log, TEXT("  signature %08x"), GetTypeHash(BuildSignature()));
+
+	// Rooms spawn their enemies by this map's encounter rules, seeded by the map: the same seed
+	// fills the same rooms the same way.
+	if (UNRSpawnSubsystem* Spawner = GetWorld()->GetSubsystem<UNRSpawnSubsystem>())
+	{
+		Spawner->Configure(Config ? Config->Encounters.Get() : nullptr, ActiveLayout.Seed);
+	}
 
 	// The run starts only now, with every room registered, so it can neither be won nor
 	// count a clear before the map is whole; the rooms come alive after it.

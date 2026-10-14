@@ -12,6 +12,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "NRDoor.h"
+#include "NRSpawnPoint.h"
+#include "NRSpawnSubsystem.h"
 #include "NRWeaponPartComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRRoom, Log, All);
@@ -52,11 +54,12 @@ void ANRRoom::BeginPlay()
 	CollectEnemies();
 	SetEnemiesDormant(true);
 
-	UE_LOG(LogNRRoom, Log, TEXT("%s: %d enemy(s), %d door(s)"), *GetNameSafe(this), RoomEnemies.Num(), Doors.Num());
+	UE_LOG(LogNRRoom, Log, TEXT("%s: %d enemy(s), %d spawn point(s), %d door(s)"), *GetNameSafe(this), RoomEnemies.Num(),
+		SpawnPoints.Num(), Doors.Num());
 }
 
 void ANRRoom::InitializeGenerated(int32 InRoomId, ENRGridRoomType InRoomType, bool bInFinalRoom,
-	const TArray<ANRDoor*>& InDoors, const TArray<AActor*>& InEnemies)
+	const TArray<ANRDoor*>& InDoors, const TArray<AActor*>& InEnemies, const TArray<ANRSpawnPoint*>& InSpawnPoints)
 {
 	GeneratedRoomId = InRoomId;
 	RoomType = InRoomType;
@@ -80,9 +83,37 @@ void ANRRoom::InitializeGenerated(int32 InRoomId, ENRGridRoomType InRoomType, bo
 		}
 	}
 	SetEnemiesDormant(true);
+	SpawnPoints.Reset();
+	for (ANRSpawnPoint* Point : InSpawnPoints)
+	{
+		if (Point)
+		{
+			SpawnPoints.AddUnique(Point);
+		}
+	}
 
-	UE_LOG(LogNRRoom, Log, TEXT("%s%s set up: %d enemy(s), %d door(s)"), *GetLabel(),
-		bFinalRoom ? TEXT(", final") : TEXT(""), RoomEnemies.Num(), Doors.Num());
+	UE_LOG(LogNRRoom, Log, TEXT("%s%s set up: %d enemy(s), %d spawn point(s), %d door(s)"), *GetLabel(),
+		bFinalRoom ? TEXT(", final") : TEXT(""), RoomEnemies.Num(), SpawnPoints.Num(), Doors.Num());
+}
+
+void ANRRoom::AddSpawnPoint(ANRSpawnPoint* Point)
+{
+	if (Point && State == ENRRoomState::Dormant)
+	{
+		SpawnPoints.AddUnique(Point);
+	}
+}
+
+void ANRRoom::AddSpawnedEnemy(AActor* Enemy)
+{
+	if (Enemy)
+	{
+		RoomEnemies.AddUnique(Enemy);
+		if (UEnemySensorComponent* Sensor = Enemy->FindComponentByClass<UEnemySensorComponent>())
+		{
+			Sensor->SetDormant(false);
+		}
+	}
 }
 
 FString ANRRoom::GetLabel() const
@@ -125,6 +156,14 @@ void ANRRoom::CollectEnemies()
 			if (ContainsLocation(It->GetActorLocation()))
 			{
 				RoomEnemies.AddUnique(*It);
+			}
+		}
+		SpawnPoints.Reset();
+		for (TActorIterator<ANRSpawnPoint> It(GetWorld()); It; ++It)
+		{
+			if (ContainsLocation(It->GetActorLocation()))
+			{
+				SpawnPoints.AddUnique(*It);
 			}
 		}
 	}
@@ -213,7 +252,7 @@ void ANRRoom::Tick(float DeltaSeconds)
 		break;
 	}
 	case ENRRoomState::Active:
-		if (GetRemainingEnemies() == 0)
+		if (GetRemainingEnemies() == 0 && !bSpawnPending)
 		{
 			SetState(ENRRoomState::Cleared);
 		}
@@ -233,12 +272,20 @@ void ANRRoom::Activate()
 	}
 
 	// An empty room is a reward or safe room: nothing to fight, nothing to lock.
-	if (GetRemainingEnemies() == 0)
+	if (GetRemainingEnemies() == 0 && SpawnPoints.Num() == 0)
 	{
 		SetState(ENRRoomState::Cleared);
 		return;
 	}
+
+	// Its enemies come now: the doors close first, and the room waits for them before it may clear.
+	UNRSpawnSubsystem* Spawner = SpawnPoints.Num() > 0 && GetWorld() ? GetWorld()->GetSubsystem<UNRSpawnSubsystem>() : nullptr;
+	bSpawnPending = Spawner != nullptr;
 	SetState(ENRRoomState::Active);
+	if (Spawner && !Spawner->SpawnForRoom(this))
+	{
+		bSpawnPending = false;
+	}
 }
 
 void ANRRoom::SetState(ENRRoomState NewState)

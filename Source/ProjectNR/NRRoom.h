@@ -8,6 +8,7 @@
 #include "NRRoom.generated.h"
 
 class ANRDoor;
+class ANRSpawnPoint;
 class UBoxComponent;
 
 UENUM(BlueprintType)
@@ -38,6 +39,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNROnRoomStateChanged, ANRRoom*, Ro
  *
  * A room with no enemies (reward, safe) clears the moment the player walks in, without
  * locking anything.
+ *
+ * Instead of (or as well as) enemies placed in it, a room may have spawn points: it then asks
+ * UNRSpawnSubsystem for its enemies as it activates, and does not clear before they have come.
  *
  * In a level the map generator loads (bWaitForGenerator), the room does nothing at all until
  * the generator hands it its id, type, doors and enemies (InitializeGenerated) and the run
@@ -84,7 +88,7 @@ public:
 	 * rule to the run (it no longer flips the safe phase itself). Stays inert until OpenGate.
 	 */
 	void InitializeGenerated(int32 InRoomId, ENRGridRoomType InRoomType, bool bInFinalRoom,
-		const TArray<ANRDoor*>& InDoors, const TArray<AActor*>& InEnemies);
+		const TArray<ANRDoor*>& InDoors, const TArray<AActor*>& InEnemies, const TArray<ANRSpawnPoint*>& InSpawnPoints);
 
 	/** Lets a generated room run: activation, clearing, doors. Called once the run has started. */
 	void OpenGate();
@@ -97,6 +101,21 @@ public:
 	bool IsGenerated() const { return GeneratedRoomId != INDEX_NONE; }
 	int32 GetGeneratedRoomId() const { return GeneratedRoomId; }
 	ENRGridRoomType GetRoomType() const { return RoomType; }
+
+	/** Points this room's enemies are spawned on when it activates. */
+	const TArray<TObjectPtr<ANRSpawnPoint>>& GetSpawnPoints() const { return SpawnPoints; }
+
+	/** Adds a spawn point at run time (test tools). Only takes effect before the room activates. */
+	void AddSpawnPoint(ANRSpawnPoint* Point);
+
+	/** Counts an enemy spawned for this room as one of its own, awake. */
+	void AddSpawnedEnemy(AActor* Enemy);
+
+	/** The spawn subsystem is done with this room: from now on it may clear. */
+	void FinishSpawning() { bSpawnPending = false; }
+
+	/** Spawning has been asked for and is not over yet. */
+	bool IsSpawning() const { return bSpawnPending; }
 
 	/** Test helper: kills every living enemy of this room. */
 	UFUNCTION(BlueprintCallable, Category = "Room|Debug")
@@ -166,6 +185,12 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AActor>> RoomEnemies;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<ANRSpawnPoint>> SpawnPoints;
+
+	/** Activated with spawn points and the spawn subsystem not done yet: no clearing. */
+	bool bSpawnPending = false;
 
 	static TArray<TWeakObjectPtr<ANRRoom>> AllRooms;
 };

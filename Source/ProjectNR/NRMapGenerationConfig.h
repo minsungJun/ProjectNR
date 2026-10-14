@@ -7,6 +7,7 @@
 #include "NRMapGenerationConfig.generated.h"
 
 class UNRCorridorTemplateData;
+class UNREncounterData;
 class UNRRoomTemplateData;
 
 /** The overall shape a generated map must have. */
@@ -111,4 +112,8 @@ public:
 	/** The one straight corridor every connection uses, turned for north-south links. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Templates")
 	TObjectPtr<UNRCorridorTemplateData> CorridorTemplate;
+
+	/** What fighting rooms spawn from their spawn points. Empty: the class defaults. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Encounters")
+	TObjectPtr<UNREncounterData> Encounters;
 };
