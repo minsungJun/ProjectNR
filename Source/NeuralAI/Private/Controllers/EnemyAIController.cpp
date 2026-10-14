@@ -203,7 +203,8 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 	}
 
 	UpdatePathToTarget(Now);
-	if (TryClimbAlongPath() || TryClimbOnDemand(Now))
+	// Holding position (NeuralAI.NeuralMovement 0) holds off climbing too; a climb by command still runs.
+	if (CVarNeuralMovement.GetValueOnGameThread() != 0 && (TryClimbAlongPath() || TryClimbOnDemand(Now)))
 	{
 		return;
 	}
@@ -391,7 +392,13 @@ void AEnemyAIController::ApplyNeuralMovement(float Now)
 	const float Magnitude = Blended.Size();
 	FVector Direction = FVector::ZeroVector;
 	bool bNavigable = false;
-	if (Magnitude > KINDA_SMALL_NUMBER)
+	if (Magnitude > KINDA_SMALL_NUMBER && IsAtWalkOffDrop())
+	{
+		// At the top of a drop its path goes down: off the edge, where the navmesh check sees none.
+		Direction = Blended / Magnitude;
+		bNavigable = true;
+	}
+	else if (Magnitude > KINDA_SMALL_NUMBER)
 	{
 		bNavigable = FindNavigableDirection(Blended / Magnitude, Direction);
 	}
@@ -497,6 +504,7 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	// navmesh allows, which beats pushing straight into whatever is in the way.
 	LastPathUpdateTime = Now;
 	CachedClimbLinkIndex = INDEX_NONE;
+	bCachedWalkOffDrop = false;
 	bCachedPathPartial = Path && Path->IsPartial();
 	CachedPathLength = Path && Path->IsValid() ? Path->GetPathLength() : 0.0f;
 	if (Path && Path->IsValid() && Path->PathPoints.Num() > 1)
@@ -507,13 +515,16 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 		const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 		const ANavigationData* NavData = Navigation ? Navigation->GetDefaultNavDataInstance() : nullptr;
 		const int32 ClimbArea = NavData ? NavData->GetAreaID(UNavArea_Climb::StaticClass()) : INDEX_NONE;
+		const int32 ClimbDownArea = NavData ? NavData->GetAreaID(UNavArea_ClimbDown::StaticClass()) : INDEX_NONE;
 		const TArray<FNavPathPoint>& Points = Path->GetPath()->GetPathPoints();
-		for (int32 Index = 0; ClimbArea != INDEX_NONE && Index + 1 < Points.Num(); ++Index)
+		for (int32 Index = 0; Index + 1 < Points.Num(); ++Index)
 		{
 			const FNavMeshNodeFlags Flags(Points[Index].Flags);
-			if (Flags.IsNavLink() && Flags.Area == ClimbArea)
+			if (Flags.IsNavLink() && (Flags.Area == ClimbArea || Flags.Area == ClimbDownArea))
 			{
 				CachedClimbLinkIndex = Index;
+				bCachedClimbLinkDown = Flags.Area == ClimbDownArea;
+				bCachedWalkOffDrop = bCachedClimbLinkDown && !ControlledEnemy->CanClimb();
 				break;
 			}
 		}
@@ -602,6 +613,17 @@ bool AEnemyAIController::TryClimbOnDemand(float Now)
 	return true;
 }
 
+bool AEnemyAIController::IsAtWalkOffDrop() const
+{
+	if (!bCachedWalkOffDrop || !CachedPathPoints.IsValidIndex(CachedClimbLinkIndex))
+	{
+		return false;
+	}
+	const FVector Feet = ControlledEnemy->GetActorLocation() - FVector(0.0f, 0.0f, ControlledEnemy->GetSimpleCollisionHalfHeight());
+	const FVector Top = CachedPathPoints[CachedClimbLinkIndex];
+	return FVector::Dist2D(Feet, Top) <= GetDefault<UEnemyClimbSettings>()->LinkTriggerDistance && FMath::Abs(Feet.Z - Top.Z) <= 100.0f;
+}
+
 bool AEnemyAIController::TryClimbAlongPath()
 {
 	if (CachedClimbLinkIndex == INDEX_NONE || CachedClimbLinkIndex + 1 >= CachedPathPoints.Num() || !ControlledEnemy->CanClimb())
@@ -620,14 +642,18 @@ bool AEnemyAIController::TryClimbAlongPath()
 	}
 
 	FEnemyClimbLedge Ledge;
-	if (!Links->FindLedge(Start, End, Ledge))
+	if (!Links->FindLedge(Start, End, Ledge, 60.0f, bCachedClimbLinkDown))
 	{
-		UE_LOG(LogNeuralAI, Warning, TEXT("%s: path goes up a climb link at %s with no climb known there"),
-			*GetNameSafe(ControlledEnemy), *Start.ToCompactString());
+		UE_LOG(LogNeuralAI, Warning, TEXT("%s: path goes %s a climb link at %s with no climb known there"),
+			*GetNameSafe(ControlledEnemy), bCachedClimbLinkDown ? TEXT("down") : TEXT("up"), *Start.ToCompactString());
 		CachedClimbLinkIndex = INDEX_NONE;
 		return false;
 	}
-	if (!Climb->StartClimb(Ledge))
+	// Down: a low drop is stepped off, a high one climbed down.
+	const bool bStarted = !bCachedClimbLinkDown ? Climb->StartClimb(Ledge)
+		: Ledge.GetHeight() < GetDefault<UEnemyClimbSettings>()->ClimbDownMinHeight ? Climb->StartDrop(Ledge)
+		: Climb->StartClimbDown(Ledge);
+	if (!bStarted)
 	{
 		return false;
 	}

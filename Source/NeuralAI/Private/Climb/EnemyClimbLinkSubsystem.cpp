@@ -21,6 +21,12 @@ UNavArea_Climb::UNavArea_Climb()
 	DrawColor = FColor(255, 140, 0);
 }
 
+UNavArea_ClimbDown::UNavArea_ClimbDown()
+{
+	DefaultCost = 1.0f;
+	DrawColor = FColor(255, 200, 0);
+}
+
 UNavFilter_EnemyNoClimb::UNavFilter_EnemyNoClimb()
 {
 	FNavigationFilterArea& Climb = Areas.AddDefaulted_GetRef();
@@ -268,7 +274,7 @@ void UEnemyClimbLinkSubsystem::SpawnLinkHolder(UWorld* World, ULevel* Level, con
 	Up.SetAreaClass(UNavArea_Climb::StaticClass());
 	FNavigationLink& Down = Holder->PointLinks.Emplace_GetRef(Top, FVector::ZeroVector);
 	Down.Direction = ENavLinkDirection::LeftToRight;
-	Down.SetAreaClass(UNavArea_Default::StaticClass());
+	Down.SetAreaClass(UNavArea_ClimbDown::StaticClass());
 	Holder->FinishSpawning(At);
 }
 
@@ -324,14 +330,17 @@ void UEnemyClimbLinkSubsystem::UnregisterClimber(const AActor* Climber)
 	Climbers.RemoveAll([Climber](const FClimber& Entry) { return !Entry.Actor.IsValid() || Entry.Actor.Get() == Climber; });
 }
 
-bool UEnemyClimbLinkSubsystem::FindLedge(const FVector& Start, const FVector& End, FEnemyClimbLedge& OutLedge, float Tolerance) const
+bool UEnemyClimbLinkSubsystem::FindLedge(const FVector& Start, const FVector& End, FEnemyClimbLedge& OutLedge, float Tolerance, bool bDown) const
 {
+	// A link down runs from the top (the link up's end) to the foot (its start).
+	const FVector Foot = bDown ? End : Start;
+	const FVector Top = bDown ? Start : End;
 	float Best = TNumericLimits<float>::Max();
 	for (const FClimbLink& Link : Links)
 	{
-		const float StartGap = FVector::Dist2D(Link.Start, Start);
-		const float EndGap = FVector::Dist2D(Link.End, End);
-		if (StartGap <= Tolerance && EndGap <= Tolerance && FMath::Abs(Link.End.Z - End.Z) <= 100.0f && StartGap + EndGap < Best)
+		const float StartGap = FVector::Dist2D(Link.Start, Foot);
+		const float EndGap = FVector::Dist2D(Link.End, Top);
+		if (StartGap <= Tolerance && EndGap <= Tolerance && FMath::Abs(Link.End.Z - Top.Z) <= 100.0f && StartGap + EndGap < Best)
 		{
 			Best = StartGap + EndGap;
 			OutLedge = Link.Ledge;

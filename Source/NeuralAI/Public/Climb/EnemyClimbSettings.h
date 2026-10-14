@@ -59,6 +59,13 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Climb", meta = (ClampMin = "0.01"))
 	float MantleTime = 0.35f;
 
+	/**
+	 * Coming down: drops lower than this, in cm, are walked off (a fall); from this high up the
+	 * enemy climbs down the wall instead - over the edge backwards, down the face, onto the floor.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Climb", meta = (ClampMin = "0.0"))
+	float ClimbDownMinHeight = 250.0f;
+
 	/** Within this, in cm, of the foot of the wall the walk there is over. */
 	UPROPERTY(Config, EditAnywhere, Category = "Climb", meta = (ClampMin = "5.0"))
 	float BaseArrivalRadius = 30.0f;

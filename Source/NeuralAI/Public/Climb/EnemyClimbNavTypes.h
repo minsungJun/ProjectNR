@@ -21,6 +21,20 @@ public:
 	UNavArea_Climb();
 };
 
+/**
+ * Navmesh area of the links down from a climbable top to the foot of the wall. Plain cost: the
+ * way down is no slower than walking. Enemies that climb go down the wall where it is
+ * ClimbDownMinHeight or more; the rest (and every enemy where it is lower) walk off the edge.
+ */
+UCLASS(Config = Engine)
+class NEURALAI_API UNavArea_ClimbDown : public UNavArea
+{
+	GENERATED_BODY()
+
+public:
+	UNavArea_ClimbDown();
+};
+
 /** Paths for enemies that do not climb (shooters): every climb link left out. */
 UCLASS()
 class NEURALAI_API UNavFilter_EnemyNoClimb : public UNavigationQueryFilter

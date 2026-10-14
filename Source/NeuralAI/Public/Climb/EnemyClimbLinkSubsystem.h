@@ -20,8 +20,9 @@ class UStaticMeshComponent;
  * LinkSpacing cm, the way
  * a crawler would (FEnemyClimbProbe). Each climbable spot gets two navmesh links, kept on a
  * transient ANavLinkProxy of its own in that level: up from the foot of the wall to the top (UNavArea_Climb,
- * so it costs more than walking and shooters' paths leave it out), and down the other way (plain
- * area: walking off the edge is all a drop takes). The navmesh is dynamic, so the links take
+ * so it costs more than walking and shooters' paths leave it out), and down the other way
+ * (UNavArea_ClimbDown, plain cost: a climber goes down the wall when it is high, anything else
+ * walks off the edge). The navmesh is dynamic, so the links take
  * effect once the tiles around them rebuild.
  *
  * It also keeps track of who is climbing where, so two never go up the same spot: a climber that
@@ -49,10 +50,10 @@ public:
 	static bool IsClimbGeometry(const UStaticMeshComponent* Mesh);
 
 	/**
-	 * The climb a link up was made for: its foot (link start) within Tolerance of Start and its
-	 * top (link end) within Tolerance of End, along the floor.
+	 * The climb a link was made for. Up (bDown false): its foot within Tolerance of Start and its top
+	 * within Tolerance of End, along the floor. Down: the other way round.
 	 */
-	bool FindLedge(const FVector& Start, const FVector& End, FEnemyClimbLedge& OutLedge, float Tolerance = 60.0f) const;
+	bool FindLedge(const FVector& Start, const FVector& End, FEnemyClimbLedge& OutLedge, float Tolerance = 60.0f, bool bDown = false) const;
 
 	/** Every climb with a link, for tests and debugging. */
 	TArray<FEnemyClimbLedge> GetLedges() const;

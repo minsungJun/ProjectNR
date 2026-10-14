@@ -24,6 +24,10 @@
 // wall, a Movable block that does not gets none, and LevelBlock_Traversable (sample content, half
 // sunk into the floor as placed by default) gets links when the asset is there. One tagged NoClimb
 // gets none.
+//
+// NeuralAI.Climb.Down, with links: a crawler up on the 4 m platform or the 6 m tower, the player on
+// the floor, climbs down the wall to get at them; up on the 2 m block (lower than ClimbDownMinHeight)
+// it steps off the edge and drops instead.
 
 #include "Characters/EnemyCharacter.h"
 #include "Climb/EnemyClimbComponent.h"
@@ -38,6 +42,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/AutomationTest.h"
 #include "NavigationPath.h"
@@ -68,11 +73,11 @@ namespace EnemyClimbWorldTest
 		int32 SavedNeuralMovement = 1;
 	};
 
-	AEnemyCharacter* SpawnCrawler(UWorld* World, const FVector2D& At, float Yaw)
+	AEnemyCharacter* SpawnCrawler(UWorld* World, const FVector2D& At, float Yaw, float FloorZ = 0.0f)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-		return World->SpawnActor<AEnemyCharacter>(AEnemyCharacter::StaticClass(), FVector(At.X, At.Y, 70.0f), FRotator(0.0f, Yaw, 0.0f), Params);
+		return World->SpawnActor<AEnemyCharacter>(AEnemyCharacter::StaticClass(), FVector(At.X, At.Y, FloorZ + 70.0f), FRotator(0.0f, Yaw, 0.0f), Params);
 	}
 
 	/** Whether Path goes up a climb link anywhere. */
@@ -682,6 +687,95 @@ bool FEnemyClimbTraversableTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("it goes up the block's wall"), GoesUpWall(World, Path));
 		return true;
 	}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	return true;
+}
+
+namespace EnemyClimbWorldTest
+{
+	struct FDownCase
+	{
+		const TCHAR* Name;
+		FVector2D CrawlerAt;
+		float TopZ;
+		FVector PlayerAt;
+		bool bExpectClimbDown;
+	};
+
+	struct FDownRun
+	{
+		TWeakObjectPtr<AEnemyCharacter> Crawler;
+		float MinZ = TNumericLimits<float>::Max();
+		bool bClimbedDown = false;
+		bool bDropped = false;
+	};
+
+	void AddDown(FAutomationTestBase* Test, const FDownCase& Case)
+	{
+		TSharedRef<FDownRun> Run = MakeShared<FDownRun>();
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Test, Case, Run]()
+		{
+			UWorld* World = AutomationCommon::GetAnyGameWorld();
+			APawn* Player = World ? UGameplayStatics::GetPlayerPawn(World, 0) : nullptr;
+			if (!Player)
+			{
+				Test->AddError(TEXT("no player"));
+				return true;
+			}
+			Player->SetActorLocation(Case.PlayerAt, false, nullptr, ETeleportType::TeleportPhysics);
+			Run->Crawler = SpawnCrawler(World, Case.CrawlerAt, 0.0f, Case.TopZ);
+			if (Run->Crawler.IsValid())
+			{
+				Run->Crawler->GetSensorComponent()->ReceiveAlert(Player, nullptr);
+			}
+			return true;
+		}));
+		ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([Run]()
+		{
+			const AEnemyCharacter* Crawler = Run->Crawler.Get();
+			if (!Crawler)
+			{
+				return true;
+			}
+			Run->MinZ = FMath::Min(Run->MinZ, static_cast<float>(Crawler->GetActorLocation().Z));
+			Run->bClimbedDown |= Crawler->GetClimbComponent()->IsClimbingDown();
+			Run->bDropped |= Crawler->GetClimbComponent()->IsDropping();
+			return Run->MinZ < 100.0f && !Crawler->GetClimbComponent()->IsClimbing();
+		}, 12.0f));
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Test, Case, Run]()
+		{
+			AEnemyCharacter* Crawler = Run->Crawler.Get();
+			const FString Where = Crawler ? Crawler->GetActorLocation().ToCompactString() : TEXT("gone");
+			Test->TestTrue(FString::Printf(TEXT("%s: got down to the floor (lowest %.0f, at %s)"), Case.Name, Run->MinZ, *Where), Run->MinZ < 100.0f);
+			Test->TestEqual(FString::Printf(TEXT("%s: climbed down"), Case.Name), Run->bClimbedDown, Case.bExpectClimbDown);
+			Test->TestEqual(FString::Printf(TEXT("%s: dropped off"), Case.Name), Run->bDropped, !Case.bExpectClimbDown);
+			if (Crawler)
+			{
+				Crawler->Destroy();
+			}
+			return true;
+		}));
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyClimbDownTest, "NeuralAI.Climb.Down",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FEnemyClimbDownTest::RunTest(const FString& Parameters)
+{
+	using namespace EnemyClimbWorldTest;
+
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		return IsComplete(UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(1000.0f, -300.0f, 62.0f), FVector(1000.0f, -1200.0f, 462.0f)));
+	}, 30.0f));
+
+	AddDown(this, { TEXT("4 m platform"), FVector2D(1000.0f, -1200.0f), 400.0f, FVector(1000.0f, 300.0f, 150.0f), true });
+	AddDown(this, { TEXT("6 m tower"), FVector2D(2400.0f, -1200.0f), 600.0f, FVector(2400.0f, -200.0f, 150.0f), true });
+	AddDown(this, { TEXT("2 m block"), FVector2D(-1000.0f, 1200.0f), 200.0f, FVector(-1000.0f, 400.0f, 150.0f), false });
 
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	return true;

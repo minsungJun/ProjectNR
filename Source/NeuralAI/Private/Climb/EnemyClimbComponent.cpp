@@ -38,6 +38,21 @@ float UEnemyClimbComponent::Now() const
 
 bool UEnemyClimbComponent::StartClimb(const FEnemyClimbLedge& InLedge)
 {
+	return Begin(InLedge, false, false);
+}
+
+bool UEnemyClimbComponent::StartClimbDown(const FEnemyClimbLedge& InLedge)
+{
+	return Begin(InLedge, true, false);
+}
+
+bool UEnemyClimbComponent::StartDrop(const FEnemyClimbLedge& InLedge)
+{
+	return Begin(InLedge, true, true);
+}
+
+bool UEnemyClimbComponent::Begin(const FEnemyClimbLedge& InLedge, bool bInDown, bool bInDrop)
+{
 	const AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(GetOwner());
 	if (IsClimbing() || !GetCharacter() || (Enemy && (!Enemy->CanClimb() || Enemy->IsDead())))
 	{
@@ -67,11 +82,21 @@ bool UEnemyClimbComponent::StartClimb(const FEnemyClimbLedge& InLedge)
 		Spots->RegisterClimber(GetOwner(), Free);
 	}
 	Ledge = Free;
+	bDown = bInDown;
+	bDrop = bInDrop;
 	ClimbStartTime = Now();
 	LastBlocker = TEXT("nothing");
 	SetComponentTickEnabled(true);
-	UE_LOG(LogNeuralAI, Log, TEXT("%s climbing %s: %.0f cm up, foot %.0f cm away"), *GetNameSafe(GetOwner()),
-		*GetNameSafe(Ledge.Wall.Get()), Ledge.GetHeight(), Ledge.GetDistanceTo(GetOwner()->GetActorLocation()));
+	if (bDown)
+	{
+		UE_LOG(LogNeuralAI, Log, TEXT("%s %s %s: %.0f cm, top %.0f cm away"), *GetNameSafe(GetOwner()), bDrop ? TEXT("dropping off") : TEXT("climbing down"),
+			*GetNameSafe(Ledge.Wall.Get()), Ledge.GetHeight(), FVector::Dist2D(Ledge.StandCenter, GetOwner()->GetActorLocation()));
+	}
+	else
+	{
+		UE_LOG(LogNeuralAI, Log, TEXT("%s climbing %s: %.0f cm up, foot %.0f cm away"), *GetNameSafe(GetOwner()),
+			*GetNameSafe(Ledge.Wall.Get()), Ledge.GetHeight(), Ledge.GetDistanceTo(GetOwner()->GetActorLocation()));
+	}
 	EnterPhase(EEnemyClimbPhase::Approach);
 	return true;
 }
@@ -114,7 +139,9 @@ void UEnemyClimbComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	{
 	case EEnemyClimbPhase::Approach:
 	{
-		const float Remaining = FVector::Dist2D(Location, Ledge.BaseCenter);
+		// Up: to the foot of the wall. Down: to where one stands on top.
+		const FVector Goal = bDown ? Ledge.StandCenter : Ledge.BaseCenter;
+		const float Remaining = FVector::Dist2D(Location, Goal);
 		if (Remaining <= Settings->BaseArrivalRadius)
 		{
 			EnterPhase(EEnemyClimbPhase::Align);
@@ -122,32 +149,48 @@ void UEnemyClimbComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		}
 		if (IsStuck(Remaining))
 		{
-			Cancel(TEXT("could not reach the foot of the wall"));
+			Cancel(bDown ? TEXT("could not reach the top of the wall") : TEXT("could not reach the foot of the wall"));
 			break;
 		}
-		Character->AddMovementInput((Ledge.BaseCenter - Location).GetSafeNormal2D(), 1.0f);
+		Character->AddMovementInput((Goal - Location).GetSafeNormal2D(), 1.0f);
 		break;
 	}
 	case EEnemyClimbPhase::Align:
 	{
-		// Square up to the wall, belly to its face, right over the foot.
+		// Square up to the wall, belly to its face, right over the foot. Going down: on top, turned
+		// the same way, back to the edge - it lies down against the wall only once over it.
 		const float Alpha = Settings->AlignTime > 0.0f ? FMath::Clamp(Elapsed / Settings->AlignTime, 0.0f, 1.0f) : 1.0f;
-		const FVector Target(Ledge.BaseCenter.X, Ledge.BaseCenter.Y, PhaseStartLocation.Z);
-		const FRotator Facing(0.0f, (-Ledge.WallNormal).Rotation().Yaw, 0.0f);
+		const FVector Spot = bDown ? Ledge.StandCenter : Ledge.BaseCenter;
+		const FVector Target(Spot.X, Spot.Y, PhaseStartLocation.Z);
+		// Facing the wall, but out over the edge for a drop.
+		const FRotator Facing(0.0f, (bDrop ? Ledge.WallNormal : -Ledge.WallNormal).Rotation().Yaw, 0.0f);
 		Character->SetActorRotation(FMath::Lerp(PhaseStartRotation, Facing, Alpha));
-		SetPose(Alpha);
+		SetPose(bDown ? 0.0f : Alpha);
 		if (!MoveBody(FMath::Lerp(PhaseStartLocation, Target, Alpha), Target))
 		{
 			break;
 		}
 		if (Alpha >= 1.0f)
 		{
-			EnterPhase(EEnemyClimbPhase::Climb);
+			EnterPhase(bDown ? EEnemyClimbPhase::Mantle : EEnemyClimbPhase::Climb);
 		}
 		break;
 	}
 	case EEnemyClimbPhase::Climb:
 	{
+		if (bDown)
+		{
+			const float NewZ = FMath::Max(Location.Z - Settings->ClimbSpeed * DeltaTime, Ledge.BaseCenter.Z);
+			if (!MoveBody(FVector(Ledge.BaseCenter.X, Ledge.BaseCenter.Y, NewZ), Ledge.BaseCenter))
+			{
+				break;
+			}
+			if (Character->GetActorLocation().Z <= Ledge.BaseCenter.Z + 0.5f)
+			{
+				Finish();
+			}
+			break;
+		}
 		const float NewZ = FMath::Min(Location.Z + Settings->ClimbSpeed * DeltaTime, Ledge.EdgeCenter.Z);
 		if (!MoveBody(FVector(Ledge.BaseCenter.X, Ledge.BaseCenter.Y, NewZ), Ledge.EdgeCenter))
 		{
@@ -162,6 +205,34 @@ void UEnemyClimbComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	case EEnemyClimbPhase::Mantle:
 	{
 		const float Alpha = FMath::Clamp(Elapsed / Settings->MantleTime, 0.0f, 1.0f);
+		if (bDrop)
+		{
+			// Out past the edge, upright, to where the wall's foot is below: then let go and fall.
+			const FVector Out(Ledge.BaseCenter.X, Ledge.BaseCenter.Y, PhaseStartLocation.Z);
+			if (!MoveBody(FMath::Lerp(PhaseStartLocation, Out, Alpha), Out))
+			{
+				break;
+			}
+			if (Alpha >= 1.0f)
+			{
+				Finish();
+			}
+			break;
+		}
+		if (bDown)
+		{
+			// The way up over the edge, run backwards: out over the lip, then down against the wall.
+			SetPose(Alpha);
+			if (!MoveBody(FEnemyClimbProbe::GetMantlePoint(Ledge.EdgeCenter, PhaseStartLocation, 1.0f - Alpha), Ledge.EdgeCenter))
+			{
+				break;
+			}
+			if (Alpha >= 1.0f)
+			{
+				EnterPhase(EEnemyClimbPhase::Climb);
+			}
+			break;
+		}
 		SetPose(1.0f - Alpha);
 		if (!MoveBody(FEnemyClimbProbe::GetMantlePoint(PhaseStartLocation, Ledge.StandCenter, Alpha), Ledge.StandCenter))
 		{
@@ -220,6 +291,13 @@ void UEnemyClimbComponent::Finish()
 	// Something standing on the edge (the player, as often as not) can keep it from getting all the
 	// way in; it lets go there and the movement component sorts out where it lands.
 	const float Short = FVector::Dist2D(GetOwner()->GetActorLocation(), Ledge.StandCenter);
+	if (bDown)
+	{
+		UE_LOG(LogNeuralAI, Log, TEXT("%s %s %.0f cm in %.2f s, now at %s"), *GetNameSafe(GetOwner()), bDrop ? TEXT("dropped off") : TEXT("climbed down"),
+			Ledge.GetHeight(), Now() - ClimbStartTime, *GetOwner()->GetActorLocation().ToCompactString());
+		LetGo(true);
+		return;
+	}
 	UE_LOG(LogNeuralAI, Log, TEXT("%s climbed %.0f cm in %.2f s, now at %s%s"), *GetNameSafe(GetOwner()), Ledge.GetHeight(),
 		Now() - ClimbStartTime, *GetOwner()->GetActorLocation().ToCompactString(),
 		Short > 10.0f ? *FString::Printf(TEXT(", %.0f cm short of where it meant to stand (%s in the way)"), Short, *LastBlocker) : TEXT(""));

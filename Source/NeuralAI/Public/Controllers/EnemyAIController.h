@@ -115,7 +115,8 @@ protected:
 
 	/**
 	 * Starts climbing once the enemy comes within LinkTriggerDistance of where its path goes up a
-	 * wall (a climb link, UEnemyClimbLinkSubsystem). True when a climb has started.
+	 * wall (a climb link, UEnemyClimbLinkSubsystem), or down one: climbing down from
+	 * ClimbDownMinHeight or higher, dropping off lower ones. True when a climb has started.
 	 */
 	bool TryClimbAlongPath();
 
@@ -246,8 +247,21 @@ private:
 	/** Where the cached route leads, to tell whether a moving slot needs a new one. */
 	FVector LastPathGoal = FVector::ZeroVector;
 
-	/** Index in CachedPathPoints where the route first goes up a climb link, or INDEX_NONE. */
+	/** Index in CachedPathPoints where the route first goes up (or down) a climb link, or INDEX_NONE. */
 	int32 CachedClimbLinkIndex = INDEX_NONE;
+
+	/** That link is a way down. */
+	bool bCachedClimbLinkDown = false;
+
+	/**
+	 * That way down is walked off: this enemy does not climb (a climber drops or climbs down through
+	 * its climb component). Near its top, movement skips the navmesh check that otherwise keeps it
+	 * from stepping off edges.
+	 */
+	bool bCachedWalkOffDrop = false;
+
+	/** Within reach of the top of a drop its path walks off. */
+	bool IsAtWalkOffDrop() const;
 
 	/** The cached route stops short of its goal. */
 	bool bCachedPathPartial = false;
