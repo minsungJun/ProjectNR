@@ -568,20 +568,21 @@ FVector AEnemyAIController::GetSteerPoint(const FVector& Goal) const
 	const FVector Center = Target->GetActorLocation();
 	const FVector From = ControlledEnemy->GetActorLocation();
 
-	// Does the straight line pass close to the target? Worked out flat, at the target's height.
-	const FVector Closest = FMath::ClosestPointOnSegment(Center, FVector(From.X, From.Y, Center.Z), FVector(Goal.X, Goal.Y, Center.Z));
-	if (FVector::Dist2D(Closest, Center) >= Settings->SlotRadius * Settings->OrbitClearance)
+	// Lined up with the goal, seen from the target: straight in, between the neighbouring slots.
+	const float FromBearing = FMath::RadiansToDegrees(FMath::Atan2(From.Y - Center.Y, From.X - Center.X));
+	const float GoalBearing = FMath::RadiansToDegrees(FMath::Atan2(Goal.Y - Center.Y, Goal.X - Center.X));
+	const float Delta = FMath::FindDeltaAngleDegrees(FromBearing, GoalBearing);
+	if (FMath::Abs(Delta) <= Settings->OrbitAlignDegrees)
 	{
 		return Goal;
 	}
 
-	// Step round the ring towards the goal's side, the shorter way, no further than the goal.
-	const float FromBearing = FMath::RadiansToDegrees(FMath::Atan2(From.Y - Center.Y, From.X - Center.X));
-	const float GoalBearing = FMath::RadiansToDegrees(FMath::Atan2(Goal.Y - Center.Y, Goal.X - Center.X));
-	const float Step = FMath::Clamp(FMath::FindDeltaAngleDegrees(FromBearing, GoalBearing), -Settings->OrbitStepDegrees, Settings->OrbitStepDegrees);
+	// Further round: step round the shorter way, outside the ring, clear of the enemies standing in
+	// it; not swinging wider than half as much again.
+	const float Step = FMath::Clamp(Delta, -Settings->OrbitStepDegrees, Settings->OrbitStepDegrees);
 	const float Bearing = FMath::DegreesToRadians(FromBearing + Step);
-	// Round at about the ring's distance: not hugging the target, not swinging wide either.
-	const float Ring = FMath::Clamp(FVector::Dist2D(From, Center), Settings->SlotRadius, Settings->SlotRadius * 1.6f);
+	const float Outside = Settings->SlotRadius + Settings->OrbitMargin;
+	const float Ring = FMath::Clamp(FVector::Dist2D(From, Center), Outside, Outside * 1.5f);
 	return FVector(Center.X + FMath::Cos(Bearing) * Ring, Center.Y + FMath::Sin(Bearing) * Ring, Goal.Z);
 }
 

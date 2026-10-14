@@ -126,9 +126,10 @@ protected:
 	void ReleaseSlotAndToken();
 
 	/**
-	 * Where to head for on the way to Goal (a slot or hold point): Goal itself, or - when the
-	 * straight line would pass through the target - a point further round the ring on the shorter
-	 * side, so the enemy circles the target instead of walking into it.
+	 * Where to head for on the way to Goal (a slot or hold point): Goal itself once lined up with
+	 * it as seen from the target, otherwise a point further round outside the ring on the shorter
+	 * side, so the enemy circles the target and those already in their slots instead of walking
+	 * into them, and comes in straight between the neighbouring slots.
 	 */
 	FVector GetSteerPoint(const FVector& Goal) const;
 

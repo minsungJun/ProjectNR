@@ -27,9 +27,13 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "1", ClampMax = "32"))
 	int32 SlotCount = 8;
 
-	/** Ring radius, in cm. The enemies' attack range is 220, so at 350 nobody strikes from a slot. */
+	/**
+	 * Ring radius, in cm. Keep it inside the enemies' attack range (220) less the arrival radius:
+	 * an enemy stops up to ArrivalRadius short of its slot, on the outside, and must still be in
+	 * reach. At 160 they stand about 210 cm off. Was 350 until 2026-10-14, where nobody struck.
+	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "50.0"))
-	float SlotRadius = 350.0f;
+	float SlotRadius = 160.0f;
 
 	/** How far up or down, in cm, a slot may be moved to land on the navmesh. */
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "10.0"))
@@ -104,12 +108,17 @@ public:
 	float MaxPathAge = 1.0f;
 
 	/**
-	 * A route to a slot that would pass closer to the target than this share of SlotRadius goes
-	 * round instead, along the ring, so enemies heading for the far side do not walk through the
-	 * target (the navmesh does not know the target is in the way).
+	 * An enemy comes in to its slot straight only once its bearing from the target is within this
+	 * many degrees of the slot's, between the neighbouring slots (45 degrees off at 8 slots).
+	 * Further round, it first circles outside the ring: the navmesh knows neither the target nor
+	 * the enemies already standing round it.
 	 */
-	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float OrbitClearance = 0.75f;
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0", ClampMax = "90.0"))
+	float OrbitAlignDegrees = 20.0f;
+
+	/** How far outside SlotRadius, in cm, an enemy circles: clear of those standing in their slots. */
+	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0"))
+	float OrbitMargin = 150.0f;
 
 	/** How far round the ring, in degrees, each step of going round aims. */
 	UPROPERTY(Config, EditAnywhere, Category = "Movement", meta = (ClampMin = "10.0", ClampMax = "90.0"))
