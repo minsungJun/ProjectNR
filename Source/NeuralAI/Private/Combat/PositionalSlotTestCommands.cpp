@@ -1,7 +1,8 @@
 // Neural Enemy AI prototype module.
 
 // Test tools for positional slots, typed in the console during play:
-//   NeuralAI.PositionalSlots.Spawn <count> [distance]   crawlers round the player, awake
+//   NeuralAI.PositionalSlots.Spawn <count> [distance] [melee|ranged|mixed]
+//       crawlers (or shooters, or every other one a shooter) bunched by the player, awake
 //   NeuralAI.PositionalSlots.Clear                      removes the ones Spawn made
 //   NeuralAI.PositionalSlots.DriveTarget <pattern> [speed] [seconds] [yaw]
 //       moves the player by itself so the ring can be watched following it. Patterns:
@@ -9,6 +10,7 @@
 //       through doors and corridors), stop. Yaw sets the heading; the player's facing otherwise.
 
 #include "Characters/EnemyCharacter.h"
+#include "Characters/RangedEnemyCharacter.h"
 #include "Containers/Ticker.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -32,6 +34,7 @@ namespace PositionalSlotTest
 		}
 		const int32 Count = Args.Num() > 0 ? FMath::Clamp(FCString::Atoi(*Args[0]), 1, 32) : 1;
 		const float Distance = Args.Num() > 1 ? FCString::Atof(*Args[1]) : 1200.0f;
+		const FString Kind = Args.Num() > 2 ? Args[2].ToLower() : TEXT("melee");
 		const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 
 		// Bunched on one side of the player, so spreading round it is the slots' doing.
@@ -49,13 +52,15 @@ namespace PositionalSlotTest
 			FActorSpawnParameters Params;
 			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 			const FRotator Rotation(0.0f, Facing + 180.0f, 0.0f);
-			if (AEnemyCharacter* Enemy = World->SpawnActor<AEnemyCharacter>(AEnemyCharacter::StaticClass(), Location, Rotation, Params))
+			const bool bRanged = Kind == TEXT("ranged") || (Kind == TEXT("mixed") && Index % 2 == 1);
+			UClass* Class = bRanged ? ARangedEnemyCharacter::StaticClass() : AEnemyCharacter::StaticClass();
+			if (AEnemyCharacter* Enemy = World->SpawnActor<AEnemyCharacter>(Class, Location, Rotation, Params))
 			{
 				Enemy->Tags.Add(SpawnTag);
 				++Spawned;
 			}
 		}
-		UE_LOG(LogNeuralAI, Log, TEXT("PositionalSlots.Spawn: %d crawler(s) %.0f cm from the player"), Spawned, Distance);
+		UE_LOG(LogNeuralAI, Log, TEXT("PositionalSlots.Spawn: %d %s enemy(s) %.0f cm from the player"), Spawned, *Kind, Distance);
 	}
 
 	void Clear(UWorld* World)
@@ -149,7 +154,7 @@ namespace PositionalSlotTest
 }
 
 static FAutoConsoleCommandWithWorldAndArgs GPositionalSlotSpawnCommand(TEXT("NeuralAI.PositionalSlots.Spawn"),
-	TEXT("NeuralAI.PositionalSlots.Spawn <count> [distance]: crawlers bunched on one side of the player, awake."),
+	TEXT("NeuralAI.PositionalSlots.Spawn <count> [distance] [melee|ranged|mixed]: enemies bunched on one side of the player, awake."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&PositionalSlotTest::Spawn));
 
 static FAutoConsoleCommandWithWorldAndArgs GPositionalSlotClearCommand(TEXT("NeuralAI.PositionalSlots.Clear"),

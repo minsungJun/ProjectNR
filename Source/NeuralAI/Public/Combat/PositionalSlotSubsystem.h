@@ -25,6 +25,9 @@
  * becomes unreachable. Enemies beyond the free slots get a hold point NoSlotHoldDistance out on
  * their own side, and ask again every round.
  *
+ * Rings: each enemy asks for a slot on one ring - 0 close in (SlotRadius), 1 for shooters
+ * (RangedSlotRadius) - and is only ever given slots of that ring, spread among the enemies on it.
+ *
  * NeuralAI.PositionalSlots.Mode 0 turns it off, 1 assigns slots without moving anyone (to watch
  * with NeuralAI.PositionalSlots.Debug 1), 2 (default) drives movement.
  */
@@ -44,7 +47,7 @@ public:
 	 * Enemy is fighting Target and wants a slot. Call every update while it does. Intent is what
 	 * its brain wants right now (approach, strafe, caution), which tilts the slot it is given.
 	 */
-	void RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent = FPositionalSlotAssigner::FIntent());
+	void RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent = FPositionalSlotAssigner::FIntent(), int32 Ring = 0);
 
 	/** Enemy no longer fights: its slot goes back. Reason is only for the debug log. */
 	void ReleaseSlot(AActor* Enemy, const TCHAR* Reason = TEXT("released"));
@@ -76,6 +79,8 @@ private:
 		TWeakObjectPtr<AActor> Enemy;
 		int32 Id = 0;
 		int32 Slot = INDEX_NONE;
+		/** Ring it wants a slot on. */
+		int32 Ring = 0;
 		float SlotSince = 0.0f;
 		float LastRequest = 0.0f;
 		/** From the target to where it waits while it has no slot. */
@@ -106,8 +111,11 @@ private:
 	/** Copies who holds what onto the slots, and whether each holder has arrived. */
 	void UpdateOccupancy(FTargetSlots& Entry) const;
 
-	/** Out on the enemy's side of the target, NoSlotHoldDistance away, on the navmesh. */
-	FVector FindHoldOffset(const AActor* Target, const AActor* Enemy) const;
+	/**
+	 * Out on the enemy's side of the target, on the navmesh: NoSlotHoldDistance away for the close
+	 * ring; for the ranged ring where it is, kept between 60% and 100% of the ring's radius.
+	 */
+	FVector FindHoldOffset(const AActor* Target, const AActor* Enemy, int32 Ring) const;
 
 	/** With NeuralAI.PositionalSlots.Debug, logs a slot going back and why. */
 	void LogRelease(const FTargetSlots& Entry, const FClaim& Claim, const TCHAR* Reason) const;

@@ -43,13 +43,24 @@ public:
 	/**
 	 * Damages anything with health inside a forward arc. Purely mechanical: the decision
 	 * that an attack should happen, and whether it is allowed to, belongs to the controller.
-	 * Returns the number of actors hit.
+	 * Returns the number of actors hit (a ranged enemy, whose shot lands later, returns 1 for
+	 * a shot fired).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Enemy")
-	int32 PerformAttack();
+	virtual int32 PerformAttack();
 
 	UFUNCTION(BlueprintPure, Category = "Enemy")
 	float GetAttackRange() const { return AttackRange; }
+
+	/** Seconds between attacks, or 0 to leave it to the controller's AttackCooldown. */
+	UFUNCTION(BlueprintPure, Category = "Enemy")
+	float GetAttackInterval() const { return AttackInterval; }
+
+	/** Which ring of positional slots this enemy stands in: 0 close in, 1 the ranged ring. */
+	virtual int32 GetPreferredSlotRing() const { return 0; }
+
+	/** Whether its attacks take turns through the attack tokens. Close-in strikes do. */
+	virtual bool UsesAttackTokens() const { return true; }
 
 	/**
 	 * State tree that gates this enemy's behaviour, or null to run the controller's own
@@ -144,6 +155,10 @@ protected:
 	/** Half-angle of the damage arc in degrees. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Attack", meta = (ClampMin = "5.0", ClampMax = "180.0"))
 	float AttackHalfAngle = 60.0f;
+
+	/** Seconds between attacks. 0 uses the controller's AttackCooldown (1.5). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Attack", meta = (ClampMin = "0.0"))
+	float AttackInterval = 0.0f;
 
 private:
 	bool bStunned = false;

@@ -68,8 +68,9 @@ const UPositionalSlotSubsystem::FTargetSlots* UPositionalSlotSubsystem::FindSlot
 	return nullptr;
 }
 
-void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent)
+void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const FPositionalSlotAssigner::FIntent& Intent, int32 Ring)
 {
+	Ring = FMath::Clamp(Ring, 0, UPositionalSlotSettings::RingCount - 1);
 	const UWorld* World = GetWorld();
 	if (!World || !Enemy || !Target)
 	{
@@ -82,8 +83,15 @@ void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const 
 	{
 		if (Current->Target.Get() == Target)
 		{
-			Current->Claims[ClaimIndex].LastRequest = Now;
-			Current->Claims[ClaimIndex].Intent = Intent;
+			FClaim& Claim = Current->Claims[ClaimIndex];
+			Claim.LastRequest = Now;
+			Claim.Intent = Intent;
+			if (Claim.Ring != Ring)
+			{
+				Claim.Ring = Ring;
+				Claim.Slot = INDEX_NONE;
+				Current->bDirty = true;
+			}
 			return;
 		}
 		// Switched targets: leave the old ring.
@@ -101,6 +109,7 @@ void UPositionalSlotSubsystem::RequestSlot(AActor* Enemy, AActor* Target, const 
 	Claim.Id = NextClaimId++;
 	Claim.LastRequest = Now;
 	Claim.Intent = Intent;
+	Claim.Ring = Ring;
 	// A newcomer should not wait for the next round to know where to go.
 	Entry->bDirty = true;
 }
@@ -164,7 +173,7 @@ bool UPositionalSlotSubsystem::GetStandPoint(const AActor* Enemy, FVector& OutLo
 	return true;
 }
 
-FVector UPositionalSlotSubsystem::FindHoldOffset(const AActor* Target, const AActor* Enemy) const
+FVector UPositionalSlotSubsystem::FindHoldOffset(const AActor* Target, const AActor* Enemy, int32 Ring) const
 {
 	const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
 	const FVector Center = Target->GetActorLocation();
@@ -173,7 +182,12 @@ FVector UPositionalSlotSubsystem::FindHoldOffset(const AActor* Target, const AAc
 	{
 		Away = FVector::ForwardVector;
 	}
-	FVector Point = Center + Away * Settings->NoSlotHoldDistance;
+	// A shooter left without a slot stays about where it is, still in range; a close-in enemy
+	// waits clear of the ring.
+	const float Distance = Ring == 1
+		? FMath::Clamp(FVector::Dist2D(Enemy->GetActorLocation(), Center), Settings->RangedSlotRadius * 0.6f, Settings->RangedSlotRadius)
+		: Settings->NoSlotHoldDistance;
+	FVector Point = Center + Away * Distance;
 	const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 	FNavLocation Projected;
 	if (Navigation && Navigation->ProjectPointToNavigation(Point, Projected, FVector(150.0f, 150.0f, Settings->NavProjectionHeight)))
@@ -182,7 +196,7 @@ FVector UPositionalSlotSubsystem::FindHoldOffset(const AActor* Target, const AAc
 	}
 	// Never on top of the target, even when the navmesh only has room close by.
 	const FVector Offset = Point - Center;
-	return Offset.Size2D() < 100.0f ? Away * Settings->NoSlotHoldDistance : Offset;
+	return Offset.Size2D() < 100.0f ? Away * Distance : Offset;
 }
 
 void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
@@ -195,7 +209,23 @@ void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
 		return;
 	}
 	const FVector Center = Target->GetActorLocation();
-	const TArray<FVector> Positions = FPositionalSlotAssigner::RingPositions(Center, Settings->SlotCount, Settings->SlotRadius);
+
+	// Every ring in turn: the close ring first, then the ranged ring turned half a slot so its
+	// shooters stand between, not behind, the enemies in close.
+	TArray<FVector> Positions;
+	TArray<int32> Rings;
+	TArray<float> Angles;
+	for (int32 Ring = 0; Ring < UPositionalSlotSettings::RingCount; ++Ring)
+	{
+		const int32 Count = Settings->GetRingSlotCount(Ring);
+		const float Turn = Ring == 0 ? 0.0f : 180.0f / Count;
+		for (const FVector& Position : FPositionalSlotAssigner::RingPositions(FVector::ZeroVector, Count, Settings->GetRingRadius(Ring)))
+		{
+			Positions.Add(Center + Position.RotateAngleAxis(Turn, FVector::UpVector));
+			Rings.Add(Ring);
+			Angles.Add(FMath::Fmod(FPositionalSlotAssigner::BearingDegrees(FVector::ZeroVector, Position) + Turn, 360.0f));
+		}
+	}
 
 	// The slot count may have been changed in the editor: keep holders only while it is the same.
 	if (Entry.Slots.Num() != Positions.Num())
@@ -216,8 +246,8 @@ void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
 	{
 		FPositionalSlot& Slot = Entry.Slots[Index];
 		Slot.Index = Index;
-		Slot.Ring = 0;
-		Slot.AngleDegrees = 360.0f * Index / Positions.Num();
+		Slot.Ring = Rings[Index];
+		Slot.AngleDegrees = Angles[Index];
 		Slot.Offset = Positions[Index] - Center;
 		Slot.WorldLocation = Positions[Index];
 
@@ -239,25 +269,6 @@ void UPositionalSlotSubsystem::Reassign(FTargetSlots& Entry, float Now)
 	const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
 	RefreshSlots(Entry);
 
-	TArray<FPositionalSlotAssigner::FSlot> Slots;
-	for (const FPositionalSlot& Slot : Entry.Slots)
-	{
-		FPositionalSlotAssigner::FSlot& Input = Slots.AddDefaulted_GetRef();
-		Input.Location = Slot.WorldLocation;
-		Input.bReachable = Slot.bReachable;
-	}
-
-	TArray<FPositionalSlotAssigner::FClaimant> Claimants;
-	for (const FClaim& Claim : Entry.Claims)
-	{
-		FPositionalSlotAssigner::FClaimant& Claimant = Claimants.AddDefaulted_GetRef();
-		Claimant.Id = Claim.Id;
-		Claimant.Location = Claim.Enemy->GetActorLocation();
-		Claimant.CurrentSlot = Claim.Slot;
-		Claimant.HeldFor = Now - Claim.SlotSince;
-		Claimant.Intent = Claim.Intent;
-	}
-
 	FPositionalSlotAssigner::FParams Params;
 	Params.Target = Entry.Target->GetActorLocation();
 	Params.TargetForward = Entry.Target->GetActorForwardVector();
@@ -270,12 +281,54 @@ void UPositionalSlotSubsystem::Reassign(FTargetSlots& Entry, float Now)
 	Params.Weights.SwitchThreshold = Settings->SwitchThreshold;
 	Params.Weights.Strafe = Settings->StrafeWeight;
 	Params.Weights.ShorterWalkReward = Settings->ShorterWalkReward;
-	const TArray<FPositionalSlotAssigner::FResult> Results = FPositionalSlotAssigner::Assign(Slots, Claimants, Params);
+
+	// Each ring is assigned on its own, among the enemies that want it: the assigner sees that
+	// ring's slots only, by their index within the ring.
 	TArray<int32> Assigned;
-	for (int32 Index = 0; Index < Results.Num(); ++Index)
+	Assigned.Init(INDEX_NONE, Entry.Claims.Num());
+	for (int32 Ring = 0; Ring < UPositionalSlotSettings::RingCount; ++Ring)
 	{
-		Assigned.Add(Results[Index].Slot);
-		Entry.Claims[Index].Score = Results[Index].Score;
+		TArray<int32> SlotOf; // ring-local index -> slot index
+		TArray<FPositionalSlotAssigner::FSlot> Slots;
+		for (const FPositionalSlot& Slot : Entry.Slots)
+		{
+			if (Slot.Ring == Ring)
+			{
+				SlotOf.Add(Slot.Index);
+				FPositionalSlotAssigner::FSlot& Input = Slots.AddDefaulted_GetRef();
+				Input.Location = Slot.WorldLocation;
+				Input.bReachable = Slot.bReachable;
+			}
+		}
+
+		TArray<int32> ClaimOf; // claimant index -> claim index
+		TArray<FPositionalSlotAssigner::FClaimant> Claimants;
+		for (int32 Index = 0; Index < Entry.Claims.Num(); ++Index)
+		{
+			const FClaim& Claim = Entry.Claims[Index];
+			if (Claim.Ring != Ring)
+			{
+				continue;
+			}
+			ClaimOf.Add(Index);
+			FPositionalSlotAssigner::FClaimant& Claimant = Claimants.AddDefaulted_GetRef();
+			Claimant.Id = Claim.Id;
+			Claimant.Location = Claim.Enemy->GetActorLocation();
+			Claimant.CurrentSlot = SlotOf.Find(Claim.Slot);
+			Claimant.HeldFor = Now - Claim.SlotSince;
+			Claimant.Intent = Claim.Intent;
+		}
+		if (Claimants.Num() == 0)
+		{
+			continue;
+		}
+
+		const TArray<FPositionalSlotAssigner::FResult> Results = FPositionalSlotAssigner::Assign(Slots, Claimants, Params);
+		for (int32 Index = 0; Index < Results.Num(); ++Index)
+		{
+			Assigned[ClaimOf[Index]] = SlotOf.IsValidIndex(Results[Index].Slot) ? SlotOf[Results[Index].Slot] : INDEX_NONE;
+			Entry.Claims[ClaimOf[Index]].Score = Results[Index].Score;
+		}
 	}
 
 	for (int32 Index = 0; Index < Entry.Claims.Num(); ++Index)
@@ -291,7 +344,7 @@ void UPositionalSlotSubsystem::Reassign(FTargetSlots& Entry, float Now)
 			Claim.SlotSince = Now;
 		}
 		// Without a slot it waits out on its own side, clear of the ring, and asks again next round.
-		Claim.HoldOffset = Claim.Slot == INDEX_NONE ? FindHoldOffset(Entry.Target.Get(), Claim.Enemy.Get()) : FVector::ZeroVector;
+		Claim.HoldOffset = Claim.Slot == INDEX_NONE ? FindHoldOffset(Entry.Target.Get(), Claim.Enemy.Get(), Claim.Ring) : FVector::ZeroVector;
 	}
 	Entry.LastAssign = Now;
 	Entry.bDirty = false;
@@ -433,8 +486,14 @@ void UPositionalSlotSubsystem::DrawDebug(const FTargetSlots& Entry) const
 		return;
 	}
 	const FVector Center = Target->GetActorLocation();
+	// The ranged ring only clutters the view until a shooter is after this target.
+	const bool bRangedInUse = Entry.Claims.ContainsByPredicate([](const FClaim& Claim) { return Claim.Ring == 1; });
 	for (const FPositionalSlot& Slot : Entry.Slots)
 	{
+		if (Slot.Ring == 1 && !bRangedInUse)
+		{
+			continue;
+		}
 		const FVector Location = Center + Slot.Offset;
 		const AActor* Holder = Slot.ReservedEnemy.Get();
 		const FColor Color = !Slot.bReachable ? FColor(128, 128, 128)
@@ -492,8 +551,8 @@ void UPositionalSlotSubsystem::LogStatus() const
 			const float FromTarget = Entry.Target.IsValid() && Claim.Enemy.IsValid()
 				? FVector::Dist2D(Claim.Enemy->GetActorLocation(), Entry.Target->GetActorLocation()) : -1.0f;
 			const FString Where = bHasSlot
-				? FString::Printf(TEXT("slot %d (%.0f deg), %.0f cm from it, score %.2f = sep %.2f + flank %.2f + dist %.2f + strafe %.2f"),
-					Claim.Slot, Entry.Slots[Claim.Slot].AngleDegrees, Off,
+				? FString::Printf(TEXT("%sslot %d (%.0f deg), %.0f cm from it, score %.2f = sep %.2f + flank %.2f + dist %.2f + strafe %.2f"),
+					Claim.Ring == 1 ? TEXT("ranged ") : TEXT(""), Claim.Slot, Entry.Slots[Claim.Slot].AngleDegrees, Off,
 					Claim.Score.Total, Claim.Score.Separation, Claim.Score.Flank, Claim.Score.Distance, Claim.Score.Strafe)
 				: FString::Printf(TEXT("no slot, %.0f cm from its hold point"), FromHold);
 			UE_LOG(LogNeuralAI, Log, TEXT("    %s: %s, %.0f cm from the target"), *GetNameSafe(Claim.Enemy.Get()), *Where, FromTarget);

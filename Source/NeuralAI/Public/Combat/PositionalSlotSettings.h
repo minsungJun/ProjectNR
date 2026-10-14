@@ -35,6 +35,23 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "50.0"))
 	float SlotRadius = 160.0f;
 
+	/** Slots on the ranged ring (ring 1), for enemies that shoot. Set half a slot round from the close ring. */
+	UPROPERTY(Config, EditAnywhere, Category = "Ranged Ring", meta = (ClampMin = "1", ClampMax = "32"))
+	int32 RangedSlotCount = 8;
+
+	/**
+	 * Ranged ring radius, in cm. Inside the shooters' range (30 m) and inside a room (18 m from
+	 * the middle to a wall); slots off the navmesh or out of sight of the target drop out as usual.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Ranged Ring", meta = (ClampMin = "100.0"))
+	float RangedSlotRadius = 1200.0f;
+
+	/** Rings there are: 0 close in, 1 ranged. */
+	static constexpr int32 RingCount = 2;
+
+	int32 GetRingSlotCount(int32 Ring) const { return Ring == 1 ? RangedSlotCount : SlotCount; }
+	float GetRingRadius(int32 Ring) const { return Ring == 1 ? RangedSlotRadius : SlotRadius; }
+
 	/** How far up or down, in cm, a slot may be moved to land on the navmesh. */
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "10.0"))
 	float NavProjectionHeight = 250.0f;

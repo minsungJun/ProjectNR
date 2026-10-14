@@ -296,7 +296,8 @@ void AEnemyAIController::TryDodge(float Now, float ImmediateThreat)
 
 void AEnemyAIController::TryAttack(float Now, float ImmediateThreat)
 {
-	if (Now - LastAttackTime < AttackCooldown || IsCommitted(Now))
+	const float Interval = ControlledEnemy->GetAttackInterval() > 0.0f ? ControlledEnemy->GetAttackInterval() : AttackCooldown;
+	if (Now - LastAttackTime < Interval || IsCommitted(Now))
 	{
 		return;
 	}
@@ -319,8 +320,10 @@ void AEnemyAIController::TryAttack(float Now, float ImmediateThreat)
 
 	// Which of the enemies in reach strikes, and in what order, is the attack tokens' call. Where
 	// the enemy stands (its positional slot) plays no part in it.
+	// Shots from afar are paced by their own interval and do not crowd the target, so only
+	// close-in strikes take turns.
 	UAttackTokenSubsystem* Tokens = GetWorld()->GetSubsystem<UAttackTokenSubsystem>();
-	if (Tokens && !Tokens->TryTakeToken(ControlledEnemy, Sensor->GetCurrentTarget()))
+	if (ControlledEnemy->UsesAttackTokens() && Tokens && !Tokens->TryTakeToken(ControlledEnemy, Sensor->GetCurrentTarget()))
 	{
 		return;
 	}
@@ -540,7 +543,7 @@ void AEnemyAIController::UpdatePositionalSlot()
 			Intent.Strafe = Output.StrafeRight - Output.StrafeLeft;
 			Intent.Caution = Brain->GetActivation(ENeuronId::Caution);
 		}
-		Slots->RequestSlot(ControlledEnemy, Target, Intent);
+		Slots->RequestSlot(ControlledEnemy, Target, Intent, ControlledEnemy->GetPreferredSlotRing());
 	}
 	else
 	{
@@ -581,7 +584,7 @@ FVector AEnemyAIController::GetSteerPoint(const FVector& Goal) const
 	// it; not swinging wider than half as much again.
 	const float Step = FMath::Clamp(Delta, -Settings->OrbitStepDegrees, Settings->OrbitStepDegrees);
 	const float Bearing = FMath::DegreesToRadians(FromBearing + Step);
-	const float Outside = Settings->SlotRadius + Settings->OrbitMargin;
+	const float Outside = Settings->GetRingRadius(ControlledEnemy->GetPreferredSlotRing()) + Settings->OrbitMargin;
 	const float Ring = FMath::Clamp(FVector::Dist2D(From, Center), Outside, Outside * 1.5f);
 	return FVector(Center.X + FMath::Cos(Bearing) * Ring, Center.Y + FMath::Sin(Bearing) * Ring, Goal.Z);
 }
