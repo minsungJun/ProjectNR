@@ -3,6 +3,7 @@
 #include "Climb/EnemyClimbComponent.h"
 
 #include "Characters/EnemyCharacter.h"
+#include "Climb/EnemyClimbLinkSubsystem.h"
 #include "Climb/EnemyClimbSettings.h"
 #include "Components/CapsuleComponent.h"
 #include "DrawDebugHelpers.h"
@@ -42,7 +43,30 @@ bool UEnemyClimbComponent::StartClimb(const FEnemyClimbLedge& InLedge)
 	{
 		return false;
 	}
-	Ledge = InLedge;
+	// Someone already on that spot: the next free one along the wall, or wait a moment.
+	const UEnemyClimbSettings* Settings = GetDefault<UEnemyClimbSettings>();
+	UEnemyClimbLinkSubsystem* Spots = GetWorld() ? GetWorld()->GetSubsystem<UEnemyClimbLinkSubsystem>() : nullptr;
+	FEnemyClimbLedge Free = InLedge;
+	if (Spots)
+	{
+		if (Now() - LastSpotTakenTime < Settings->ClimbSpotRetryInterval)
+		{
+			return false;
+		}
+		if (!Spots->FindFreeSpot(GetCharacter(), InLedge, Free))
+		{
+			LastSpotTakenTime = Now();
+			UE_LOG(LogNeuralAI, Verbose, TEXT("%s waits: every spot near %s is taken"), *GetNameSafe(GetOwner()), *InLedge.BaseCenter.ToCompactString());
+			return false;
+		}
+		if (FVector::Dist2D(Free.BaseCenter, InLedge.BaseCenter) > 1.0f)
+		{
+			UE_LOG(LogNeuralAI, Log, TEXT("%s moves %.0f cm along the wall: its spot is taken"), *GetNameSafe(GetOwner()),
+				FVector::Dist2D(Free.BaseCenter, InLedge.BaseCenter));
+		}
+		Spots->RegisterClimber(GetOwner(), Free);
+	}
+	Ledge = Free;
 	ClimbStartTime = Now();
 	LastBlocker = TEXT("nothing");
 	SetComponentTickEnabled(true);
@@ -250,6 +274,10 @@ void UEnemyClimbComponent::DropDead()
 void UEnemyClimbComponent::LetGo(bool bFall)
 {
 	Phase = EEnemyClimbPhase::None;
+	if (UEnemyClimbLinkSubsystem* Spots = GetWorld() ? GetWorld()->GetSubsystem<UEnemyClimbLinkSubsystem>() : nullptr)
+	{
+		Spots->UnregisterClimber(GetOwner());
+	}
 	SetComponentTickEnabled(false);
 	SetPose(0.0f);
 	if (ACharacter* Character = GetCharacter())

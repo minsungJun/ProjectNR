@@ -208,6 +208,58 @@ void UEnemyClimbLinkSubsystem::SpawnLinkHolder(UWorld* World, ULevel* Level, con
 	Holder->FinishSpawning(At);
 }
 
+bool UEnemyClimbLinkSubsystem::IsSpotTaken(const FVector& Base, const AActor* Asker, float Radius) const
+{
+	return Climbers.ContainsByPredicate([&Base, Asker, Radius](const FClimber& Climber)
+	{
+		return Climber.Actor.IsValid() && Climber.Actor.Get() != Asker && FVector::Dist2D(Climber.Base, Base) < Radius * 2.0f + 10.0f;
+	});
+}
+
+bool UEnemyClimbLinkSubsystem::FindFreeSpot(const ACharacter* Climber, const FEnemyClimbLedge& Wanted, FEnemyClimbLedge& OutLedge) const
+{
+	const FEnemyClimbProbe::FBody Body = FEnemyClimbProbe::GetBody(Climber);
+	if (!IsSpotTaken(Wanted.BaseCenter, Climber, Body.Radius))
+	{
+		OutLedge = Wanted;
+		return true;
+	}
+
+	// Along the wall, nearest first, alternating sides, a body's width and a little apart, each
+	// spot probed straight at the wall as if standing just out from it.
+	const UEnemyClimbSettings& Settings = *GetDefault<UEnemyClimbSettings>();
+	const FVector Along = FVector::CrossProduct(Wanted.WallNormal, FVector::UpVector).GetSafeNormal();
+	const float Step = Body.Radius * 2.0f + 20.0f;
+	const UCharacterMovementComponent* Movement = Climber ? Climber->GetCharacterMovement() : nullptr;
+	for (int32 Index = 1; Index <= Settings.ClimbSpotSearchSteps; ++Index)
+	{
+		for (const float Side : { 1.0f, -1.0f })
+		{
+			const FVector Start = Wanted.BaseCenter + Along * (Side * Index * Step) + Wanted.WallNormal * 30.0f;
+			FEnemyClimbLedge Spot;
+			if (FEnemyClimbProbe::ProbeFrom(GetWorld(), Body, Start, -Wanted.WallNormal, Settings,
+					Movement ? Movement->GetWalkableFloorZ() : 0.71f, Climber, Spot) == EEnemyClimbProbeResult::Ok
+				&& FMath::Abs(Spot.TopZ - Wanted.TopZ) < 50.0f && !IsSpotTaken(Spot.BaseCenter, Climber, Body.Radius))
+			{
+				OutLedge = Spot;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void UEnemyClimbLinkSubsystem::RegisterClimber(AActor* Climber, const FEnemyClimbLedge& Ledge)
+{
+	UnregisterClimber(Climber);
+	Climbers.Add({ Climber, Ledge.BaseCenter });
+}
+
+void UEnemyClimbLinkSubsystem::UnregisterClimber(const AActor* Climber)
+{
+	Climbers.RemoveAll([Climber](const FClimber& Entry) { return !Entry.Actor.IsValid() || Entry.Actor.Get() == Climber; });
+}
+
 bool UEnemyClimbLinkSubsystem::FindLedge(const FVector& Start, const FVector& End, FEnemyClimbLedge& OutLedge, float Tolerance) const
 {
 	float Best = TNumericLimits<float>::Max();

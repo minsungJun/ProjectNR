@@ -41,7 +41,11 @@ class NEURALAI_API UEnemyClimbComponent : public UActorComponent
 public:
 	UEnemyClimbComponent();
 
-	/** Starts climbing Ledge. False if already climbing or the owner cannot climb. */
+	/**
+	 * Starts climbing Ledge, or the nearest free spot along the same wall when someone else is
+	 * climbing there. False if already climbing, the owner cannot climb, or every spot near is taken
+	 * (looked for again after ClimbSpotRetryInterval).
+	 */
 	bool StartClimb(const FEnemyClimbLedge& Ledge);
 
 	/** Gives up: off the wall, falling straight down. Nothing happens when not climbing. */
@@ -97,6 +101,9 @@ private:
 	float LastProgressTime = 0.0f;
 
 	FString LastBlocker;
+
+	/** When every spot near was last found taken. */
+	float LastSpotTakenTime = -1000.0f;
 
 	/** The last wall given up on, and when. */
 	TWeakObjectPtr<AActor> FailedWall;

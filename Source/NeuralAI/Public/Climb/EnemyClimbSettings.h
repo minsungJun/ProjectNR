@@ -105,6 +105,17 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.0"))
 	float FailedWallCooldown = 5.0f;
 
+	/**
+	 * When someone else is already climbing the spot an enemy picked, how many spots (a body's
+	 * width apart) to try along the wall each way before waiting its turn.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Crowd", meta = (ClampMin = "0", ClampMax = "10"))
+	int32 ClimbSpotSearchSteps = 4;
+
+	/** Seconds between an enemy's looks for a free spot while every one near it is taken. */
+	UPROPERTY(Config, EditAnywhere, Category = "Crowd", meta = (ClampMin = "0.05"))
+	float ClimbSpotRetryInterval = 0.25f;
+
 	/** Draw what the probe found and the climb under way. Same as NeuralAI.Climb.Debug 1. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug")
 	bool bDrawDebug = false;

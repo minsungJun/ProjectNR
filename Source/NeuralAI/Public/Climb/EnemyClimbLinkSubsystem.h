@@ -20,6 +20,9 @@ class ULevel;
  * so it costs more than walking and shooters' paths leave it out), and down the other way (plain
  * area: walking off the edge is all a drop takes). The navmesh is dynamic, so the links take
  * effect once the tiles around them rebuild.
+ *
+ * It also keeps track of who is climbing where, so two never go up the same spot: a climber that
+ * finds its spot taken moves along the wall to the nearest free one (FindFreeSpot).
  */
 UCLASS()
 class NEURALAI_API UEnemyClimbLinkSubsystem : public UWorldSubsystem
@@ -42,6 +45,17 @@ public:
 	/** Every climb with a link, for tests and debugging. */
 	TArray<FEnemyClimbLedge> GetLedges() const;
 
+	/**
+	 * Wanted itself if no one else is climbing there, otherwise the nearest climbable spot along the
+	 * same wall, to either side, a body's width apart, that is free and reaches the same top. False
+	 * when there is none within ClimbSpotSearchSteps.
+	 */
+	bool FindFreeSpot(const ACharacter* Climber, const FEnemyClimbLedge& Wanted, FEnemyClimbLedge& OutLedge) const;
+
+	/** Climber is on its way up Ledge: no one else may take that spot until it lets go. */
+	void RegisterClimber(AActor* Climber, const FEnemyClimbLedge& Ledge);
+	void UnregisterClimber(const AActor* Climber);
+
 protected:
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 
@@ -62,6 +76,16 @@ private:
 
 	/** A link already starts within this of Ledge's foot (one climb per spot). */
 	bool HasLinkNear(const FEnemyClimbLedge& Ledge) const;
+
+	/** Someone other than Asker is climbing with its foot within a body's width of Base. */
+	bool IsSpotTaken(const FVector& Base, const AActor* Asker, float Radius) const;
+
+	struct FClimber
+	{
+		TWeakObjectPtr<AActor> Actor;
+		FVector Base = FVector::ZeroVector;
+	};
+	TArray<FClimber> Climbers;
 
 	TArray<FClimbLink> Links;
 	TArray<TWeakObjectPtr<ULevel>> BuiltLevels;

@@ -15,6 +15,9 @@
 // floor never climbs; with the player up on the 4 m platform or the 2 m block (no path up) it
 // climbs the wall on its own; with the player on the platform with the ramp it climbs from the
 // far side (the wall is much shorter than walking round) and walks up the ramp from near its foot.
+//
+// NeuralAI.Climb.Crowd, with links: eight crawlers after the player on the 4 m platform go up its
+// wall side by side - never two bodies on the wall in each other - and all get up.
 
 #include "Characters/EnemyCharacter.h"
 #include "Climb/EnemyClimbComponent.h"
@@ -458,6 +461,114 @@ bool FEnemyClimbOnDemandTest::RunTest(const FString& Parameters)
 		GetMutableDefault<UEnemyClimbSettings>()->bBuildClimbLinks = bLinks;
 		return true;
 	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyClimbCrowdTest, "NeuralAI.Climb.Crowd",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FEnemyClimbCrowdTest::RunTest(const FString& Parameters)
+{
+	using namespace EnemyClimbWorldTest;
+	struct FCrowd
+	{
+		TArray<TWeakObjectPtr<AEnemyCharacter>> Crawlers;
+		TArray<float> MaxZ;
+		float Closest = TNumericLimits<float>::Max();
+		FString ClosestWhere;
+		int32 Moved = 0;
+	};
+	TSharedRef<FCrowd> Crowd = MakeShared<FCrowd>();
+
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		return IsComplete(UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(1000.0f, -300.0f, 62.0f), FVector(1000.0f, -1200.0f, 462.0f)));
+	}, 30.0f));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Crowd]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		APawn* Player = World ? UGameplayStatics::GetPlayerPawn(World, 0) : nullptr;
+		if (!Player)
+		{
+			AddError(TEXT("no player"));
+			return true;
+		}
+		Player->SetActorLocation(FVector(1000.0f, -1250.0f, 520.0f), false, nullptr, ETeleportType::TeleportPhysics);
+		for (int32 Index = 0; Index < 8; ++Index)
+		{
+			const FVector2D At(760.0f + (Index % 4) * 160.0f, -450.0f - (Index / 4) * 160.0f);
+			if (AEnemyCharacter* Crawler = SpawnCrawler(World, At, -90.0f))
+			{
+				Crawler->GetSensorComponent()->ReceiveAlert(Player, nullptr);
+				Crowd->Crawlers.Add(Crawler);
+				Crowd->MaxZ.Add(0.0f);
+			}
+		}
+		return true;
+	}));
+
+	// Watched every frame: who is on the wall, and how close the nearest two of them come.
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([Crowd]()
+	{
+		bool bAllUp = Crowd->Crawlers.Num() > 0;
+		TArray<const AEnemyCharacter*> OnWall;
+		for (int32 Index = 0; Index < Crowd->Crawlers.Num(); ++Index)
+		{
+			const AEnemyCharacter* Crawler = Crowd->Crawlers[Index].Get();
+			if (!Crawler)
+			{
+				continue;
+			}
+			Crowd->MaxZ[Index] = FMath::Max(Crowd->MaxZ[Index], static_cast<float>(Crawler->GetActorLocation().Z));
+			bAllUp &= Crowd->MaxZ[Index] > 450.0f && !Crawler->GetClimbComponent()->IsClimbing();
+			const EEnemyClimbPhase Phase = Crawler->GetClimbComponent()->GetPhase();
+			if (Phase == EEnemyClimbPhase::Climb || Phase == EEnemyClimbPhase::Align)
+			{
+				OnWall.Add(Crawler);
+			}
+		}
+		for (int32 A = 0; A < OnWall.Num(); ++A)
+		{
+			for (int32 B = A + 1; B < OnWall.Num(); ++B)
+			{
+				// Side by side or one above the other, but not in each other: closer than two radii
+				// across only with more than a body's height between them.
+				const FVector Between = OnWall[A]->GetActorLocation() - OnWall[B]->GetActorLocation();
+				if (FMath::Abs(Between.Z) >= 120.0f)
+				{
+					continue;
+				}
+				const float Gap = Between.Size2D();
+				if (Gap < Crowd->Closest)
+				{
+					Crowd->Closest = Gap;
+					Crowd->ClosestWhere = FString::Printf(TEXT("%s and %s"), *GetNameSafe(OnWall[A]), *GetNameSafe(OnWall[B]));
+				}
+			}
+		}
+		return bAllUp;
+	}, 25.0f));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Crowd]()
+	{
+		int32 Up = 0;
+		for (const float Z : Crowd->MaxZ)
+		{
+			Up += Z > 450.0f ? 1 : 0;
+		}
+		TestEqual(TEXT("crawlers that got up onto the platform"), Up, Crowd->Crawlers.Num());
+		if (Crowd->Closest < TNumericLimits<float>::Max())
+		{
+			AddInfo(FString::Printf(TEXT("closest two side by side on the wall: %.0f cm (%s)"), Crowd->Closest, *Crowd->ClosestWhere));
+			TestTrue(FString::Printf(TEXT("never two bodies on the wall in each other (closest %.0f cm across)"), Crowd->Closest), Crowd->Closest >= 83.0f);
+		}
+		return true;
+	}));
+
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	return true;
 }
