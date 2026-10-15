@@ -39,6 +39,22 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Sensor")
 	AActor* GetCurrentTarget() const { return CurrentTarget.Get(); }
 
+	/**
+	 * Where the target is, as far as this enemy knows: where it stands while in sight, where it
+	 * was last seen or heard (or where an ally saw it) otherwise - not where it has gone since,
+	 * behind a wall. Everything that steers or aims goes by this, never the actor itself.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Sensor")
+	FVector GetTargetLocation() const { return KnownTargetLocation; }
+
+	/** The target is in sight, or was a moment ago (SightGraceTime), as opposed to known of. */
+	UFUNCTION(BlueprintPure, Category = "Sensor")
+	bool SeesTarget() const { return CurrentTarget.IsValid() && !bSensingByAlert; }
+
+	/** The target is in plain sight this very update: what an attack needs. */
+	UFUNCTION(BlueprintPure, Category = "Sensor")
+	bool IsTargetInSight() const { return CurrentTarget.IsValid() && bSawTargetDirectly; }
+
 	UFUNCTION(BlueprintPure, Category = "Sensor")
 	float GetDetectionRange() const { return DetectionRange; }
 
@@ -150,6 +166,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Alert", meta = (ClampMin = "100.0"))
 	float AlertChaseRange = 6000.0f;
 
+	/**
+	 * Seconds the target still counts as seen after it goes out of sight, so a pillar passing
+	 * between does not break everything off. After that the enemy only knows where it was last
+	 * seen, and goes to look there for AlertDuration.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor", meta = (ClampMin = "0.0"))
+	float SightGraceTime = 0.75f;
+
+	/** Within this distance, in cm, of where it was told to look, an enemy that finds nothing gives up. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor|Alert", meta = (ClampMin = "0.0"))
+	float SearchGiveUpRadius = 200.0f;
+
 	/** Eye height above the actor origin, used for line-of-sight traces. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensor")
 	float EyeHeight = 40.0f;
@@ -237,6 +265,16 @@ private:
 
 	TWeakObjectPtr<AActor> AlertTarget;
 	float AlertExpireTime = -1.0f;
+
+	/** Where the target was when the alert came, the shot was heard, or it was last seen. */
+	FVector AlertLocation = FVector::ZeroVector;
+
+	/** The last direct sighting: who, when, where. */
+	TWeakObjectPtr<AActor> LastSeenTarget;
+	float LastSeenTime = -1000.0f;
+	FVector LastSeenLocation = FVector::ZeroVector;
+
+	FVector KnownTargetLocation = FVector::ZeroVector;
 
 	/** The flinch under way: seconds left, which threat side it lights (+1 right, -1 left), and
 	 *  when the next may start. */

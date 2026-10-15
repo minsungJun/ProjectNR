@@ -3,8 +3,9 @@
 // Shots from a shooter against what stands in their way. Opens Lvl_ClimbAutoTest in PIE, holds the
 // player and a shooter still 16 m apart and watches its shots: a block put down between them
 // (Movable, WorldDynamic, as placed level blocks are) stops every shot, LevelBlock_Traversable
-// too where the project has it; with the way clear the shots reach the player. Automation test
-// NeuralAI.Ranged.Cover (editor only, needs the map).
+// too where the project has it; with the way clear the shots reach the player. Behind cover the
+// shooter does not fire on its own (it cannot see the player): the test pulls its trigger three
+// times there. Automation test NeuralAI.Ranged.Cover (editor only, needs the map).
 
 #include "Characters/RangedEnemyCharacter.h"
 #include "Components/EnemySensorComponent.h"
@@ -18,6 +19,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/AutomationTest.h"
+#include "NavigationSystem.h"
 #include "Misc/OutputDevice.h"
 #include "Tests/AutomationCommon.h"
 
@@ -59,6 +61,21 @@ namespace EnemyProjectileCoverTest
 	const FVector PlayerAt(-2000.0f, -500.0f, 87.0f);
 	const FVector ShooterAt(-2000.0f, 1100.0f, 70.0f);
 
+	/** Three shots by hand, 1.5 s apart: behind cover the shooter will not fire by itself. */
+	void AddTriggerPulls(const TSharedRef<FState>& State)
+	{
+		for (int32 Pull = 0; Pull < 3; ++Pull)
+		{
+			ADD_LATENT_AUTOMATION_COMMAND(FDelayedFunctionLatentCommand([State]()
+			{
+				if (ARangedEnemyCharacter* Shooter = State->Shooter.Get())
+				{
+					Shooter->PerformAttack();
+				}
+			}, 1.5f));
+		}
+	}
+
 	/** A Movable 3 x 0.5 x 3 m wall across the line between them, as a player would put one down. */
 	AActor* SpawnWall(UWorld* World)
 	{
@@ -83,6 +100,17 @@ bool FEnemyProjectileCoverTest::RunTest(const FString& Parameters)
 	TSharedRef<FState> State = MakeShared<FState>();
 
 	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		// The game sets the player down once it has started: wait for that (the navmesh is built
+		// by then) before putting the player anywhere.
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+		FNavLocation Projected;
+		return Navigation && !Navigation->IsNavigationBuildInProgress()
+			&& Navigation->ProjectPointToNavigation(FVector(1000.0f, -1200.0f, 462.0f), Projected, FVector(50.0f, 50.0f, 150.0f));
+	}, 30.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
 
 	// Both held still: the shooter must not walk round the wall, only shoot.
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, State]()
@@ -116,11 +144,12 @@ bool FEnemyProjectileCoverTest::RunTest(const FString& Parameters)
 		GLog->AddOutputDevice(&State->Log);
 		return true;
 	}));
+	AddTriggerPulls(State);
 
 	ADD_LATENT_AUTOMATION_COMMAND(FDelayedFunctionLatentCommand([this, State]()
 	{
 		AddInfo(FString::Printf(TEXT("behind a placed wall: %d fired, %d hit the player, %d stopped"), State->Log.Fired, State->Log.HitPlayer, State->Log.Stopped));
-		TestTrue(TEXT("the shooter fired at the wall"), State->Log.Fired > 0);
+		TestEqual(TEXT("behind the wall the shooter fired only when made to"), State->Log.Fired, 3);
 		TestEqual(TEXT("no shot went through the placed wall"), State->Log.HitPlayer, 0);
 		TestTrue(TEXT("the wall stopped its shots"), State->Log.Stopped > 0);
 		if (AActor* Cover = State->Cover.Get())
@@ -147,13 +176,15 @@ bool FEnemyProjectileCoverTest::RunTest(const FString& Parameters)
 			State->Shooter->GetSensorComponent()->ReceiveAlert(UGameplayStatics::GetPlayerPawn(AutomationCommon::GetAnyGameWorld(), 0), nullptr);
 		}
 		State->Log.Reset();
-	}, 6.5f));
+	}, 2.0f));
+	AddTriggerPulls(State);
 
 	ADD_LATENT_AUTOMATION_COMMAND(FDelayedFunctionLatentCommand([this, State]()
 	{
 		if (State->Cover.IsValid())
 		{
 			AddInfo(FString::Printf(TEXT("behind LevelBlock_Traversable: %d fired, %d hit the player, %d stopped"), State->Log.Fired, State->Log.HitPlayer, State->Log.Stopped));
+			TestEqual(TEXT("behind LevelBlock_Traversable the shooter fired only when made to"), State->Log.Fired, 3);
 			TestEqual(TEXT("no shot went through LevelBlock_Traversable"), State->Log.HitPlayer, 0);
 			TestTrue(TEXT("LevelBlock_Traversable stopped its shots"), State->Log.Stopped > 0);
 			State->Cover->Destroy();
@@ -168,7 +199,7 @@ bool FEnemyProjectileCoverTest::RunTest(const FString& Parameters)
 			State->Shooter->GetSensorComponent()->ReceiveAlert(UGameplayStatics::GetPlayerPawn(AutomationCommon::GetAnyGameWorld(), 0), nullptr);
 		}
 		State->Log.Reset();
-	}, 6.5f));
+	}, 2.0f));
 
 	// The way clear: the shots reach the player.
 	ADD_LATENT_AUTOMATION_COMMAND(FDelayedFunctionLatentCommand([this, State]()

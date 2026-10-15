@@ -99,6 +99,8 @@ void UEnemySensorComponent::UpdateTargetSenses(const FVector& SelfLocation, cons
 		AlertTarget = nullptr;
 	}
 	AActor* Target = bDormant ? nullptr : AcquireTarget(SelfLocation);
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
 
 	// A fresh sighting is news worth passing on; a continuing one was already passed on.
 	const bool bSeesDirectly = Target != nullptr;
@@ -107,16 +109,39 @@ void UEnemySensorComponent::UpdateTargetSenses(const FVector& SelfLocation, cons
 		BroadcastAlert(Target);
 	}
 	bSawTargetDirectly = bSeesDirectly;
+	if (bSeesDirectly)
+	{
+		LastSeenTarget = Target;
+		LastSeenTime = Now;
+		LastSeenLocation = Target->GetActorLocation();
+	}
+	else if (!bDormant && LastSeenTarget.IsValid())
+	{
+		if (Now - LastSeenTime <= SightGraceTime)
+		{
+			// Just gone behind something: still counts as seen for a moment.
+			Target = LastSeenTarget.Get();
+		}
+		else
+		{
+			// Gone for good: all that is left is where it was, to go and look.
+			AlertTarget = LastSeenTarget;
+			AlertLocation = LastSeenLocation;
+			AlertExpireTime = Now + AlertDuration;
+			LastSeenTarget = nullptr;
+		}
+	}
 
-	// Nothing in sight: fall back to what an ally reported, while it is fresh and within chase
-	// range. Past that the alert is dropped and the enemy goes back to idle.
+	// Nothing in sight: fall back to where an ally saw it, or it was heard or last seen, while that
+	// is fresh and within chase range - the place, not the actor, which may have moved on behind a
+	// wall since. Past that, or once there with nothing to see, the enemy goes back to idle.
 	bSensingByAlert = false;
 	if (!Target)
 	{
-		const UWorld* World = GetWorld();
 		AActor* Alerted = AlertTarget.Get();
-		if (World && Alerted && World->GetTimeSeconds() < AlertExpireTime
-			&& FVector::DistSquared2D(SelfLocation, Alerted->GetActorLocation()) <= FMath::Square(AlertChaseRange))
+		if (World && Alerted && Now < AlertExpireTime
+			&& FVector::DistSquared2D(SelfLocation, AlertLocation) <= FMath::Square(AlertChaseRange)
+			&& FVector::DistSquared2D(SelfLocation, AlertLocation) > FMath::Square(SearchGiveUpRadius))
 		{
 			Target = Alerted;
 			bSensingByAlert = true;
@@ -143,7 +168,8 @@ void UEnemySensorComponent::UpdateTargetSenses(const FVector& SelfLocation, cons
 		return;
 	}
 
-	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetLocation = bSensingByAlert ? AlertLocation : Target->GetActorLocation();
+	KnownTargetLocation = TargetLocation;
 	const FVector ToTarget(TargetLocation.X - SelfLocation.X, TargetLocation.Y - SelfLocation.Y, 0.0f);
 	const float Distance = ToTarget.Size();
 	const FVector ToTargetDir = ToTarget.GetSafeNormal();
@@ -342,6 +368,7 @@ bool UEnemySensorComponent::HearShot(AActor* Shooter)
 	}
 	const bool bNews = AlertTarget.Get() != Shooter || World->GetTimeSeconds() >= AlertExpireTime;
 	AlertTarget = Shooter;
+	AlertLocation = Shooter->GetActorLocation();
 	AlertExpireTime = World->GetTimeSeconds() + AlertDuration;
 	return bNews;
 }
@@ -458,6 +485,7 @@ void UEnemySensorComponent::ReceiveAlert(AActor* Target, const UEnemySensorCompo
 	}
 
 	AlertTarget = Target;
+	AlertLocation = Target->GetActorLocation();
 	AlertExpireTime = World->GetTimeSeconds() + AlertDuration;
 }
 
@@ -467,6 +495,7 @@ void UEnemySensorComponent::SetDormant(bool bInDormant)
 	if (bDormant)
 	{
 		AlertTarget = nullptr;
+		LastSeenTarget = nullptr;
 		bSawTargetDirectly = false;
 		ShotFlinchRemaining = 0.0f;
 	}

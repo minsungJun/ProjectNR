@@ -332,8 +332,9 @@ void AEnemyAIController::TryAttack(float Now, float ImmediateThreat)
 
 	// The brain may want to attack from across the room. Whether that is sensible is
 	// decided here, not there.
+	// Nor at something it cannot see: known of behind a wall, it is not struck or shot at.
 	const FEnemySensorData& Data = Sensor->GetSensorData();
-	if (Data.TargetDetected <= 0.0f || Sensor->GetTargetDistance() > ControlledEnemy->GetAttackRange())
+	if (Data.TargetDetected <= 0.0f || !Sensor->IsTargetInSight() || Sensor->GetTargetDistance() > ControlledEnemy->GetAttackRange())
 	{
 		return;
 	}
@@ -496,9 +497,12 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	LastPathGoal = Goal;
 	// Paths may go up walls (climb links); those that do not climb keep to the floor.
 	const TSubclassOf<UNavigationQueryFilter> Filter = ControlledEnemy->CanClimb() ? nullptr : UNavFilter_EnemyNoClimb::StaticClass();
+	// Without a slot: to the target while it is in sight, to where it was last known otherwise.
 	UNavigationPath* Path = bSlotGoal
 		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), Goal, nullptr, Filter)
-		: UNavigationSystemV1::FindPathToActorSynchronously(this, ControlledEnemy->GetActorLocation(), Target, 50.0f, nullptr, Filter);
+		: Sensor->SeesTarget()
+		? UNavigationSystemV1::FindPathToActorSynchronously(this, ControlledEnemy->GetActorLocation(), Target, 50.0f, nullptr, Filter)
+		: UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), Sensor->GetTargetLocation(), nullptr, Filter);
 
 	// A partial path still helps: it walks the enemy as far towards the target as the
 	// navmesh allows, which beats pushing straight into whatever is in the way.
@@ -551,7 +555,7 @@ bool AEnemyAIController::IsTargetElevated() const
 	{
 		return false;
 	}
-	const float TargetFeet = Target->GetActorLocation().Z - Target->GetSimpleCollisionHalfHeight();
+	const float TargetFeet = Sensor->GetTargetLocation().Z - Target->GetSimpleCollisionHalfHeight();
 	const float OwnFeet = ControlledEnemy->GetActorLocation().Z - ControlledEnemy->GetSimpleCollisionHalfHeight();
 	return TargetFeet - OwnFeet >= GetDefault<UEnemyClimbSettings>()->ElevatedTargetHeight;
 }
@@ -587,7 +591,7 @@ bool AEnemyAIController::TryClimbOnDemand(float Now)
 	// foot, the climb (dearer than walking), and the route from its top to the target.
 	UWorld* World = GetWorld();
 	const FVector From = ControlledEnemy->GetActorLocation();
-	const FVector Toward = (Target->GetActorLocation() - From).GetSafeNormal2D();
+	const FVector Toward = (Sensor->GetTargetLocation() - From).GetSafeNormal2D();
 	FEnemyClimbLedge Best;
 	float BestRoute = TNumericLimits<float>::Max();
 	for (const float Angle : { 0.0f, 30.0f, -30.0f, 60.0f, -60.0f })
@@ -598,7 +602,7 @@ bool AEnemyAIController::TryClimbOnDemand(float Now)
 		{
 			continue;
 		}
-		UNavigationPath* FromTop = UNavigationSystemV1::FindPathToLocationSynchronously(this, Ledge.StandCenter, Target->GetActorLocation());
+		UNavigationPath* FromTop = UNavigationSystemV1::FindPathToLocationSynchronously(this, Ledge.StandCenter, Sensor->GetTargetLocation());
 		if (!FromTop || !FromTop->IsValid() || FromTop->IsPartial())
 		{
 			continue;
@@ -728,7 +732,9 @@ void AEnemyAIController::UpdatePositionalSlot()
 	}
 	const UEnemySensorComponent* Sensor = ControlledEnemy->GetSensorComponent();
 	AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
-	if (Slots->IsAssigning() && Target && !Sensor->IsDormant())
+	// A place round the target only while it is in sight: known of behind a wall, the enemy goes
+	// to where it was, and the slots would give its whereabouts away.
+	if (Slots->IsAssigning() && Target && !Sensor->IsDormant() && Sensor->SeesTarget())
 	{
 		// The brain does not pick the slot, but what it wants tilts the choice: closing in favours
 		// near slots, strafing the neighbour on that side, caution the target's flanks.
@@ -744,7 +750,7 @@ void AEnemyAIController::UpdatePositionalSlot()
 	}
 	else
 	{
-		Slots->ReleaseSlot(ControlledEnemy, TEXT("target lost or dormant"));
+		Slots->ReleaseSlot(ControlledEnemy, TEXT("target lost, out of sight or dormant"));
 	}
 }
 
@@ -771,7 +777,7 @@ FVector AEnemyAIController::GetSteerPoint(const FVector& Goal) const
 		return Goal;
 	}
 	const UPositionalSlotSettings* Settings = GetDefault<UPositionalSlotSettings>();
-	const FVector Center = Target->GetActorLocation();
+	const FVector Center = Sensor->GetTargetLocation();
 	const FVector From = ControlledEnemy->GetActorLocation();
 
 	// Up on a platform (or down from one) the way there is the navmesh's, not round the ring.
