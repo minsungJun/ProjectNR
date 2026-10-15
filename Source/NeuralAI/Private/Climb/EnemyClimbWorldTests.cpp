@@ -9,7 +9,9 @@
 // NeuralAI.Climb.Links, in the same map: every climbable block has links up it and the 7 m tower
 // none; a path onto the 4 m platform goes up its wall, and leaves it out for an enemy that does
 // not climb; onto the platform with a ramp the path takes the ramp from near its foot and the wall
-// from the far side; and a crawler chasing the player onto the platform climbs up after them.
+// from the far side; Path Cost in the settings makes enemies' paths there go round by the ramp -
+// up when climbing is made dearer (per cm or per climb), down when the way down is; and a crawler
+// chasing the player onto the platform climbs up after them.
 //
 // NeuralAI.Climb.OnDemand, in the same map with no links: a crawler chasing the player across the
 // floor never climbs; with the player up on the 4 m platform or the 2 m block (no path up) it
@@ -88,24 +90,30 @@ namespace EnemyClimbWorldTest
 	}
 
 	/** Whether Path goes up a climb link anywhere. */
-	bool GoesUpWall(const UWorld* World, UNavigationPath* Path)
+	/** Whether the path goes over a link of the given area (UNavArea_Climb up, UNavArea_ClimbDown down). */
+	bool GoesOverLink(const UWorld* World, UNavigationPath* Path, TSubclassOf<UNavArea> Area)
 	{
 		const UNavigationSystemV1* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 		const ANavigationData* NavData = Navigation ? Navigation->GetDefaultNavDataInstance() : nullptr;
-		const int32 ClimbArea = NavData ? NavData->GetAreaID(UNavArea_Climb::StaticClass()) : INDEX_NONE;
-		if (!Path || !Path->GetPath().IsValid() || ClimbArea == INDEX_NONE)
+		const int32 LinkArea = NavData ? NavData->GetAreaID(Area) : INDEX_NONE;
+		if (!Path || !Path->GetPath().IsValid() || LinkArea == INDEX_NONE)
 		{
 			return false;
 		}
 		for (const FNavPathPoint& Point : Path->GetPath()->GetPathPoints())
 		{
 			const FNavMeshNodeFlags Flags(Point.Flags);
-			if (Flags.IsNavLink() && Flags.Area == ClimbArea)
+			if (Flags.IsNavLink() && Flags.Area == LinkArea)
 			{
 				return true;
 			}
 		}
 		return false;
+	}
+
+	bool GoesUpWall(const UWorld* World, UNavigationPath* Path)
+	{
+		return GoesOverLink(World, Path, UNavArea_Climb::StaticClass());
 	}
 
 	bool IsComplete(const UNavigationPath* Path)
@@ -334,6 +342,48 @@ bool FEnemyClimbLinksTest::RunTest(const FString& Parameters)
 		UNavigationPath* ByWall = UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(1700.0f, 1200.0f, 62.0f), OnRampPlatform);
 		TestTrue(TEXT("from the far side: a path"), IsComplete(ByWall));
 		TestTrue(TEXT("from the far side: up the wall, not round to the ramp"), GoesUpWall(World, ByWall));
+
+		// Path Cost: enemies' paths (UNavFilter_EnemyClimb) read the settings for every path.
+		UEnemyClimbSettings* Settings = GetMutableDefault<UEnemyClimbSettings>();
+		const float Saved[] = { Settings->ClimbCostFactor, Settings->ClimbEnterCost, Settings->ClimbDownCostFactor, Settings->ClimbDownEnterCost };
+		const FVector FarSide(1700.0f, 1200.0f, 62.0f);
+		const auto EnemyPath = [World](const FVector& From, const FVector& To)
+		{
+			return UNavigationSystemV1::FindPathToLocationSynchronously(World, From, To, nullptr, UNavFilter_EnemyClimb::StaticClass());
+		};
+		const auto Restore = [Settings, &Saved]()
+		{
+			Settings->ClimbCostFactor = Saved[0];
+			Settings->ClimbEnterCost = Saved[1];
+			Settings->ClimbDownCostFactor = Saved[2];
+			Settings->ClimbDownEnterCost = Saved[3];
+		};
+		Restore();
+		TestTrue(TEXT("an enemy's path from the far side: up the wall"), GoesUpWall(World, EnemyPath(FarSide, OnRampPlatform)));
+		UNavigationPath* Down = EnemyPath(OnRampPlatform, FarSide);
+		TestTrue(TEXT("an enemy's path down to the far side: a path"), IsComplete(Down));
+		TestTrue(TEXT("an enemy's path down to the far side: down a link"), GoesOverLink(World, Down, UNavArea_ClimbDown::StaticClass()));
+
+		struct FDearer
+		{
+			const TCHAR* Name;
+			float* Value;
+			float Set;
+			bool bUp;
+		};
+		for (const FDearer& Case : {
+			FDearer{ TEXT("Climb Cost Factor 100"), &Settings->ClimbCostFactor, 100.0f, true },
+			FDearer{ TEXT("Climb Enter Cost 100000"), &Settings->ClimbEnterCost, 100000.0f, true },
+			FDearer{ TEXT("Climb Down Cost Factor 100"), &Settings->ClimbDownCostFactor, 100.0f, false },
+			FDearer{ TEXT("Climb Down Enter Cost 100000"), &Settings->ClimbDownEnterCost, 100000.0f, false } })
+		{
+			*Case.Value = Case.Set;
+			UNavigationPath* Path = Case.bUp ? EnemyPath(FarSide, OnRampPlatform) : EnemyPath(OnRampPlatform, FarSide);
+			TestTrue(FString::Printf(TEXT("%s: still a path"), Case.Name), IsComplete(Path));
+			TestFalse(FString::Printf(TEXT("%s: round by the ramp, not over a link"), Case.Name),
+				GoesOverLink(World, Path, Case.bUp ? UNavArea_Climb::StaticClass() : UNavArea_ClimbDown::StaticClass()));
+			Restore();
+		}
 	}, 0.1f));
 
 	// The player up on the 4 m platform; a crawler below follows them up.

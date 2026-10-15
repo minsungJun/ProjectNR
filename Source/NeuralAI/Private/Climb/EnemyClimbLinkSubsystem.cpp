@@ -10,6 +10,7 @@
 #include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "NavigationData.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Navigation/NavLinkProxy.h"
 #include "NavAreas/NavArea_Default.h"
@@ -25,6 +26,29 @@ UNavArea_ClimbDown::UNavArea_ClimbDown()
 {
 	DefaultCost = 1.0f;
 	DrawColor = FColor(255, 200, 0);
+}
+
+UNavFilter_EnemyClimb::UNavFilter_EnemyClimb()
+{
+	bInstantiateForQuerier = true;
+}
+
+void UNavFilter_EnemyClimb::InitializeFilter(const ANavigationData& NavData, const UObject* Querier, FNavigationQueryFilter& Filter) const
+{
+	const UEnemyClimbSettings* Settings = GetDefault<UEnemyClimbSettings>();
+	const auto Weigh = [&NavData, &Filter](TSubclassOf<UNavArea> Area, float Factor, float EnterCost)
+	{
+		const int32 AreaId = NavData.GetAreaID(Area);
+		if (AreaId != INDEX_NONE)
+		{
+			Filter.SetAreaCost(IntCastChecked<uint8>(AreaId), FMath::Max(1.0f, Factor));
+			Filter.SetFixedAreaEnteringCost(IntCastChecked<uint8>(AreaId), FMath::Max(0.0f, EnterCost));
+		}
+	};
+	Weigh(UNavArea_Climb::StaticClass(), Settings->ClimbCostFactor, Settings->ClimbEnterCost);
+	Weigh(UNavArea_ClimbDown::StaticClass(), Settings->ClimbDownCostFactor, Settings->ClimbDownEnterCost);
+	// The Areas list after, so a link left out (UNavFilter_EnemyNoClimb) stays out.
+	Super::InitializeFilter(NavData, Querier, Filter);
 }
 
 UNavFilter_EnemyNoClimb::UNavFilter_EnemyNoClimb()

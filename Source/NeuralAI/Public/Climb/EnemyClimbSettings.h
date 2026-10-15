@@ -104,6 +104,30 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Links", meta = (ClampMin = "20.0"))
 	float LinkTriggerDistance = 150.0f;
 
+	/**
+	 * Each cm up a wall counts as this many cm walked: in every enemy's paths, over the climb links,
+	 * and in its looks for a wall where there is no link. At 1.5 a 4 m wall weighs as much as 6 m of
+	 * floor, so a path takes the wall when the walk round is longer than that. Read for every path,
+	 * so a change shows at once, in play too.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Path Cost", meta = (ClampMin = "1.0"))
+	float ClimbCostFactor = 1.5f;
+
+	/**
+	 * cm of walking added to every climb up, however low the wall: at 300 an enemy walks up to 3 m
+	 * further round rather than climb. 0 weighs a climb by its height alone.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Path Cost", meta = (ClampMin = "0.0"))
+	float ClimbEnterCost = 0.0f;
+
+	/** Each cm down a link (a drop, or a climb down) counts as this many cm walked. 1 is as walking. */
+	UPROPERTY(Config, EditAnywhere, Category = "Path Cost", meta = (ClampMin = "1.0"))
+	float ClimbDownCostFactor = 1.0f;
+
+	/** cm of walking added to every way down a link: above 0 an enemy prefers stairs or a ramp down that are not much longer. */
+	UPROPERTY(Config, EditAnywhere, Category = "Path Cost", meta = (ClampMin = "0.0"))
+	float ClimbDownEnterCost = 0.0f;
+
 	/** The target counts as up high once its feet are this many cm above the enemy's. */
 	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.0"))
 	float ElevatedTargetHeight = 150.0f;
@@ -114,10 +138,6 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.1", ClampMax = "1.0"))
 	float ShortcutGain = 0.8f;
-
-	/** In weighing a way up a wall, each cm climbed counts as this many cm walked (as UNavArea_Climb's cost). */
-	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "1.0"))
-	float ClimbCostFactor = 1.5f;
 
 	/** Seconds between one enemy's looks for a wall to climb where its path does not reach. */
 	UPROPERTY(Config, EditAnywhere, Category = "On Demand", meta = (ClampMin = "0.1"))

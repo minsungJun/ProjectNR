@@ -495,8 +495,9 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 		}
 	}
 	LastPathGoal = Goal;
-	// Paths may go up walls (climb links); those that do not climb keep to the floor.
-	const TSubclassOf<UNavigationQueryFilter> Filter = ControlledEnemy->CanClimb() ? nullptr : UNavFilter_EnemyNoClimb::StaticClass();
+	// Paths may go up walls (climb links, weighed as the climb settings say); those that do not climb keep to the floor.
+	const TSubclassOf<UNavigationQueryFilter> Filter = ControlledEnemy->CanClimb()
+		? UNavFilter_EnemyClimb::StaticClass() : UNavFilter_EnemyNoClimb::StaticClass();
 	// Without a slot: to the target while it is in sight, to where it was last known otherwise.
 	UNavigationPath* Path = bSlotGoal
 		? UNavigationSystemV1::FindPathToLocationSynchronously(this, ControlledEnemy->GetActorLocation(), Goal, nullptr, Filter)
@@ -602,12 +603,13 @@ bool AEnemyAIController::TryClimbOnDemand(float Now)
 		{
 			continue;
 		}
-		UNavigationPath* FromTop = UNavigationSystemV1::FindPathToLocationSynchronously(this, Ledge.StandCenter, Sensor->GetTargetLocation());
+		UNavigationPath* FromTop = UNavigationSystemV1::FindPathToLocationSynchronously(this, Ledge.StandCenter, Sensor->GetTargetLocation(),
+			nullptr, UNavFilter_EnemyClimb::StaticClass());
 		if (!FromTop || !FromTop->IsValid() || FromTop->IsPartial())
 		{
 			continue;
 		}
-		const float Route = Ledge.GetDistanceTo(From) + Ledge.GetHeight() * Settings->ClimbCostFactor + FromTop->GetPathLength();
+		const float Route = Ledge.GetDistanceTo(From) + Ledge.GetHeight() * Settings->ClimbCostFactor + Settings->ClimbEnterCost + FromTop->GetPathLength();
 		if (Route < BestRoute)
 		{
 			BestRoute = Route;
