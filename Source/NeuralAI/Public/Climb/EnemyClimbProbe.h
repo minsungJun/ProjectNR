@@ -88,7 +88,7 @@ struct NEURALAI_API FEnemyClimbProbe
 
 	/**
 	 * Leeway on the height limits, in cm: a floor a hair below zero must not put a 6 m wall over a
-	 * 6 m limit (Lvl_ClimbTest's floor top is at -0.5).
+	 * 6 m limit (Lvl_ClimbAutoTest's floor top is at -0.5).
 	 */
 	static constexpr float HeightTolerance = 2.0f;
 

@@ -335,7 +335,7 @@ void UEnemyClimbComponent::DropDead()
 	// The death handler has just switched collision and movement off, which would leave the body
 	// hanging on the wall. Give it back just enough to fall onto the floor and lie there: the usual
 	// pawn collision against the level, nothing against other pawns or traces. (Blocking only
-	// WorldStatic was not enough: the body fell through Lvl_ClimbTest's floor.)
+	// WorldStatic was not enough: the body fell through Lvl_ClimbAutoTest's floor.)
 	ACharacter* Character = GetCharacter();
 	if (bWasOnWall && Character)
 	{

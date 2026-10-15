@@ -2,7 +2,7 @@
 
 // Checks for the pure part of FEnemyClimbProbe: which surfaces are walls, which heights are
 // climbed, and where the foot, edge and stand points of a climb go. Automation test
-// NeuralAI.Climb.Probe. The traces against the world are checked in Lvl_ClimbTest.
+// NeuralAI.Climb.Probe. The traces against the world are checked in Lvl_ClimbAutoTest.
 
 #include "Climb/EnemyClimbProbe.h"
 #include "Misc/AutomationTest.h"

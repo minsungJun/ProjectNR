@@ -1,6 +1,6 @@
 // Neural Enemy AI prototype module.
 
-// Climbs in a real world: opens Lvl_ClimbTest in PIE, puts crawlers in front of the 1 m ledge,
+// Climbs in a real world: opens Lvl_ClimbAutoTest in PIE, puts crawlers in front of the 1 m ledge,
 // the 2 m block, the 4 m platform and the 6 m tower, has each climb the nearest wall it can and
 // checks it ends up standing on top. One in front of the 7 m tower finds it too high and takes the
 // 4 m platform beside it instead. Last, one is killed half way up the 6 m tower and must fall to
@@ -135,7 +135,7 @@ bool FEnemyClimbWorldTest::RunTest(const FString& Parameters)
 		{ TEXT("7 m tower, too high: the 4 m platform beside it"), FVector2D(2400.0f, 700.0f), 90.0f, 462.0f },
 	};
 
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 
 	// Crawlers out, standing still but for the climb, each up the nearest wall it can.
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, State]()
@@ -270,7 +270,7 @@ bool FEnemyClimbLinksTest::RunTest(const FString& Parameters)
 	};
 	TSharedRef<FChase> Chase = MakeShared<FChase>();
 
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 
 	// Links in, and the navmesh built (the map rebuilds it on load) - on top of the platforms too.
 	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
@@ -472,7 +472,7 @@ bool FEnemyClimbOnDemandTest::RunTest(const FString& Parameters)
 	UEnemyClimbSettings* Settings = GetMutableDefault<UEnemyClimbSettings>();
 	const bool bLinks = Settings->bBuildClimbLinks;
 	Settings->bBuildClimbLinks = false;
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
 	{
@@ -515,7 +515,7 @@ bool FEnemyClimbCrowdTest::RunTest(const FString& Parameters)
 	};
 	TSharedRef<FCrowd> Crowd = MakeShared<FCrowd>();
 
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
 	{
 		UWorld* World = AutomationCommon::GetAnyGameWorld();
@@ -642,7 +642,7 @@ bool FEnemyClimbTraversableTest::RunTest(const FString& Parameters)
 {
 	using namespace EnemyClimbWorldTest;
 
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
 	{
 		UWorld* World = AutomationCommon::GetAnyGameWorld();
@@ -792,7 +792,7 @@ bool FEnemyClimbDownTest::RunTest(const FString& Parameters)
 {
 	using namespace EnemyClimbWorldTest;
 
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
 	{
 		UWorld* World = AutomationCommon::GetAnyGameWorld();
@@ -814,7 +814,7 @@ bool FEnemyClimbRangedTest::RunTest(const FString& Parameters)
 {
 	using namespace EnemyClimbWorldTest;
 
-	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbAutoTest"));
 	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
 	{
 		UWorld* World = AutomationCommon::GetAnyGameWorld();
