@@ -23,13 +23,19 @@
 // move or block the "Traversable" channel - a Movable block that does gets links and a path up its
 // wall, a Movable block that does not gets none, and LevelBlock_Traversable (sample content, half
 // sunk into the floor as placed by default) gets links when the asset is there. One tagged NoClimb
-// gets none.
+// gets none, and nor does a wall too thin to stand on.
 //
 // NeuralAI.Climb.Down, with links: a crawler up on the 4 m platform or the 6 m tower, the player on
 // the floor, climbs down the wall to get at them; up on the 2 m block (lower than ClimbDownMinHeight)
 // it steps off the edge and drops instead.
+//
+// NeuralAI.Climb.Ranged, with links: a shooter climbs only when it has no place to shoot from -
+// with the player in the middle of the 4 m platform, its edge hides the player from every ranged
+// slot on the floor and the shooter climbs up; with the player on the 2 m block it shoots from the
+// floor and stays there.
 
 #include "Characters/EnemyCharacter.h"
+#include "Characters/RangedEnemyCharacter.h"
 #include "Climb/EnemyClimbComponent.h"
 #include "Climb/EnemyClimbLinkSubsystem.h"
 #include "Climb/EnemyClimbNavTypes.h"
@@ -73,11 +79,12 @@ namespace EnemyClimbWorldTest
 		int32 SavedNeuralMovement = 1;
 	};
 
-	AEnemyCharacter* SpawnCrawler(UWorld* World, const FVector2D& At, float Yaw, float FloorZ = 0.0f)
+	AEnemyCharacter* SpawnCrawler(UWorld* World, const FVector2D& At, float Yaw, float FloorZ = 0.0f, bool bRanged = false)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-		return World->SpawnActor<AEnemyCharacter>(AEnemyCharacter::StaticClass(), FVector(At.X, At.Y, FloorZ + 70.0f), FRotator(0.0f, Yaw, 0.0f), Params);
+		UClass* Class = bRanged ? ARangedEnemyCharacter::StaticClass() : AEnemyCharacter::StaticClass();
+		return World->SpawnActor<AEnemyCharacter>(Class, FVector(At.X, At.Y, FloorZ + 70.0f), FRotator(0.0f, Yaw, 0.0f), Params);
 	}
 
 	/** Whether Path goes up a climb link anywhere. */
@@ -381,6 +388,8 @@ namespace EnemyClimbWorldTest
 		bool bExpectClimb;
 		/** Capsule height it must get up to: on top of what the player stands on, or 0 to stay on the floor. */
 		float ExpectHeight;
+		/** A shooter rather than a crawler. */
+		bool bRanged = false;
 	};
 
 	struct FChaseRun
@@ -403,8 +412,15 @@ namespace EnemyClimbWorldTest
 				Test->AddError(TEXT("no player"));
 				return true;
 			}
+			// Standing where it is put (PlayerAt is its capsule centre), and held there: left alone the
+			// player walks off at once (to the platform's edge, in sight of the floor), which would
+			// decide the case instead of the climbing.
 			Player->SetActorLocation(Case.PlayerAt, false, nullptr, ETeleportType::TeleportPhysics);
-			Run->Crawler = SpawnCrawler(World, Case.CrawlerAt, 0.0f);
+			if (ACharacter* Character = Cast<ACharacter>(Player))
+			{
+				Character->GetCharacterMovement()->DisableMovement();
+			}
+			Run->Crawler = SpawnCrawler(World, Case.CrawlerAt, 0.0f, 0.0f, Case.bRanged);
 			if (Run->Crawler.IsValid())
 			{
 				Run->Crawler->GetSensorComponent()->ReceiveAlert(Player, nullptr);
@@ -436,6 +452,10 @@ namespace EnemyClimbWorldTest
 			{
 				Crawler->Destroy();
 			}
+			if (ACharacter* Player = Cast<ACharacter>(UGameplayStatics::GetPlayerPawn(AutomationCommon::GetAnyGameWorld(), 0)))
+			{
+				Player->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+			}
 			return true;
 		}));
 	}
@@ -464,11 +484,11 @@ bool FEnemyClimbOnDemandTest::RunTest(const FString& Parameters)
 			&& Navigation->ProjectPointToNavigation(FVector(-2000.0f, 0.0f, 62.0f), Projected, FVector(50.0f, 50.0f, 150.0f));
 	}, 30.0f));
 
-	AddChase(this, { TEXT("flat floor"), FVector(-2000.0f, -300.0f, 150.0f), FVector2D(-2000.0f, 1500.0f), false, 0.0f }, 5.0f);
-	AddChase(this, { TEXT("4 m platform, no way up"), FVector(1000.0f, -1250.0f, 520.0f), FVector2D(1000.0f, -300.0f), true, 450.0f }, 12.0f);
-	AddChase(this, { TEXT("2 m block, no way up"), FVector(-1000.0f, 1200.0f, 320.0f), FVector2D(-1000.0f, 500.0f), true, 250.0f }, 12.0f);
-	AddChase(this, { TEXT("ramp platform from the far side"), FVector(1000.0f, 1250.0f, 520.0f), FVector2D(1700.0f, 1200.0f), true, 450.0f }, 12.0f);
-	AddChase(this, { TEXT("ramp platform from the ramp's foot"), FVector(1000.0f, 1250.0f, 520.0f), FVector2D(-400.0f, 1200.0f), false, 450.0f }, 15.0f);
+	AddChase(this, { TEXT("flat floor"), FVector(-2000.0f, -300.0f, 87.0f), FVector2D(-2000.0f, 1500.0f), false, 0.0f }, 5.0f);
+	AddChase(this, { TEXT("4 m platform, no way up"), FVector(1000.0f, -1250.0f, 487.0f), FVector2D(1000.0f, -300.0f), true, 450.0f }, 12.0f);
+	AddChase(this, { TEXT("2 m block, no way up"), FVector(-1000.0f, 1200.0f, 287.0f), FVector2D(-1000.0f, 500.0f), true, 250.0f }, 12.0f);
+	AddChase(this, { TEXT("ramp platform from the far side"), FVector(1000.0f, 1250.0f, 487.0f), FVector2D(1700.0f, 1200.0f), true, 450.0f }, 12.0f);
+	AddChase(this, { TEXT("ramp platform from the ramp's foot"), FVector(1000.0f, 1250.0f, 487.0f), FVector2D(-400.0f, 1200.0f), false, 450.0f }, 15.0f);
 
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([bLinks]()
 	{
@@ -646,6 +666,12 @@ bool FEnemyClimbTraversableTest::RunTest(const FString& Parameters)
 		const int32 PlainLinks = Links->AddLinksFor(Plain);
 		const int32 TaggedLinks = Links->AddLinksFor(Tagged);
 		TestEqual(TEXT("a block tagged NoClimb gets none"), TaggedLinks, 0);
+
+		// A wall 50 cm thick and 3 m tall, like the corridor walls: nothing up there to stand on.
+		AStaticMeshActor* Thin = SpawnMovableBlock(World, FVector2D(-2600.0f, 1300.0f), TEXT("Traversable"));
+		Thin->SetActorScale3D(FVector(0.5f, 4.0f, 3.0f));
+		Thin->SetActorLocation(FVector(-2600.0f, 1300.0f, 150.0f));
+		TestEqual(TEXT("a wall 50 cm thick gets none"), Links->AddLinksFor(Thin), 0);
 		TestTrue(FString::Printf(TEXT("a Movable block that blocks Traversable gets links (%d)"), TraversableLinks), TraversableLinks > 0);
 		TestEqual(TEXT("a Movable block that does not gets none"), PlainLinks, 0);
 
@@ -776,6 +802,31 @@ bool FEnemyClimbDownTest::RunTest(const FString& Parameters)
 	AddDown(this, { TEXT("4 m platform"), FVector2D(1000.0f, -1200.0f), 400.0f, FVector(1000.0f, 300.0f, 150.0f), true });
 	AddDown(this, { TEXT("6 m tower"), FVector2D(2400.0f, -1200.0f), 600.0f, FVector(2400.0f, -200.0f, 150.0f), true });
 	AddDown(this, { TEXT("2 m block"), FVector2D(-1000.0f, 1200.0f), 200.0f, FVector(-1000.0f, 400.0f, 150.0f), false });
+
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEnemyClimbRangedTest, "NeuralAI.Climb.Ranged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FEnemyClimbRangedTest::RunTest(const FString& Parameters)
+{
+	using namespace EnemyClimbWorldTest;
+
+	AutomationOpenMap(TEXT("/Game/Levels/Lvl_ClimbTest"));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand([]()
+	{
+		UWorld* World = AutomationCommon::GetAnyGameWorld();
+		return IsComplete(UNavigationSystemV1::FindPathToLocationSynchronously(World, FVector(1000.0f, -300.0f, 62.0f), FVector(1000.0f, -1200.0f, 462.0f)));
+	}, 30.0f));
+
+	FChaseCase Hidden{ TEXT("shooter, player out of sight on the 4 m platform"), FVector(1000.0f, -1200.0f, 487.0f), FVector2D(1000.0f, 0.0f), true, 450.0f };
+	Hidden.bRanged = true;
+	AddChase(this, Hidden, 15.0f);
+	FChaseCase InSight{ TEXT("shooter, player in sight on the 2 m block"), FVector(-1000.0f, 1200.0f, 287.0f), FVector2D(-1000.0f, 0.0f), false, 0.0f };
+	InSight.bRanged = true;
+	AddChase(this, InSight, 6.0f);
 
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	return true;

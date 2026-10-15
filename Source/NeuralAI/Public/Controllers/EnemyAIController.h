@@ -131,6 +131,9 @@ protected:
 	/** The target's feet are ElevatedTargetHeight or more above this enemy's. */
 	bool IsTargetElevated() const;
 
+	/** Holds a positional slot of its own (not just a hold point). */
+	bool HasOwnSlot() const;
+
 	bool IsDirectionNavigable(const FVector& Direction) const;
 	bool FindNavigableDirection(const FVector& Desired, FVector& OutDirection) const;
 

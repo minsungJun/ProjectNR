@@ -52,14 +52,22 @@ public:
 	int32 GetRingSlotCount(int32 Ring) const { return Ring == 1 ? RangedSlotCount : SlotCount; }
 	float GetRingRadius(int32 Ring) const { return Ring == 1 ? RangedSlotRadius : SlotRadius; }
 
+	/**
+	 * The same for the ranged ring, in cm: its shooters stand on the floor below a target up on a
+	 * platform and shoot up, so their slots may land well below it.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Ranged Ring", meta = (ClampMin = "10.0"))
+	float RangedNavProjectionHeight = 800.0f;
+
 	/** How far up or down, in cm, a slot may be moved to land on the navmesh. */
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "10.0"))
 	float NavProjectionHeight = 250.0f;
 
 	/**
-	 * Drop slots whose navmesh is more than this many cm above or below the target's: with the
-	 * target up on a block, the floor round its foot is no place to strike from. Enemies that climb
-	 * then go for the target itself, up the block.
+	 * Drop close-ring slots whose navmesh is more than this many cm above or below the target's:
+	 * with the target up on a block, the floor round its foot is no place to strike from. Enemies
+	 * that climb then go for the target itself, up the block. The ranged ring keeps its slots on any
+	 * floor: shooting up is fine, as long as the slot is in sight.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Slots", meta = (ClampMin = "10.0"))
 	float MaxSlotHeightGap = 100.0f;

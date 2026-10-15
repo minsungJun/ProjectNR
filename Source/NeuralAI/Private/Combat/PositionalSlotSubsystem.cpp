@@ -255,16 +255,26 @@ void UPositionalSlotSubsystem::RefreshSlots(FTargetSlots& Entry) const
 		Slot.Offset = Positions[Index] - Center;
 		Slot.WorldLocation = Positions[Index];
 
+		// The ranged ring is looked for further down (shooters below a target up high), kept at the
+		// height it lands on, and must see the target from there, at a shooter's eye height.
+		const bool bRanged = Rings[Index] != 0;
 		FNavLocation Projected;
-		bool bOnNav = !Navigation || Navigation->ProjectPointToNavigation(Positions[Index], Projected, Extent);
+		bool bOnNav = !Navigation || Navigation->ProjectPointToNavigation(Positions[Index], Projected,
+			bRanged ? FVector(50.0f, 50.0f, Settings->RangedNavProjectionHeight) : Extent);
+		FVector SightEnd = Positions[Index];
 		if (Navigation && bOnNav)
 		{
 			Slot.WorldLocation = Projected.Location;
-			bOnNav = !bTargetOnNav || FMath::Abs(Projected.Location.Z - TargetFloor.Location.Z) <= Settings->MaxSlotHeightGap;
+			bOnNav = !bTargetOnNav || bRanged || FMath::Abs(Projected.Location.Z - TargetFloor.Location.Z) <= Settings->MaxSlotHeightGap;
+			if (bRanged)
+			{
+				Slot.Offset = Projected.Location - Center;
+				SightEnd = Projected.Location + FVector(0.0f, 0.0f, 60.0f);
+			}
 		}
 		FHitResult Hit;
 		const bool bBlocked = Settings->bRequireLineOfSight
-			&& World->LineTraceSingleByObjectType(Hit, Center, Positions[Index], FCollisionObjectQueryParams(ECC_WorldStatic), Params);
+			&& World->LineTraceSingleByObjectType(Hit, Center, SightEnd, FCollisionObjectQueryParams(ECC_WorldStatic), Params);
 		Slot.bReachable = bOnNav && !bBlocked;
 	}
 }

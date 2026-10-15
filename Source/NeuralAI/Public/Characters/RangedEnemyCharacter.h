@@ -14,7 +14,9 @@ class AEnemyProjectile;
  * Only the attack and where it likes to stand differ: it fires an AEnemyProjectile at its target
  * from up to AttackRange (30 m), once every AttackInterval (2 s), stands in the outer, ranged
  * ring of positional slots, and does not take turns through the attack tokens - its own
- * interval paces it.
+ * interval paces it. It climbs like a crawler, but only when it has no place to shoot from: with
+ * the target up high and every ranged slot out of its sight (since 2026-10-15; it did not climb
+ * before).
  */
 UCLASS()
 class NEURALAI_API ARangedEnemyCharacter : public AEnemyCharacter
@@ -29,9 +31,6 @@ public:
 
 	virtual int32 GetPreferredSlotRing() const override { return 1; }
 	virtual bool UsesAttackTokens() const override { return false; }
-
-	/** Shooters keep to the floor and shoot up instead (decided 2026-10-14). */
-	virtual bool CanClimb() const override { return false; }
 
 protected:
 	virtual void BeginPlay() override;

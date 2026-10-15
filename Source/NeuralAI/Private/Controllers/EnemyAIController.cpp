@@ -535,6 +535,14 @@ void AEnemyAIController::UpdatePathToTarget(float Now)
 	}
 }
 
+bool AEnemyAIController::HasOwnSlot() const
+{
+	const UPositionalSlotSubsystem* Slots = GetWorld() ? GetWorld()->GetSubsystem<UPositionalSlotSubsystem>() : nullptr;
+	FVector Location;
+	bool bHasSlot = false;
+	return Slots && ControlledEnemy && Slots->GetStandPoint(ControlledEnemy, Location, bHasSlot) && bHasSlot;
+}
+
 bool AEnemyAIController::IsTargetElevated() const
 {
 	const UEnemySensorComponent* Sensor = ControlledEnemy ? ControlledEnemy->GetSensorComponent() : nullptr;
@@ -555,6 +563,13 @@ bool AEnemyAIController::TryClimbOnDemand(float Now)
 	const UEnemySensorComponent* Sensor = ControlledEnemy->GetSensorComponent();
 	AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
 	if (!Target || !Climb || Climb->IsClimbing() || !ControlledEnemy->CanClimb() || Now - LastOnDemandClimbCheck < Settings->OnDemandInterval)
+	{
+		return false;
+	}
+
+	// A shooter with a place to shoot from stays there: it climbs only on its way to the target
+	// itself, when no ranged slot has the target in sight.
+	if (ControlledEnemy->GetPreferredSlotRing() != 0 && HasOwnSlot())
 	{
 		return false;
 	}

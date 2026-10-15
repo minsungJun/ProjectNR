@@ -26,6 +26,10 @@ ARangedEnemyCharacter::ARangedEnemyCharacter()
 		BodyMesh->SetRelativeScale3D(FVector(0.6f, 0.6f, 1.0f));
 		BodyMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -10.0f));
 	}
+
+	// Laid against a wall the 1 m tall body is 1 m thick: kept back so it does not sink into the face
+	// (half its thickness short of the wall, which is a capsule radius and the gap away).
+	ClimbBodyLocation = FVector(-8.0f, 0.0f, 0.0f);
 }
 
 void ARangedEnemyCharacter::BeginPlay()

@@ -189,6 +189,20 @@ EEnemyClimbProbeResult FEnemyClimbProbe::ProbeFrom(const UWorld* World, const FB
 	{
 		return EEnemyClimbProbeResult::NoRoomOnTop;
 	}
+	// And something to stand on: the top must reach a good part of a body's width to either side
+	// of where it stands, or it is the top of a thin wall (a capsule balances on anything).
+	const FVector Across = FVector::CrossProduct(OutLedge.WallNormal, FVector::UpVector).GetSafeNormal();
+	for (const float Side : { 1.0f, -1.0f })
+	{
+		const FVector Foot = StandProbe + Across * (Side * Body.Radius * 0.75f);
+		FHitResult SideHit;
+		if (!World->LineTraceSingleByObjectType(SideHit, FVector(Foot.X, Foot.Y, OutLedge.TopZ + 20.0f),
+				FVector(Foot.X, Foot.Y, OutLedge.TopZ - 20.0f), Geometry, Params)
+			|| SideHit.bStartPenetrating)
+		{
+			return EEnemyClimbProbeResult::NoRoomOnTop;
+		}
+	}
 	FHitResult PathHit;
 	if (World->SweepSingleByObjectType(PathHit, OutLedge.BaseCenter, OutLedge.EdgeCenter, FQuat::Identity, Geometry, Capsule, Params)
 		|| World->SweepSingleByObjectType(PathHit, OutLedge.EdgeCenter, OutLedge.StandCenter, FQuat::Identity, Geometry, Capsule, Params))
