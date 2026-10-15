@@ -127,9 +127,11 @@ bool UNRConsumableComponent::AddItem(ENRItemType ItemType, int32 Count)
 		AddCharges(0, Count);
 		break;
 	case ENRItemType::Potion:
-	default:
 		AddCharges(Count, 0);
 		break;
+	default:
+		// Ammo and money are not consumables: the pickup hands them elsewhere.
+		return false;
 	}
 	UE_LOG(LogNRConsumable, Log, TEXT("Got %d %s: %d potions, %d shields"),
 		Count, NRItems::GetDisplayName(ItemType), PotionCount, ShieldCount);

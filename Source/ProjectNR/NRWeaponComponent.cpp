@@ -16,6 +16,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "NRAimComponent.h"
+#include "NRAmmo.h"
 #include "NRAttackInput.h"
 #include "NREnemyAwarenessSubsystem.h"
 #include "NRMeleeComponent.h"
@@ -98,9 +99,13 @@ void UNRWeaponComponent::BeginPlay()
 	// Full magazines to start. The part component computed its stats in InitializeComponent,
 	// which runs before any BeginPlay, so the sizes already include starting loadouts.
 	Ammo.SetNum(Weapons.Num());
+	Reserve.SetNum(Weapons.Num());
 	for (int32 Index = 0; Index < Weapons.Num(); ++Index)
 	{
-		Ammo[Index] = Weapons[Index].Kind == ENRWeaponKind::Ranged ? GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine : 0;
+		const bool bRanged = Weapons[Index].Kind == ENRWeaponKind::Ranged;
+		const int32 Magazine = bRanged ? GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine : 0;
+		Ammo[Index] = Magazine;
+		Reserve[Index] = bRanged ? FMath::Min(FMath::RoundToInt32(Magazine * Weapons[Index].StartingReserveMagazines), GetMaxReserveForIndex(Index)) : 0;
 	}
 
 	if (UNRWeaponPartComponent* Parts = GetOwner()->FindComponentByClass<UNRWeaponPartComponent>())
@@ -269,6 +274,65 @@ int32 UNRWeaponComponent::GetAmmoForWeapon(ENRWeaponId WeaponId) const
 	return Ammo.IsValidIndex(Index) ? Ammo[Index] : 0;
 }
 
+int32 UNRWeaponComponent::GetMaxReserveForIndex(int32 Index) const
+{
+	if (!Weapons.IsValidIndex(Index) || Weapons[Index].Kind != ENRWeaponKind::Ranged)
+	{
+		return 0;
+	}
+	return FMath::RoundToInt32(GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine * Weapons[Index].MaxReserveMagazines);
+}
+
+int32 UNRWeaponComponent::GetReserveAmmo() const
+{
+	return Reserve.IsValidIndex(CurrentWeaponIndex) ? Reserve[CurrentWeaponIndex] : 0;
+}
+
+int32 UNRWeaponComponent::GetMaxReserveAmmo() const
+{
+	return GetMaxReserveForIndex(CurrentWeaponIndex);
+}
+
+int32 UNRWeaponComponent::GetReserveForWeapon(ENRWeaponId WeaponId) const
+{
+	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+	return Reserve.IsValidIndex(Index) ? Reserve[Index] : 0;
+}
+
+bool UNRWeaponComponent::IsOutOfAmmo() const
+{
+	return GetMaxAmmo() > 0 && NRAmmo::IsOutOfAmmo(GetCurrentAmmo(), GetReserveAmmo());
+}
+
+int32 UNRWeaponComponent::AddReserveMagazines(float Magazines)
+{
+	int32 Taken = 0;
+	for (int32 Index = 0; Index < Weapons.Num() && Reserve.IsValidIndex(Index); ++Index)
+	{
+		if (Weapons[Index].Kind != ENRWeaponKind::Ranged)
+		{
+			continue;
+		}
+		const int32 Rounds = FMath::RoundToInt32(GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine * Magazines);
+		Taken += NRAmmo::AddToReserve(Reserve[Index], Rounds, GetMaxReserveForIndex(Index));
+	}
+	if (Taken > 0)
+	{
+		UE_LOG(LogNRWeapon, Log, TEXT("%s picked up ammo: %d round(s) into reserve, %s now %d/%d in reserve"), *GetNameSafe(GetOwner()), Taken,
+			*GetCurrentWeaponName().ToString(), GetReserveAmmo(), GetMaxReserveAmmo());
+	}
+	return Taken;
+}
+
+void UNRWeaponComponent::SetCurrentAmmo(int32 Magazine, int32 InReserve)
+{
+	if (Ammo.IsValidIndex(CurrentWeaponIndex) && Reserve.IsValidIndex(CurrentWeaponIndex) && GetMaxAmmo() > 0)
+	{
+		Ammo[CurrentWeaponIndex] = FMath::Clamp(Magazine, 0, GetMaxAmmo());
+		Reserve[CurrentWeaponIndex] = FMath::Clamp(InReserve, 0, GetMaxReserveAmmo());
+	}
+}
+
 int32 UNRWeaponComponent::GetCurrentAmmo() const
 {
 	return Ammo.IsValidIndex(CurrentWeaponIndex) ? Ammo[CurrentWeaponIndex] : 0;
@@ -295,7 +359,8 @@ bool UNRWeaponComponent::Reload()
 	UWorld* World = GetWorld();
 	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
 	if (!World || !Weapon || Weapon->Kind != ENRWeaponKind::Ranged || IsReloading() || IsWeaponOwnerDead(GetOwner())
-		|| !Ammo.IsValidIndex(CurrentWeaponIndex) || Ammo[CurrentWeaponIndex] >= GetMaxAmmo())
+		|| !Ammo.IsValidIndex(CurrentWeaponIndex) || !Reserve.IsValidIndex(CurrentWeaponIndex)
+		|| !NRAmmo::CanReload(Ammo[CurrentWeaponIndex], Reserve[CurrentWeaponIndex], GetMaxAmmo()))
 	{
 		return false;
 	}
@@ -320,15 +385,16 @@ void UNRWeaponComponent::FinishReload()
 {
 	const int32 Index = ReloadingWeaponIndex;
 	ReloadingWeaponIndex = INDEX_NONE;
-	if (!Weapons.IsValidIndex(Index) || !Ammo.IsValidIndex(Index))
+	if (!Weapons.IsValidIndex(Index) || !Ammo.IsValidIndex(Index) || !Reserve.IsValidIndex(Index))
 	{
 		return;
 	}
 
-	// The size is read now rather than when the reload started, in case a part changed it.
-	Ammo[Index] = GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine;
-	UE_LOG(LogNRWeapon, Log, TEXT("%s reloaded %s: %d"), *GetNameSafe(GetOwner()),
-		*Weapons[Index].DisplayName.ToString(), Ammo[Index]);
+	// The size is read now rather than when the reload started, in case a part changed it. The
+	// rounds come out of the reserve: a short reserve gives a part-full magazine.
+	NRAmmo::Reload(Ammo[Index], Reserve[Index], GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine);
+	UE_LOG(LogNRWeapon, Log, TEXT("%s reloaded %s: %d, %d in reserve"), *GetNameSafe(GetOwner()),
+		*Weapons[Index].DisplayName.ToString(), Ammo[Index], Reserve[Index]);
 }
 
 void UNRWeaponComponent::CancelReload()
@@ -349,7 +415,16 @@ void UNRWeaponComponent::OnRuntimeStatsChanged(ENRWeaponId WeaponId, const FNRWe
 	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
 	if (Ammo.IsValidIndex(Index) && Weapons[Index].Kind == ENRWeaponKind::Ranged && Ammo[Index] > Stats.MaxMagazine)
 	{
+		// Rounds that no longer fit go back to the reserve, not away.
+		if (Reserve.IsValidIndex(Index))
+		{
+			Reserve[Index] += Ammo[Index] - Stats.MaxMagazine;
+		}
 		Ammo[Index] = Stats.MaxMagazine;
+	}
+	if (Reserve.IsValidIndex(Index))
+	{
+		Reserve[Index] = FMath::Min(Reserve[Index], GetMaxReserveForIndex(Index));
 	}
 }
 
@@ -673,6 +748,7 @@ int32 UNRWeaponComponent::Fire()
 
 	if (!Ammo.IsValidIndex(CurrentWeaponIndex) || Ammo[CurrentWeaponIndex] <= 0)
 	{
+		// Reload refuses with nothing in reserve: the trigger just clicks until ammo is found.
 		if (bAutoReloadWhenEmpty)
 		{
 			Reload();

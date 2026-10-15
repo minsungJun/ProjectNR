@@ -48,6 +48,12 @@ public class ProjectNR : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
+		// ProjectNR.Loot.World opens a map in PIE and ends it again (FEndPlayMapCommand).
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
+
 		PublicIncludePaths.AddRange(new string[] {
 			"ProjectNR",
 			"ProjectNR/Variant_Platforming",

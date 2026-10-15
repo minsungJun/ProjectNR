@@ -48,16 +48,31 @@ void UNRLootSubsystem::HandleAnyDamaged(UHealthComponent* Health, float Damage)
 		return;
 	}
 
+	// Gold, ammo and an item, each rolled on its own, spread a little round the body.
 	const UNRLootSettings* Settings = GetDefault<UNRLootSettings>();
-	if (FMath::FRand() >= Settings->EnemyDropChance)
+	const FVector Where = Owner->GetActorLocation();
+	if (FMath::FRand() < Settings->EnemyMoneyChance)
 	{
-		return;
+		SpawnPickupNear(ENRItemType::Money, FMath::RandRange(Settings->EnemyMoneyMin, FMath::Max(Settings->EnemyMoneyMin, Settings->EnemyMoneyMax)), Where);
 	}
+	if (FMath::FRand() < Settings->EnemyAmmoChance)
+	{
+		SpawnPickupNear(ENRItemType::Ammo, 1, Where);
+	}
+	if (FMath::FRand() < Settings->EnemyDropChance)
+	{
+		if (const FNRLootEntry* Entry = NRItems::PickEntry(Settings->EnemyDropTable))
+		{
+			SpawnPickupNear(Entry->ItemType, Entry->Count, Where);
+		}
+	}
+}
 
-	if (const FNRLootEntry* Entry = NRItems::PickEntry(Settings->EnemyDropTable))
-	{
-		SpawnPickup(Entry->ItemType, Entry->Count, Owner->GetActorLocation());
-	}
+ANRItemPickup* UNRLootSubsystem::SpawnPickupNear(ENRItemType ItemType, int32 Count, const FVector& Location)
+{
+	const float Angle = FMath::FRandRange(0.0f, 2.0f * PI);
+	const float Distance = FMath::FRandRange(30.0f, 70.0f);
+	return SpawnPickup(ItemType, Count, Location + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Distance);
 }
 
 ANRItemPickup* UNRLootSubsystem::SpawnPickup(ENRItemType ItemType, int32 Count, const FVector& Location)
@@ -107,7 +122,7 @@ ANRItemPickup* UNRLootSubsystem::SpawnPickup(ENRItemType ItemType, int32 Count, 
 	return Pickup;
 }
 
-// NR.Loot.Drop [potion|shield] [count]: drop an item 250 cm in front of the player.
+// NR.Loot.Drop [potion|shield|ammo|gold] [count]: drop an item 250 cm in front of the player.
 namespace NRLootCommands
 {
 	void Drop(const TArray<FString>& Args, UWorld* World)
@@ -120,8 +135,14 @@ namespace NRLootCommands
 			return;
 		}
 
-		const ENRItemType Type = Args.Num() > 0 && Args[0].Equals(TEXT("shield"), ESearchCase::IgnoreCase)
-			? ENRItemType::Shield : ENRItemType::Potion;
+		ENRItemType Type = ENRItemType::Potion;
+		if (Args.Num() > 0)
+		{
+			Type = Args[0].Equals(TEXT("shield"), ESearchCase::IgnoreCase) ? ENRItemType::Shield
+				: Args[0].Equals(TEXT("ammo"), ESearchCase::IgnoreCase) ? ENRItemType::Ammo
+				: Args[0].Equals(TEXT("gold"), ESearchCase::IgnoreCase) || Args[0].Equals(TEXT("money"), ESearchCase::IgnoreCase) ? ENRItemType::Money
+				: ENRItemType::Potion;
+		}
 		const int32 Count = Args.Num() > 1 ? FMath::Max(FCString::Atoi(*Args[1]), 1) : 1;
 		const FVector Forward = Pawn->GetActorForwardVector().GetSafeNormal2D();
 		Loot->SpawnPickup(Type, Count, Pawn->GetActorLocation() + Forward * 250.0f);
@@ -129,5 +150,5 @@ namespace NRLootCommands
 }
 
 static FAutoConsoleCommandWithWorldAndArgs GNRLootDropCommand(TEXT("NR.Loot.Drop"),
-	TEXT("NR.Loot.Drop [potion|shield] [count]: drop an item in front of the player."),
+	TEXT("NR.Loot.Drop [potion|shield|ammo|gold] [count]: drop an item in front of the player."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRLootCommands::Drop));

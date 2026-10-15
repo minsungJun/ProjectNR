@@ -80,6 +80,7 @@ void UNRRunSubsystem::StartRun()
 	ClearedRooms.Reset();
 	RoomsCleared = 0;
 	Kills = 0;
+	Money = 0;
 	DamageDealt = 0.0f;
 	SetState(ENRRunState::InProgress);
 	UE_LOG(LogNRRun, Log, TEXT("Run started: %d room(s)%s"), Rooms.Num(),
@@ -99,8 +100,15 @@ void UNRRunSubsystem::ResetRun()
 	ClearedRooms.Reset();
 	RoomsCleared = 0;
 	Kills = 0;
+	Money = 0;
 	DamageDealt = 0.0f;
 	SetState(ENRRunState::NoRun);
+}
+
+void UNRRunSubsystem::AddMoney(int32 Amount)
+{
+	Money = FMath::Max(Money + Amount, 0);
+	UE_LOG(LogNRRun, Log, TEXT("Gold %+d: %d"), Amount, Money);
 }
 
 void UNRRunSubsystem::SetManagesSafePhase(bool bManage)

@@ -56,6 +56,17 @@ struct FNRWeaponDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Stats", meta = (ClampMin = "1"))
 	int32 BaseMagazine = 30;
 
+	/**
+	 * Rounds carried besides the magazine, counted in magazines (so a part that changes the
+	 * magazine changes them too): this many to start with...
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Ammo", meta = (ClampMin = "0.0"))
+	float StartingReserveMagazines = 2.0f;
+
+	/** ...and at most this many. Ammo picked up past it is left lying. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Ammo", meta = (ClampMin = "0.0"))
+	float MaxReserveMagazines = 6.0f;
+
 	/** Seconds from pressing reload to a full magazine. Ignored for melee. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Stats", meta = (ClampMin = "0.0"))
 	float ReloadTime = 1.6f;
@@ -181,9 +192,11 @@ public:
 
 	// --- Ammo ----------------------------------------------------------------------
 	//
-	// Each ranged weapon keeps its own magazine, so switching never refills or empties one.
+	// Each ranged weapon keeps its own magazine and its own reserve, so switching never refills
+	// or empties one. Rounds are finite: a reload takes them from the reserve, and the reserve is
+	// filled up only by picking ammo up (AddReserveMagazines).
 
-	/** Starts reloading the weapon in hand. False if it is melee, full, or already reloading. */
+	/** Starts reloading the weapon in hand. False if it is melee, full, already reloading, or has no reserve left. */
 	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
 	bool Reload();
 
@@ -204,6 +217,32 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
 	int32 GetAmmoForWeapon(ENRWeaponId WeaponId) const;
+
+	/** Rounds in reserve for the weapon in hand. 0 for melee. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetReserveAmmo() const;
+
+	/** Most rounds the weapon in hand can carry in reserve. 0 for melee. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetMaxReserveAmmo() const;
+
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetReserveForWeapon(ENRWeaponId WeaponId) const;
+
+	/** Magazine and reserve both empty: the weapon in hand cannot shoot until ammo is picked up. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	bool IsOutOfAmmo() const;
+
+	/**
+	 * Ammo picked up: Magazines magazines' worth into every ranged weapon's reserve, each up to its
+	 * cap. Returns the rounds taken in all; 0 when every reserve was already full.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
+	int32 AddReserveMagazines(float Magazines);
+
+	/** Sets the weapon in hand's magazine and reserve outright, for tests and the console. */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
+	void SetCurrentAmmo(int32 Magazine, int32 Reserve);
 
 	// --- Crosshair state -----------------------------------------------------------
 	//
@@ -356,6 +395,12 @@ private:
 
 	/** Rounds per weapon, parallel to Weapons. Filled to the magazine size at BeginPlay. */
 	TArray<int32> Ammo;
+
+	/** Rounds in reserve per weapon, parallel to Weapons. StartingReserveMagazines at BeginPlay. */
+	TArray<int32> Reserve;
+
+	/** Rounds a reserve may hold for the weapon at Index, after parts. */
+	int32 GetMaxReserveForIndex(int32 Index) const;
 
 	int32 ReloadingWeaponIndex = INDEX_NONE;
 	float ReloadStartTime = 0.0f;

@@ -87,6 +87,13 @@ ANRLootChest::ANRLootChest()
 	FNRLootEntry Shield;
 	Shield.ItemType = ENRItemType::Shield;
 	LootTable.Add(Shield);
+	FNRLootEntry AmmoBox;
+	AmmoBox.ItemType = ENRItemType::Ammo;
+	LootTable.Add(AmmoBox);
+	FNRLootEntry Gold;
+	Gold.ItemType = ENRItemType::Money;
+	Gold.Count = 15;
+	LootTable.Add(Gold);
 }
 
 void ANRLootChest::OnConstruction(const FTransform& Transform)

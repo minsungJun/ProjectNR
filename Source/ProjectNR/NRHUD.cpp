@@ -646,22 +646,36 @@ void ANRHUD::DrawWeaponPanel(const UNRWeaponComponent* Weapon)
 		DrawRect(NRHudStyle::Track, UnderlineX, UnderlineY, UnderlineW, 3.0f * U);
 		DrawRect(NRHudStyle::Fill, UnderlineX, UnderlineY, UnderlineW * Weapon->GetReloadProgress(), 3.0f * U);
 	}
+	else if (Weapon->IsOutOfAmmo())
+	{
+		// Nothing in the magazine or in reserve: ammo has to be picked up.
+		NRHudStyle::DrawLabel(Canvas, Medium, TEXT("NO AMMO"), UnderlineX, MidY, 1.3f * U, NRHudStyle::Danger);
+		DrawRect(NRHudStyle::Danger, UnderlineX, UnderlineY, UnderlineW, 3.0f * U);
+	}
 	else
 	{
 		const int32 Ammo = Weapon->GetCurrentAmmo();
+		const int32 Reserve = Weapon->GetReserveAmmo();
 		const float AmmoFraction = static_cast<float>(Ammo) / MaxAmmo;
 		const FLinearColor AmmoColor = Ammo == 0 ? NRHudStyle::Danger
 			: (AmmoFraction <= 0.25f ? NRHudStyle::Warning : NRHudStyle::Bright);
 
 		const FVector2D AmmoSize = NRHudStyle::DrawLabel(Canvas, Large, FString::FromInt(Ammo), UnderlineX, MidY, 2.3f * U, AmmoColor);
-		// Small separator, then the magazine size.
+		// Small separator, then the rounds in reserve (red once it is empty).
 		const float SepX = UnderlineX + AmmoSize.X + 12.0f * U;
 		DrawRect(NRHudStyle::Edge, SepX, MidY - 12.0f * U, Line, 24.0f * U);
-		NRHudStyle::DrawLabel(Canvas, Medium, FString::FromInt(MaxAmmo), SepX + 12.0f * U, MidY, 1.3f * U, NRHudStyle::Dim);
+		NRHudStyle::DrawLabel(Canvas, Medium, FString::FromInt(Reserve), SepX + 12.0f * U, MidY, 1.3f * U,
+			Reserve > 0 ? NRHudStyle::Dim : NRHudStyle::Danger);
 
 		// The short line under the count, as long as the magazine is full.
 		DrawRect(NRHudStyle::Track, UnderlineX, UnderlineY, UnderlineW, 3.0f * U);
 		DrawRect(AmmoColor, UnderlineX, UnderlineY, UnderlineW * AmmoFraction, 3.0f * U);
+	}
+
+	// Gold for the run, just above the panel's right edge.
+	if (const UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr)
+	{
+		NRHudStyle::DrawLabel(Canvas, Medium, FString::Printf(TEXT("GOLD  %d"), Run->GetMoney()), X + W, Y - 18.0f * U, 1.1f * U, NRHudStyle::Gold, 1.0f);
 	}
 
 	// Weapon: no icons yet, so its name and slot stand where the reference has a silhouette.

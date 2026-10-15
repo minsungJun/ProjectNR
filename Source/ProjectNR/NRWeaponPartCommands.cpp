@@ -10,6 +10,7 @@
 //   NR.Weapon.Equip <1|2|3>
 //   NR.Weapon.Fire                          one shot with the weapon in hand (a light attack for melee)
 //   NR.Weapon.Reload
+//   NR.Weapon.Ammo <magazine> [reserve]     set the rounds of the gun in hand
 //   NR.Aim <None|Shoulder|Precision>        aim mode without the right mouse button
 //
 // <weapon> is Rifle, Shotgun or Melee. Slot 0 is the exclusive slot, 1..5 the common ones.
@@ -165,6 +166,17 @@ namespace NRPartCommands
 		}
 	}
 
+	void Ammo(const TArray<FString>& Args, UWorld* World)
+	{
+		UNRWeaponComponent* Weapons = GetComponent<UNRWeaponComponent>(World);
+		if (!Weapons || Args.Num() < 1)
+		{
+			return;
+		}
+		Weapons->SetCurrentAmmo(FCString::Atoi(*Args[0]), Args.Num() > 1 ? FCString::Atoi(*Args[1]) : Weapons->GetReserveAmmo());
+		UE_LOG(LogNRPartCommands, Log, TEXT("Ammo: %d / %d in reserve"), Weapons->GetCurrentAmmo(), Weapons->GetReserveAmmo());
+	}
+
 	void Aim(const TArray<FString>& Args, UWorld* World)
 	{
 		UNRAimComponent* AimComponent = GetComponent<UNRAimComponent>(World);
@@ -219,6 +231,10 @@ static FAutoConsoleCommandWithWorldAndArgs GNRWeaponFireCommand(TEXT("NR.Weapon.
 static FAutoConsoleCommandWithWorldAndArgs GNRWeaponReloadCommand(TEXT("NR.Weapon.Reload"),
 	TEXT("Reload the weapon in hand."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRPartCommands::Reload));
+
+static FAutoConsoleCommandWithWorldAndArgs GNRWeaponAmmoCommand(TEXT("NR.Weapon.Ammo"),
+	TEXT("NR.Weapon.Ammo <magazine> [reserve]: set the rounds of the gun in hand."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRPartCommands::Ammo));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRAimCommand(TEXT("NR.Aim"),
 	TEXT("NR.Aim <None|Shoulder|Precision>: set the aim mode as the right mouse button would."),

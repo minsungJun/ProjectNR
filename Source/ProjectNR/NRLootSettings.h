@@ -30,6 +30,25 @@ public:
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops")
 	TArray<FNRLootEntry> EnemyDropTable;
 
+	/** Chance that a killed enemy drops gold, rolled apart from the items above. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Gold", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float EnemyMoneyChance = 1.0f;
+
+	/** Gold in one drop: anywhere from Min to Max. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Gold", meta = (ClampMin = "1"))
+	int32 EnemyMoneyMin = 2;
+
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Gold", meta = (ClampMin = "1"))
+	int32 EnemyMoneyMax = 6;
+
+	/** Chance that a killed enemy drops an ammo box, rolled apart from the rest. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Ammo", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float EnemyAmmoChance = 0.4f;
+
+	/** Magazines' worth one ammo box puts into each gun's reserve. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Pickup", meta = (ClampMin = "0.1"))
+	float AmmoBoxMagazines = 1.0f;
+
 	/** Spawned for every drop. Empty uses ANRItemPickup itself; set a Blueprint child to restyle it. */
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Pickup")
 	TSoftClassPtr<ANRItemPickup> PickupClass;

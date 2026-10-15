@@ -10,6 +10,9 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "NRConsumableComponent.h"
+#include "NRLootSettings.h"
+#include "NRRunSubsystem.h"
+#include "NRWeaponComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRPickup, Log, All);
@@ -45,6 +48,8 @@ ANRItemPickup::ANRItemPickup()
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MaterialFinder(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 	PotionMesh = CylinderFinder.Object;
 	ShieldMesh = CubeFinder.Object;
+	AmmoMesh = CubeFinder.Object;
+	MoneyMesh = CylinderFinder.Object;
 	TintMaterial = MaterialFinder.Object;
 }
 
@@ -87,13 +92,38 @@ void ANRItemPickup::SetItem(ENRItemType InItemType, int32 InCount)
 
 void ANRItemPickup::ApplyLook()
 {
-	const bool bShield = ItemType == ENRItemType::Shield;
-	const FLinearColor Color = bShield ? ShieldColor : PotionColor;
+	FLinearColor Color = PotionColor;
+	UStaticMesh* Shape = PotionMesh;
+	FVector Scale = PotionScale;
+	FRotator Rotation = FRotator::ZeroRotator;
+	switch (ItemType)
+	{
+	case ENRItemType::Shield:
+		// A cube stood on its corner reads as a diamond, which tells it apart from the potion.
+		Color = ShieldColor;
+		Shape = ShieldMesh;
+		Scale = ShieldScale;
+		Rotation = FRotator(45.0f, 0.0f, 45.0f);
+		break;
+	case ENRItemType::Ammo:
+		Color = AmmoColor;
+		Shape = AmmoMesh;
+		Scale = AmmoScale;
+		break;
+	case ENRItemType::Money:
+		// A flat cylinder on its edge: a coin, face on as it spins.
+		Color = MoneyColor;
+		Shape = MoneyMesh;
+		Scale = MoneyScale;
+		Rotation = FRotator(0.0f, 0.0f, 90.0f);
+		break;
+	default:
+		break;
+	}
 
-	Mesh->SetStaticMesh(bShield ? ShieldMesh : PotionMesh);
-	Mesh->SetRelativeScale3D(bShield ? ShieldScale : PotionScale);
-	// A cube stood on its corner reads as a diamond, which tells it apart from the potion.
-	Mesh->SetRelativeRotation(bShield ? FRotator(45.0f, 0.0f, 45.0f) : FRotator::ZeroRotator);
+	Mesh->SetStaticMesh(Shape);
+	Mesh->SetRelativeScale3D(Scale);
+	Mesh->SetRelativeRotation(Rotation);
 	Glow->SetLightColor(Color);
 
 	if (TintMaterial)
@@ -133,8 +163,31 @@ bool ANRItemPickup::TryCollect(AActor* Collector)
 		return false;
 	}
 
-	UNRConsumableComponent* Consumables = Pawn->FindComponentByClass<UNRConsumableComponent>();
-	if (!Consumables || !Consumables->AddItem(ItemType, Count))
+	bool bTaken = false;
+	switch (ItemType)
+	{
+	case ENRItemType::Ammo:
+		// Into the guns' reserves; left lying while every one is full.
+		if (UNRWeaponComponent* Weapons = Pawn->FindComponentByClass<UNRWeaponComponent>())
+		{
+			bTaken = Weapons->AddReserveMagazines(Count * GetDefault<UNRLootSettings>()->AmmoBoxMagazines) > 0;
+		}
+		break;
+	case ENRItemType::Money:
+		if (UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr)
+		{
+			Run->AddMoney(Count);
+			bTaken = true;
+		}
+		break;
+	default:
+		if (UNRConsumableComponent* Consumables = Pawn->FindComponentByClass<UNRConsumableComponent>())
+		{
+			bTaken = Consumables->AddItem(ItemType, Count);
+		}
+		break;
+	}
+	if (!bTaken)
 	{
 		return false;
 	}

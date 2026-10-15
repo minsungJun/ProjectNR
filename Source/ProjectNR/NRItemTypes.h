@@ -5,12 +5,18 @@
 #include "CoreMinimal.h"
 #include "NRItemTypes.generated.h"
 
-/** Items the player can pick up and carry. Each maps to a consumable on UNRConsumableComponent. */
+/**
+ * Things the player can pick up. Potion and Shield are consumables (UNRConsumableComponent); Ammo
+ * is a box of rounds for the guns (UNRWeaponComponent's reserves); Money is gold for the run
+ * (UNRRunSubsystem). Count is how many - charges, boxes or gold.
+ */
 UENUM(BlueprintType)
 enum class ENRItemType : uint8
 {
 	Potion,
-	Shield
+	Shield,
+	Ammo,
+	Money
 };
 
 /** One line of a drop table: what drops, how many, and how likely it is against the other lines. */
@@ -38,6 +44,8 @@ namespace NRItems
 		switch (Type)
 		{
 		case ENRItemType::Shield: return TEXT("SHIELD");
+		case ENRItemType::Ammo: return TEXT("AMMO");
+		case ENRItemType::Money: return TEXT("GOLD");
 		case ENRItemType::Potion:
 		default: return TEXT("HEAL");
 		}

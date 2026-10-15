@@ -71,6 +71,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Run")
 	int32 GetKills() const { return Kills; }
 
+	/** Gold picked up this run. Starts at 0 with every run. */
+	UFUNCTION(BlueprintPure, Category = "Run")
+	int32 GetMoney() const { return Money; }
+
+	/** Gold picked up (or, negative, spent). Never goes below 0. */
+	UFUNCTION(BlueprintCallable, Category = "Run")
+	void AddMoney(int32 Amount);
+
 	UFUNCTION(BlueprintPure, Category = "Run")
 	float GetDamageDealt() const { return DamageDealt; }
 
@@ -130,6 +138,7 @@ private:
 	double EndTime = 0.0;
 	int32 RoomsCleared = 0;
 	int32 Kills = 0;
+	int32 Money = 0;
 	float DamageDealt = 0.0f;
 
 	TArray<TWeakObjectPtr<ANRRoom>> Rooms;

@@ -14,8 +14,10 @@ class UStaticMesh;
 class UStaticMeshComponent;
 
 /**
- * An item lying in the world. The player collects it by walking into it; it goes into the
- * player's UNRConsumableComponent and the pickup disappears.
+ * An item lying in the world. The player collects it by walking into it and the pickup
+ * disappears: potions and shields go into the player's UNRConsumableComponent, an ammo box into
+ * its guns' reserves (UNRWeaponComponent - left lying while they are all full), gold into the
+ * run (UNRRunSubsystem).
  *
  * Only player-controlled pawns collect, so enemies walk over drops without taking them.
  * Without art yet, it draws an engine basic shape tinted per item type, slowly spinning and
@@ -90,6 +92,26 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
 	FLinearColor ShieldColor = FLinearColor(0.35f, 0.7f, 1.0f);
+
+	/** An ammo box: a squat block. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	TObjectPtr<UStaticMesh> AmmoMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FVector AmmoScale = FVector(0.32f, 0.22f, 0.18f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FLinearColor AmmoColor = FLinearColor(0.85f, 0.45f, 0.1f);
+
+	/** Gold: a coin stood on its edge, spinning. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	TObjectPtr<UStaticMesh> MoneyMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FVector MoneyScale = FVector(0.24f, 0.24f, 0.04f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FLinearColor MoneyColor = FLinearColor(1.0f, 0.8f, 0.15f);
 
 	/** Tinted through its "Color" parameter. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
