@@ -16,13 +16,18 @@ AEnemyProjectile::AEnemyProjectile()
 	PrimaryActorTick.bCanEverTick = false;
 
 	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
-	// Walls stop it; pawns are only overlapped, so it can pass the shooter's allies and still
-	// find the target. Query-only: it is swept by the movement component.
+	// Walls and anything put down in the level stop it, fixed or movable (LevelBlock_Traversable
+	// and other placed blocks are WorldDynamic: until 2026-10-15 only WorldStatic stopped it, and
+	// it flew through them). Pawns are only overlapped, so it can pass the shooter's allies and
+	// still find the target. A PhysicsBody, not WorldDynamic: the player's bullets block
+	// WorldDynamic and would meet it in the air, as would other shots. Query-only: it is swept by
+	// the movement component.
 	CollisionSphere->InitSphereRadius(CollisionRadius);
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-	CollisionSphere->SetCollisionObjectType(ECC_WorldDynamic);
+	CollisionSphere->SetCollisionObjectType(ECC_PhysicsBody);
 	CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	CollisionSphere->SetGenerateOverlapEvents(true);
 	CollisionSphere->OnComponentBeginOverlap.AddDynamic(this, &AEnemyProjectile::OnSphereOverlap);
@@ -98,7 +103,8 @@ void AEnemyProjectile::OnSphereOverlap(UPrimitiveComponent* OverlappedComponent,
 void AEnemyProjectile::OnSphereHit(UPrimitiveComponent* HitComponent, AActor* OtherActor,
 	UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
 {
-	// Only walls block it.
+	// Walls and placed blocks stop it.
 	bSpent = true;
+	UE_LOG(LogNeuralAI, Log, TEXT("%s's shot stopped by %s"), *GetNameSafe(GetInstigator()), *GetNameSafe(OtherActor));
 	Destroy();
 }
