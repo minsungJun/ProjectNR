@@ -2,8 +2,11 @@
 
 #include "Characters/EnemyCharacter.h"
 
+#include "Characters/EnemyVisualSettings.h"
 #include "Climb/EnemyClimbComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
@@ -136,6 +139,13 @@ AEnemyCharacter::AEnemyCharacter()
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 }
 
+void AEnemyCharacter::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	ApplyVisual();
+}
+
 void AEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
@@ -146,6 +156,9 @@ void AEnemyCharacter::BeginPlay()
 	// The symptom is silent: the pipeline simply stops at whichever pointer is missing.
 	// Re-resolve by class and say so, rather than doing nothing for the rest of the run.
 	ResolveComponentReferences();
+
+	// Again here: an actor placed before the settings named a model has none saved on it.
+	ApplyVisual();
 
 	// Profile values are pushed outward here, after components exist but before anything
 	// has ticked, so every consumer sees the archetype rather than its own default.
@@ -244,6 +257,49 @@ void AEnemyCharacter::HandleDeath(AActor* Killer)
 	// required. Leave the pawn in place so the death state stays inspectable.
 }
 
+const FEnemyVisual& AEnemyCharacter::GetVisual() const
+{
+	return GetDefault<UEnemyVisualSettings>()->Crawler;
+}
+
+void AEnemyCharacter::ApplyVisual()
+{
+	USkeletalMeshComponent* Model = GetMesh();
+	if (!Model)
+	{
+		return;
+	}
+
+	const FEnemyVisual& Visual = GetVisual();
+	USkeletalMesh* Asset = Visual.Mesh.IsNull() ? nullptr : Visual.Mesh.LoadSynchronous();
+	if (!Asset && !Visual.Mesh.IsNull())
+	{
+		// Content is not in the repository, so a fresh checkout lacks the models. Say so once per model.
+		static TSet<FSoftObjectPath> Reported;
+		if (!Reported.Contains(Visual.Mesh.ToSoftObjectPath()))
+		{
+			Reported.Add(Visual.Mesh.ToSoftObjectPath());
+			UE_LOG(LogNeuralAI, Warning, TEXT("Enemy model %s is not in this checkout; %s keeps its placeholder cube"),
+				*Visual.Mesh.ToString(), *GetClass()->GetName());
+		}
+	}
+
+	bShowsModel = Asset != nullptr;
+	Model->SetSkeletalMeshAsset(Asset);
+	Model->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Model->SetVisibility(bShowsModel);
+	if (bShowsModel)
+	{
+		ModelRestTransform = FTransform(Visual.Rotation, Visual.Offset, FVector(Visual.Scale));
+		Model->SetRelativeTransform(ModelRestTransform);
+	}
+	if (BodyMesh)
+	{
+		// Still there without the cube showing: the climb pose turns about it.
+		BodyMesh->SetVisibility(!bShowsModel);
+	}
+}
+
 void AEnemyCharacter::SetClimbPose(float Alpha)
 {
 	if (!BodyMesh)
@@ -251,9 +307,16 @@ void AEnemyCharacter::SetClimbPose(float Alpha)
 		return;
 	}
 	const float A = FMath::Clamp(Alpha, 0.0f, 1.0f);
-	BodyMesh->SetRelativeLocationAndRotation(
-		FMath::Lerp(BodyRestTransform.GetLocation(), ClimbBodyLocation, A),
-		FQuat::Slerp(BodyRestTransform.GetRotation(), ClimbBodyRotation.Quaternion(), A));
+	const FVector PivotLocation = FMath::Lerp(BodyRestTransform.GetLocation(), ClimbBodyLocation, A);
+	const FQuat PivotRotation = FQuat::Slerp(BodyRestTransform.GetRotation(), ClimbBodyRotation.Quaternion(), A);
+	BodyMesh->SetRelativeLocationAndRotation(PivotLocation, PivotRotation);
+
+	if (bShowsModel && GetMesh())
+	{
+		// The model rides the body mesh's pivot as if fixed to it (without the cube's scale).
+		const FTransform RestPivot(BodyRestTransform.GetRotation(), BodyRestTransform.GetLocation());
+		GetMesh()->SetRelativeTransform(ModelRestTransform.GetRelativeTransform(RestPivot) * FTransform(PivotRotation, PivotLocation));
+	}
 }
 
 int32 AEnemyCharacter::PerformAttack()

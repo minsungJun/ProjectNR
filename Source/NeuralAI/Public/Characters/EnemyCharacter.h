@@ -14,6 +14,7 @@ class UEnemyClimbComponent;
 class UStaticMeshComponent;
 class UStateTree;
 class UEnemyAIProfile;
+struct FEnemyVisual;
 
 /**
  * The Crawler: an insect-like enemy driven by a neural brain.
@@ -72,8 +73,13 @@ public:
 	/**
 	 * Lays the body mesh against the wall: 0 standing as usual, 1 belly to the wall in front,
 	 * head up. Driven by the climb component; the crawler has no animation, so this is the climb.
+	 * The model, when there is one, turns with it about the same point.
 	 */
 	void SetClimbPose(float Alpha);
+
+	/** Whether it wears its model from UEnemyVisualSettings rather than the placeholder cube. */
+	UFUNCTION(BlueprintPure, Category = "Enemy")
+	bool ShowsModel() const { return bShowsModel; }
 
 	/**
 	 * State tree that gates this enemy's behaviour, or null to run the controller's own
@@ -117,7 +123,14 @@ public:
 	bool IsStunned() const { return bStunned; }
 
 protected:
+	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
+
+	/** This archetype's entry in UEnemyVisualSettings. */
+	virtual const FEnemyVisual& GetVisual() const;
+
+	/** Puts the model from GetVisual() on the character mesh and hides the cube, or keeps the cube without one. */
+	void ApplyVisual();
 
 	void ClearStun();
 
@@ -188,5 +201,10 @@ private:
 
 	/** The body mesh's own place on the capsule, to come back to after a climb. */
 	FTransform BodyRestTransform;
+
+	bool bShowsModel = false;
+
+	/** The model's place on the capsule when standing; climbing turns it about the body mesh's pivot. */
+	FTransform ModelRestTransform;
 	FTimerHandle StunTimer;
 };

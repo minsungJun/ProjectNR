@@ -2,6 +2,7 @@
 
 #include "Characters/RangedEnemyCharacter.h"
 
+#include "Characters/EnemyVisualSettings.h"
 #include "Components/EnemySensorComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
@@ -43,6 +44,11 @@ void ARangedEnemyCharacter::BeginPlay()
 			Material->SetVectorParameterValue(TEXT("Color"), BodyColor);
 		}
 	}
+}
+
+const FEnemyVisual& ARangedEnemyCharacter::GetVisual() const
+{
+	return GetDefault<UEnemyVisualSettings>()->Spitter;
 }
 
 int32 ARangedEnemyCharacter::PerformAttack()

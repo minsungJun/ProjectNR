@@ -34,6 +34,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual const FEnemyVisual& GetVisual() const override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Ranged")
 	TSubclassOf<AEnemyProjectile> ProjectileClass;
