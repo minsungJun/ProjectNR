@@ -14,6 +14,7 @@ class UEnemyClimbComponent;
 class UStaticMeshComponent;
 class UStateTree;
 class UEnemyAIProfile;
+class UAnimSequence;
 struct FEnemyVisual;
 
 /**
@@ -132,6 +133,12 @@ protected:
 	/** Puts the model from GetVisual() on the character mesh and hides the cube, or keeps the cube without one. */
 	void ApplyVisual();
 
+	/**
+	 * Keeps the walk cycle in step with the body: faster with speed (the climb speed on a wall),
+	 * and when it stops, on to the next point where every foot is down, then still.
+	 */
+	void UpdateWalkAnimation();
+
 	void ClearStun();
 
 	/** Repairs component pointers left null by hot reload reinstancing. */
@@ -206,5 +213,11 @@ private:
 
 	/** The model's place on the capsule when standing; climbing turns it about the body mesh's pivot. */
 	FTransform ModelRestTransform;
+
+	/** The model's walk cycle, when it has one. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> WalkAnimation;
+
+	FTimerHandle WalkTimer;
 	FTimerHandle StunTimer;
 };

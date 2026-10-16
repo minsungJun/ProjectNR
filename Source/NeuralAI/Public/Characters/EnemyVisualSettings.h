@@ -6,6 +6,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "EnemyVisualSettings.generated.h"
 
+class UAnimSequence;
 class USkeletalMesh;
 
 /** One enemy archetype's model and how it sits on the capsule. */
@@ -28,6 +29,18 @@ struct NEURALAI_API FEnemyVisual
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = "0.01"))
 	float Scale = 1.0f;
+
+	/** Looped while it moves, faster the faster it goes. Empty: the model holds its pose. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	TSoftObjectPtr<UAnimSequence> WalkAnimation;
+
+	/** cm/s the walk animation covers at play rate 1. The play rate is the enemy's speed over this. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = "1.0"))
+	float WalkAnimationSpeed = 85.0f;
+
+	/** Highest play rate, so a fast enemy scuttles rather than blurs. Above it the feet slide. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = "0.1"))
+	float MaxWalkPlayRate = 3.0f;
 };
 
 /**

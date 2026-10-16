@@ -2,8 +2,10 @@
 
 #include "Characters/EnemyCharacter.h"
 
+#include "Animation/AnimSequence.h"
 #include "Characters/EnemyVisualSettings.h"
 #include "Climb/EnemyClimbComponent.h"
+#include "Climb/EnemyClimbSettings.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -22,6 +24,12 @@
 #include "EngineUtils.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+	/** Seconds between walk cycle updates: often enough to follow the speed, rarely enough for a crowd. */
+	constexpr float WalkUpdateInterval = 0.1f;
+}
 
 /** Console hook for testing the Stunned state, since nothing inflicts a stun yet. */
 static FAutoConsoleCommandWithWorldAndArgs GStunEnemyCommand(
@@ -160,6 +168,13 @@ void AEnemyCharacter::BeginPlay()
 	// Again here: an actor placed before the settings named a model has none saved on it.
 	ApplyVisual();
 
+	if (bShowsModel && WalkAnimation && GetMesh())
+	{
+		GetMesh()->PlayAnimation(WalkAnimation, true);
+		GetMesh()->SetPlayRate(0.0f);
+		GetWorldTimerManager().SetTimer(WalkTimer, this, &AEnemyCharacter::UpdateWalkAnimation, WalkUpdateInterval, true);
+	}
+
 	// Profile values are pushed outward here, after components exist but before anything
 	// has ticked, so every consumer sees the archetype rather than its own default.
 	if (AIProfile)
@@ -285,6 +300,7 @@ void AEnemyCharacter::ApplyVisual()
 	}
 
 	bShowsModel = Asset != nullptr;
+	WalkAnimation = bShowsModel && !Visual.WalkAnimation.IsNull() ? Visual.WalkAnimation.LoadSynchronous() : nullptr;
 	Model->SetSkeletalMeshAsset(Asset);
 	Model->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Model->SetVisibility(bShowsModel);
@@ -297,6 +313,45 @@ void AEnemyCharacter::ApplyVisual()
 	{
 		// Still there without the cube showing: the climb pose turns about it.
 		BodyMesh->SetVisibility(!bShowsModel);
+	}
+}
+
+void AEnemyCharacter::UpdateWalkAnimation()
+{
+	USkeletalMeshComponent* Model = GetMesh();
+	if (!Model || !WalkAnimation)
+	{
+		return;
+	}
+	if (IsDead())
+	{
+		Model->SetPlayRate(0.0f);
+		GetWorldTimerManager().ClearTimer(WalkTimer);
+		return;
+	}
+
+	// Climbing moves the capsule by hand, without a velocity: use the climb speed then.
+	const bool bOnWall = ClimbComponent && ClimbComponent->IsOnWall();
+	const float Speed = bOnWall ? GetDefault<UEnemyClimbSettings>()->ClimbSpeed : GetVelocity().Size2D();
+	const FEnemyVisual& Visual = GetVisual();
+	if (Speed > 10.0f)
+	{
+		Model->SetPlayRate(FMath::Min(Speed / Visual.WalkAnimationSpeed, Visual.MaxWalkPlayRate));
+		return;
+	}
+
+	// Every foot is down at the start of each half of the cycle; finish the step to the next one.
+	const float Half = WalkAnimation->GetPlayLength() * 0.5f;
+	const float Position = Model->GetPosition();
+	const float ToRest = Half - FMath::Fmod(Position, Half);
+	if (ToRest <= WalkUpdateInterval || ToRest >= Half - KINDA_SMALL_NUMBER)
+	{
+		Model->SetPosition(FMath::Fmod(FMath::RoundToFloat(Position / Half) * Half, Half * 2.0f), false);
+		Model->SetPlayRate(0.0f);
+	}
+	else
+	{
+		Model->SetPlayRate(1.0f);
 	}
 }
 
