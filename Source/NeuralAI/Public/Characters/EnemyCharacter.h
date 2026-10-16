@@ -239,6 +239,10 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> HitAnimation;
 
+	/** The model's collapse, when it has one. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> DeathAnimation;
+
 	/** While an attack or a flinch plays, the walk cycle waits. */
 	bool bPlayingOneShot = false;
 

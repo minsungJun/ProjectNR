@@ -269,6 +269,16 @@ void AEnemyCharacter::HandleDeath(AActor* Killer)
 		ClimbComponent->DropDead();
 	}
 
+	// Collapse and stay collapsed: nothing hands the model back to the walk cycle after this.
+	GetWorldTimerManager().ClearTimer(WalkTimer);
+	GetWorldTimerManager().ClearTimer(OneShotTimer);
+	if (bShowsModel && DeathAnimation && GetMesh())
+	{
+		bPlayingOneShot = true;
+		GetMesh()->PlayAnimation(DeathAnimation, false);
+		GetMesh()->SetPlayRate(1.0f);
+	}
+
 	// The controller checks IsDead() before issuing anything, so unpossessing is not
 	// required. Leave the pawn in place so the death state stays inspectable.
 }
@@ -304,6 +314,7 @@ void AEnemyCharacter::ApplyVisual()
 	WalkAnimation = bShowsModel && !Visual.WalkAnimation.IsNull() ? Visual.WalkAnimation.LoadSynchronous() : nullptr;
 	AttackAnimation = bShowsModel && !Visual.AttackAnimation.IsNull() ? Visual.AttackAnimation.LoadSynchronous() : nullptr;
 	HitAnimation = bShowsModel && !Visual.HitAnimation.IsNull() ? Visual.HitAnimation.LoadSynchronous() : nullptr;
+	DeathAnimation = bShowsModel && !Visual.DeathAnimation.IsNull() ? Visual.DeathAnimation.LoadSynchronous() : nullptr;
 	Model->SetSkeletalMeshAsset(Asset);
 	Model->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Model->SetVisibility(bShowsModel);

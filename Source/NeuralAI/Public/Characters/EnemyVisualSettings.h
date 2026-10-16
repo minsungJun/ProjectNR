@@ -52,6 +52,10 @@ struct NEURALAI_API FEnemyVisual
 	/** Played once when it takes a hit it survives, over whatever it was doing. Empty: no flinch. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
 	TSoftObjectPtr<UAnimSequence> HitAnimation;
+
+	/** Played once when it dies; the body then keeps the last pose. Empty: it freezes where it stood. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	TSoftObjectPtr<UAnimSequence> DeathAnimation;
 };
 
 /**
