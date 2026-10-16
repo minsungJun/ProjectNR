@@ -27,7 +27,10 @@ enum class ENRGridRoomType : uint8
 	Start,
 	Safe,
 	Elite,
-	Boss
+	Boss,
+	/** A cell given over to a corridor - straight, corner, T or crossing - between rooms. Not a
+	 *  room: no fight, no doors, not counted in the room counts. */
+	Hall
 };
 
 /** A doorway place on a room's outline: one side of one of its cells. */

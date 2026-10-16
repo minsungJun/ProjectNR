@@ -280,9 +280,10 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 	GeneratedLayout = MoveTemp(Layout);
 
 	const UEnum* ShapeEnum = StaticEnum<ENRGridLayoutShape>();
-	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, attempt %d, v%d): %d rooms, %d corridors, %d loop(s), %d branch room(s)"),
+	const int32 Halls = FNRGridLayoutGenerator::CountHalls(GeneratedLayout);
+	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, attempt %d, v%d): %d rooms, %d hall cell(s), %d corridors, %d loop(s), %d branch room(s)"),
 		InSeed, *ShapeEnum->GetNameStringByValue(static_cast<int64>(Settings.Shape)), GeneratedLayout.Attempt, GeneratedLayout.GeneratorVersion,
-		GeneratedLayout.Rooms.Num(), GeneratedLayout.Connections.Num(),
+		GeneratedLayout.Rooms.Num() - Halls, Halls, GeneratedLayout.Connections.Num(),
 		FNRGridLayoutGenerator::CountLoops(GeneratedLayout), FNRGridLayoutGenerator::CountBranchRooms(GeneratedLayout));
 	TArray<FString> Lines;
 	FNRGridLayoutGenerator::ToAscii(Settings, GeneratedLayout).ParseIntoArrayLines(Lines, false);
@@ -618,6 +619,17 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 			}
 		}
 
+		// A hall cell is a corridor: no room logic, nobody waiting in it.
+		if (Room.RoomType == ENRGridRoomType::Hall)
+		{
+			if (RoomActors.Num() > 0 || Enemies.Num() > 0 || SpawnPoints.Num() > 0)
+			{
+				Errors.Add(FString::Printf(TEXT("hall cell %d: %d NRRoom(s), %d enemy(s) and %d spawn point(s) in a corridor"), Room.RoomId,
+					RoomActors.Num(), Enemies.Num(), SpawnPoints.Num()));
+			}
+			continue;
+		}
+
 		if (RoomActors.Num() != 1)
 		{
 			// A bare room level (the stage A test) has no room logic; anything else must have one.
@@ -751,6 +763,12 @@ void ANRMapGenerator::InitializeModules()
 		{
 			const FName Tag = NRMapGen::SlotTag(TEXT("NRBlock"), Room, Port);
 			const TArray<AActor*> Blockers = FindTagged(ModuleIndex, Tag);
+			// A hall cell is a template with exactly the doorways it joins: nothing to open.
+			if (Blockers.Num() == 0 && Room.RoomType == ENRGridRoomType::Hall)
+			{
+				++Opened;
+				continue;
+			}
 			if (Blockers.Num() == 0)
 			{
 				Errors.Add(FString::Printf(TEXT("room %d: joined at %d,%d %s but its level has no %s"), Room.RoomId,
@@ -1235,6 +1253,7 @@ void ANRMapGenerator::DrawLayout(const FNRGeneratedLayout& Layout, float Duratio
 		case ENRGridRoomType::Safe: Color = FColor::Cyan; TypeName = TEXT("Safe"); break;
 		case ENRGridRoomType::Elite: Color = FColor::Orange; TypeName = TEXT("Elite"); break;
 		case ENRGridRoomType::Boss: Color = FColor::Red; TypeName = TEXT("Boss"); break;
+		case ENRGridRoomType::Hall: Color = FColor(90, 110, 160); TypeName = TEXT("Hall"); break;
 		default: break;
 		}
 		// A room of several cells covers the corridor gaps between them too.
@@ -1396,7 +1415,7 @@ namespace NRGridCommands
 			{
 				continue;
 			}
-			if (MostRooms == INDEX_NONE && Layout.Rooms.Num() == Settings.MaxRooms)
+			if (MostRooms == INDEX_NONE && Layout.Rooms.Num() - FNRGridLayoutGenerator::CountHalls(Layout) == Settings.MaxRooms)
 			{
 				MostRooms = Seed;
 			}

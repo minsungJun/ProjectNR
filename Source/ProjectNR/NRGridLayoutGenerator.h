@@ -35,6 +35,13 @@ struct PROJECTNR_API FNRRoomTemplateDesc
  * Rooms may cover several cells (a rectangle per template). A corridor joins two rooms across
  * the side two of their cells share, and only where both templates have a doorway there.
  *
+ * Hall cells (ENRGridRoomType::Hall, MinHalls-MaxHalls) are placed like rooms but are not counted
+ * as rooms: some stand between rooms on the main path (at most MaxHallsInRow in a row, never
+ * right before the boss), the rest grow on side branches, each with a room beyond it. Side
+ * branches lean towards free sides of hall cells (HallBranchBias), which makes T junctions and
+ * crossings. A hall cell joins at least two corridors and becomes a template with exactly the
+ * doorways it uses, so no hall has a blocked stub. Hall cells do not count towards branch depth.
+ *
  *  1. Main path: rooms placed one after another from a random start, each against a doorway of
  *     the one before (depth-first with a search budget). Start first, boss last; safe in the
  *     middle, elite right before the boss. The boss is joined to the elite only, and stands at
@@ -63,7 +70,7 @@ class PROJECTNR_API FNRGridLayoutGenerator
 {
 public:
 	/** Bump whenever a change would make a seed produce a different layout. */
-	static constexpr int32 Version = 4;
+	static constexpr int32 Version = 5;
 
 	/** Whether the settings and templates can be met at all. False with the reason when they cannot. */
 	static bool CheckSettings(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& Templates, FString& OutError);
@@ -93,11 +100,14 @@ public:
 	/** Independent loops: corridors - rooms + 1 for a connected layout. */
 	static int32 CountLoops(const FNRGeneratedLayout& Layout);
 
-	/** Rooms off the main path. */
+	/** Rooms off the main path (hall cells not counted). */
 	static int32 CountBranchRooms(const FNRGeneratedLayout& Layout);
 
+	/** Hall cells. */
+	static int32 CountHalls(const FNRGeneratedLayout& Layout);
+
 	/** The layout as a text grid for logs: S start, F safe, E elite, B boss, C combat on the
-	 *  main path, b a branch room, in every cell a room covers; = inside a room; - and | are
+	 *  main path, b a branch room, + a hall cell, in every cell a room covers; = inside a room; - and | are
 	 *  corridors. North is up. */
 	static FString ToAscii(const FNRMapGenSettings& Settings, const FNRGeneratedLayout& Layout);
 

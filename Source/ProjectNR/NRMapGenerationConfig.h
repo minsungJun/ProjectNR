@@ -73,9 +73,29 @@ struct PROJECTNR_API FNRMapGenSettings
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "1"))
 	int32 MinStartBossDistance = 3;
 
-	/** How many rooms deep a side branch may go from the main path. */
+	/** How many rooms deep a side branch may go from the main path. Hall cells do not count. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "1"))
 	int32 MaxBranchDepth = 2;
+
+	/**
+	 * Hall cells: a cell given over to a corridor instead of a room - straight, a corner, a T or a
+	 * crossing, by the corridors it joins. Not counted in MinRooms/MaxRooms. Some stand between
+	 * rooms on the main path, the rest on side branches with a room beyond each. 0 and 0 for none.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Halls", meta = (ClampMin = "0"))
+	int32 MinHalls = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Halls", meta = (ClampMin = "0"))
+	int32 MaxHalls = 0;
+
+	/** Most hall cells in a row between two rooms of the main path. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Halls", meta = (ClampMin = "1"))
+	int32 MaxHallsInRow = 2;
+
+	/** Chance that a side branch grows off a free side of a hall cell, when one has one, rather
+	 *  than off any room: what turns hall cells into T junctions and crossings. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Halls", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float HallBranchBias = 0.6f;
 
 	/** A Safe room in the middle of the main path, which the boss cannot be reached around. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation")

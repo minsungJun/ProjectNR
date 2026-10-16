@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 // Checks for FNRGridLayoutGenerator: many fixed seeds per shape (valid, reproducible, varied),
-// with one-cell rooms and with rooms of several cells, settings and templates that cannot be
-// met (refused with a reason), and broken layouts Validate must catch. Runs as the automation
+// with one-cell rooms and with rooms of several cells, with hall cells (straight, corner, T and
+// crossing corridors between rooms), settings and templates that cannot be met (refused with a
+// reason), and broken layouts Validate must catch. Runs as the automation
 // test ProjectNR.Grid.LayoutGenerator and from the console as NR.Grid.Test [seeds].
 
 #include "HAL/IConsoleManager.h"
@@ -397,6 +398,105 @@ namespace NRGridTests
 			}
 		}
 
+		// Hall cells: corridor cells between rooms, on the main path and on branches - never a
+		// dead end, always the template with exactly the corridors they join.
+		{
+			const uint8 Hall = Bit(ENRGridRoomType::Hall);
+			const uint8 N = 1 << 0, E = 1 << 1, S = 1 << 2, W = 1 << 3;
+			const TCHAR* KindNames[] = { TEXT("straight"), TEXT("corner"), TEXT("T"), TEXT("crossing") };
+			TArray<FNRRoomTemplateDesc> Templates = TemplateSets()[2].Templates;
+			const int32 FirstHall = Templates.Num();
+			Templates.Add(FNRRoomTemplateDesc::Make(FIntPoint(1, 1), N | S, Hall));
+			Templates.Add(FNRRoomTemplateDesc::Make(FIntPoint(1, 1), N | E, Hall));
+			Templates.Add(FNRRoomTemplateDesc::Make(FIntPoint(1, 1), N | E | S, Hall));
+			Templates.Add(FNRRoomTemplateDesc::Make(FIntPoint(1, 1), N | E | S | W, Hall));
+
+			for (ENRGridLayoutShape Shape : Shapes)
+			{
+				FNRMapGenSettings Settings = SettingsFor(Shape, FIntPoint(8, 8));
+				Settings.MinHalls = 3;
+				Settings.MaxHalls = 6;
+				const FString Name = ShapeName(Shape);
+				int32 Generated = 0;
+				int32 Retried = 0;
+				int32 Halls = 0;
+				int32 OnPath = 0;
+				int32 Kinds[4] = { 0, 0, 0, 0 };
+				for (int32 Seed = 1; Seed <= SeedCount; ++Seed)
+				{
+					FNRGeneratedLayout Layout;
+					FString Error;
+					if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Seed, Layout, Error))
+					{
+						Failures.Add(FString::Printf(TEXT("hall cells, %s seed %d: %s"), *Name, Seed, *Error));
+						continue;
+					}
+					++Generated;
+					Retried += Layout.Attempt > 0 ? 1 : 0;
+					FNRGeneratedLayout Again;
+					FString AgainError;
+					if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Seed, Again, AgainError) || !FNRGridLayoutGenerator::Identical(Layout, Again))
+					{
+						Failures.Add(FString::Printf(TEXT("hall cells, %s seed %d: not reproducible"), *Name, Seed));
+					}
+					for (const FNRGeneratedRoom& Room : Layout.Rooms)
+					{
+						if (Room.RoomType != ENRGridRoomType::Hall)
+						{
+							if (Room.TemplateIndex >= FirstHall)
+							{
+								Failures.Add(FString::Printf(TEXT("hall cells, %s seed %d: room %d is a hall template"), *Name, Seed, Room.RoomId));
+							}
+							continue;
+						}
+						++Halls;
+						OnPath += Room.MainPathIndex != INDEX_NONE ? 1 : 0;
+						const int32 Corridors = Degree(Layout, Room.RoomId);
+						const bool bStraight = Room.ConnectionMask == (N | S) || Room.ConnectionMask == (E | W);
+						const int32 Kind = Corridors <= 2 ? (bStraight ? 0 : 1) : Corridors == 3 ? 2 : 3;
+						++Kinds[Kind];
+						if (Room.TemplateIndex - FirstHall != Kind)
+						{
+							Failures.Add(FString::Printf(TEXT("hall cells, %s seed %d: hall cell %d joins %s (%s) but is template %d"),
+								*Name, Seed, Room.RoomId, KindNames[Kind], *FNRGridLayoutGenerator::MaskToString(Room.ConnectionMask), Room.TemplateIndex));
+						}
+					}
+					if (Shape == ENRGridLayoutShape::Mixed && Seed == 1)
+					{
+						Summary.Add(TEXT("hall cells, Mixed seed 1:"));
+						TArray<FString> Lines;
+						FNRGridLayoutGenerator::ToAscii(Settings, Layout).ParseIntoArrayLines(Lines);
+						for (const FString& Line : Lines)
+						{
+							Summary.Add(FString::Printf(TEXT("    %s"), *Line));
+						}
+					}
+				}
+				Summary.Add(FString::Printf(TEXT("hall cells, %s: %d/%d generated, %d needed a retry, %.1f hall cells a map (%.0f%% on the main path); straight %d, corner %d, T %d, crossing %d"),
+					*Name, Generated, SeedCount, Retried, Generated > 0 ? static_cast<float>(Halls) / Generated : 0.0f,
+					Halls > 0 ? 100.0f * OnPath / Halls : 0.0f, Kinds[0], Kinds[1], Kinds[2], Kinds[3]));
+				if (Shape != ENRGridLayoutShape::Linear && Generated > 0 && Kinds[2] + Kinds[3] == 0)
+				{
+					Failures.Add(FString::Printf(TEXT("hall cells, %s: no hall cell ever became a T or a crossing"), *Name));
+				}
+			}
+
+			// Hall cells asked for with no hall template: refused, not filled with rooms.
+			FNRMapGenSettings Settings = SettingsFor(ENRGridLayoutShape::Branching, FIntPoint(8, 8));
+			Settings.MinHalls = 3;
+			Settings.MaxHalls = 6;
+			FNRGeneratedLayout Layout;
+			FString Error;
+			if (FNRGridLayoutGenerator::Generate(Settings, TemplateSets()[2].Templates, 7, Layout, Error))
+			{
+				Failures.Add(TEXT("hall cells without a hall template were accepted"));
+			}
+			else
+			{
+				Summary.Add(FString::Printf(TEXT("refusal 'hall cells without a hall template': %s"), *Error));
+			}
+		}
+
 		// Settings that cannot be met must be refused, with a reason, and never half-filled.
 		struct FImpossible
 		{
@@ -451,6 +551,23 @@ namespace NRGridTests
 			Case.Settings.MaxMainPathLength = 36;
 			Case.Settings.MaxAttempts = 5;
 			Case.Settings.MainPathSearchBudget = 2000;
+		}
+
+		{
+			FImpossible& Case = Impossible.AddDefaulted_GetRef();
+			Case.Label = TEXT("MinHalls above MaxHalls");
+			Case.Settings.MinHalls = 4;
+			Case.Settings.MaxHalls = 3;
+		}
+		{
+			FImpossible& Case = Impossible.AddDefaulted_GetRef();
+			Case.Label = TEXT("Linear with more hall cells than fit between its rooms");
+			Case.Settings.Shape = ENRGridLayoutShape::Linear;
+			Case.Settings.MinMainPathLength = 10;
+			Case.Settings.MaxMainPathLength = 14;
+			Case.Settings.GridSize = FIntPoint(10, 10);
+			Case.Settings.MinHalls = 30;
+			Case.Settings.MaxHalls = 30;
 		}
 
 		for (const FImpossible& Case : Impossible)
