@@ -41,6 +41,13 @@ struct NEURALAI_API FEnemyVisual
 	/** Highest play rate, so a fast enemy scuttles rather than blurs. Above it the feet slide. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = "0.1"))
 	float MaxWalkPlayRate = 3.0f;
+
+	/**
+	 * Played once on every attack, then back to walking. The hit lands as the attack starts, so the
+	 * strike belongs near its beginning. Empty: no attack motion.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	TSoftObjectPtr<UAnimSequence> AttackAnimation;
 };
 
 /**

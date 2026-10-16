@@ -139,6 +139,12 @@ protected:
 	 */
 	void UpdateWalkAnimation();
 
+	/** Plays the model's attack once over the walk; called by PerformAttack when an attack goes out. */
+	void PlayAttackAnimation();
+
+	/** The attack has played out: back to the walk cycle. */
+	void FinishAttackAnimation();
+
 	void ClearStun();
 
 	/** Repairs component pointers left null by hot reload reinstancing. */
@@ -218,6 +224,14 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> WalkAnimation;
 
+	/** The model's attack, when it has one. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> AttackAnimation;
+
+	/** While the attack plays, the walk cycle waits. */
+	bool bPlayingAttack = false;
+
 	FTimerHandle WalkTimer;
+	FTimerHandle AttackAnimationTimer;
 	FTimerHandle StunTimer;
 };

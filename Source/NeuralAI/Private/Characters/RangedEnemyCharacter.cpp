@@ -78,6 +78,7 @@ int32 ARangedEnemyCharacter::PerformAttack()
 		return 0;
 	}
 	Shot->Launch(Direction, ProjectileSpeed, AttackDamage, AttackRange);
+	PlayAttackAnimation();
 
 	UE_LOG(LogNeuralAI, Log, TEXT("%s fired at %s from %.0f cm"), *GetNameSafe(this), *GetNameSafe(Target), ToTarget.Size2D());
 	return 1;

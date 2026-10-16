@@ -301,6 +301,7 @@ void AEnemyCharacter::ApplyVisual()
 
 	bShowsModel = Asset != nullptr;
 	WalkAnimation = bShowsModel && !Visual.WalkAnimation.IsNull() ? Visual.WalkAnimation.LoadSynchronous() : nullptr;
+	AttackAnimation = bShowsModel && !Visual.AttackAnimation.IsNull() ? Visual.AttackAnimation.LoadSynchronous() : nullptr;
 	Model->SetSkeletalMeshAsset(Asset);
 	Model->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Model->SetVisibility(bShowsModel);
@@ -319,7 +320,7 @@ void AEnemyCharacter::ApplyVisual()
 void AEnemyCharacter::UpdateWalkAnimation()
 {
 	USkeletalMeshComponent* Model = GetMesh();
-	if (!Model || !WalkAnimation)
+	if (!Model || !WalkAnimation || bPlayingAttack)
 	{
 		return;
 	}
@@ -352,6 +353,32 @@ void AEnemyCharacter::UpdateWalkAnimation()
 	else
 	{
 		Model->SetPlayRate(1.0f);
+	}
+}
+
+void AEnemyCharacter::PlayAttackAnimation()
+{
+	USkeletalMeshComponent* Model = GetMesh();
+	if (!bShowsModel || !AttackAnimation || !Model)
+	{
+		return;
+	}
+	bPlayingAttack = true;
+	Model->PlayAnimation(AttackAnimation, false);
+	Model->SetPlayRate(1.0f);
+	GetWorldTimerManager().SetTimer(AttackAnimationTimer, this, &AEnemyCharacter::FinishAttackAnimation,
+		AttackAnimation->GetPlayLength(), false);
+}
+
+void AEnemyCharacter::FinishAttackAnimation()
+{
+	bPlayingAttack = false;
+	USkeletalMeshComponent* Model = GetMesh();
+	if (Model && WalkAnimation)
+	{
+		// From where every foot is down; the walk timer picks the rate up from here.
+		Model->PlayAnimation(WalkAnimation, true);
+		Model->SetPlayRate(0.0f);
 	}
 }
 
@@ -435,6 +462,8 @@ int32 AEnemyCharacter::PerformAttack()
 		FMath::DegreesToRadians(AttackHalfAngle), FMath::DegreesToRadians(15.0f), 16,
 		HitCount > 0 ? FColor::Red : FColor(150, 150, 150), false, 0.35f, 0, 2.0f);
 #endif
+
+	PlayAttackAnimation();
 
 	UE_LOG(LogNeuralAI, Log, TEXT("%s attacked, %d hit"), *GetNameSafe(this), HitCount);
 	return HitCount;
