@@ -142,8 +142,15 @@ protected:
 	/** Plays the model's attack once over the walk; called by PerformAttack when an attack goes out. */
 	void PlayAttackAnimation();
 
-	/** The attack has played out: back to the walk cycle. */
-	void FinishAttackAnimation();
+	/** Plays an animation once over the walk, cutting off any other one-shot still playing. */
+	void PlayOneShotAnimation(UAnimSequence* Animation);
+
+	/** The one-shot has played out: back to the walk cycle. */
+	void FinishOneShotAnimation();
+
+	/** Flinches on a hit it survives. */
+	UFUNCTION()
+	void HandleDamaged(float Damage, AActor* DamageInstigator, const FVector& HitDirection);
 
 	void ClearStun();
 
@@ -228,10 +235,14 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> AttackAnimation;
 
-	/** While the attack plays, the walk cycle waits. */
-	bool bPlayingAttack = false;
+	/** The model's flinch, when it has one. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> HitAnimation;
+
+	/** While an attack or a flinch plays, the walk cycle waits. */
+	bool bPlayingOneShot = false;
 
 	FTimerHandle WalkTimer;
-	FTimerHandle AttackAnimationTimer;
+	FTimerHandle OneShotTimer;
 	FTimerHandle StunTimer;
 };

@@ -48,6 +48,10 @@ struct NEURALAI_API FEnemyVisual
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
 	TSoftObjectPtr<UAnimSequence> AttackAnimation;
+
+	/** Played once when it takes a hit it survives, over whatever it was doing. Empty: no flinch. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	TSoftObjectPtr<UAnimSequence> HitAnimation;
 };
 
 /**

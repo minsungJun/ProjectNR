@@ -201,6 +201,7 @@ void AEnemyCharacter::BeginPlay()
 	if (HealthComponent)
 	{
 		HealthComponent->OnDeath.AddDynamic(this, &AEnemyCharacter::HandleDeath);
+		HealthComponent->OnDamaged.AddDynamic(this, &AEnemyCharacter::HandleDamaged);
 	}
 }
 
@@ -302,6 +303,7 @@ void AEnemyCharacter::ApplyVisual()
 	bShowsModel = Asset != nullptr;
 	WalkAnimation = bShowsModel && !Visual.WalkAnimation.IsNull() ? Visual.WalkAnimation.LoadSynchronous() : nullptr;
 	AttackAnimation = bShowsModel && !Visual.AttackAnimation.IsNull() ? Visual.AttackAnimation.LoadSynchronous() : nullptr;
+	HitAnimation = bShowsModel && !Visual.HitAnimation.IsNull() ? Visual.HitAnimation.LoadSynchronous() : nullptr;
 	Model->SetSkeletalMeshAsset(Asset);
 	Model->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Model->SetVisibility(bShowsModel);
@@ -320,7 +322,7 @@ void AEnemyCharacter::ApplyVisual()
 void AEnemyCharacter::UpdateWalkAnimation()
 {
 	USkeletalMeshComponent* Model = GetMesh();
-	if (!Model || !WalkAnimation || bPlayingAttack)
+	if (!Model || !WalkAnimation || bPlayingOneShot)
 	{
 		return;
 	}
@@ -358,21 +360,36 @@ void AEnemyCharacter::UpdateWalkAnimation()
 
 void AEnemyCharacter::PlayAttackAnimation()
 {
+	PlayOneShotAnimation(AttackAnimation);
+}
+
+void AEnemyCharacter::HandleDamaged(float Damage, AActor* DamageInstigator, const FVector& HitDirection)
+{
+	// A killing blow broadcasts here before the health component marks itself dead, so read the
+	// health left: the dead keep still rather than flinch.
+	if (Damage > 0.0f && HealthComponent && HealthComponent->GetCurrentHealth() > 0.0f)
+	{
+		PlayOneShotAnimation(HitAnimation);
+	}
+}
+
+void AEnemyCharacter::PlayOneShotAnimation(UAnimSequence* Animation)
+{
 	USkeletalMeshComponent* Model = GetMesh();
-	if (!bShowsModel || !AttackAnimation || !Model)
+	if (!bShowsModel || !Animation || !Model)
 	{
 		return;
 	}
-	bPlayingAttack = true;
-	Model->PlayAnimation(AttackAnimation, false);
+	bPlayingOneShot = true;
+	Model->PlayAnimation(Animation, false);
 	Model->SetPlayRate(1.0f);
-	GetWorldTimerManager().SetTimer(AttackAnimationTimer, this, &AEnemyCharacter::FinishAttackAnimation,
-		AttackAnimation->GetPlayLength(), false);
+	GetWorldTimerManager().SetTimer(OneShotTimer, this, &AEnemyCharacter::FinishOneShotAnimation,
+		Animation->GetPlayLength(), false);
 }
 
-void AEnemyCharacter::FinishAttackAnimation()
+void AEnemyCharacter::FinishOneShotAnimation()
 {
-	bPlayingAttack = false;
+	bPlayingOneShot = false;
 	USkeletalMeshComponent* Model = GetMesh();
 	if (Model && WalkAnimation)
 	{
