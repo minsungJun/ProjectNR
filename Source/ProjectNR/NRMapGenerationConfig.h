@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "NRGridTypes.h"
 #include "NRMapGenerationConfig.generated.h"
 
 class UNRCorridorTemplateData;
@@ -24,6 +25,19 @@ enum class ENRGridLayoutShape : uint8
 	Mixed
 };
 
+/** Which environments a generated map has. Independent of its shape. */
+UENUM(BlueprintType)
+enum class ENRMapEnvironmentMode : uint8
+{
+	/** Every room and hall cell indoors. */
+	IndoorOnly,
+	/** Every room and hall cell outdoors. */
+	OutdoorOnly,
+	/** Both: the start side is one, the boss side the other, and the main path crosses between them
+	 *  through Transition rooms. */
+	Hybrid
+};
+
 /**
  * Everything the layout generator needs, as a plain struct so it can be built in code (tests)
  * as well as read from a UNRMapGenerationConfig asset.
@@ -42,6 +56,30 @@ struct PROJECTNR_API FNRMapGenSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation")
 	ENRGridLayoutShape Shape = ENRGridLayoutShape::Mixed;
+
+	/**
+	 * Indoor, outdoor or both. Hybrid: the start room's side of the main path is
+	 * HybridStartEnvironment, the boss's side the other, with MinTransitionRooms-MaxTransitionRooms
+	 * Transition rooms in a row between them. Branches take the environment of the room they grow
+	 * from; a hall cell between rooms of different environments is a Transition one.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
+	ENRMapEnvironmentMode EnvironmentMode = ENRMapEnvironmentMode::IndoorOnly;
+
+	/** Hybrid: the start room's environment, Indoor or Outdoor. Ignored with bRandomizeHybridStart. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
+	ENRRoomEnvironment HybridStartEnvironment = ENRRoomEnvironment::Indoor;
+
+	/** Hybrid: draw the start environment from the seed instead. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
+	bool bRandomizeHybridStart = false;
+
+	/** Hybrid: Transition rooms in a row on the main path. Hall cells between them do not count. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))
+	int32 MinTransitionRooms = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))
+	int32 MaxTransitionRooms = 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation", meta = (ClampMin = "2"))
 	int32 MinRooms = 10;
@@ -129,7 +167,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Templates")
 	TArray<TObjectPtr<UNRRoomTemplateData>> RoomTemplates;
 
-	/** The one straight corridor every connection uses, turned for north-south links. */
+	/** Corridors to choose from by the environments of the two rooms they join. Every pair the map
+	 *  can have must be covered (all five in a Hybrid map). Empty: CorridorTemplate for every link. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Templates")
+	TArray<TObjectPtr<UNRCorridorTemplateData>> CorridorTemplates;
+
+	/** Fallback when CorridorTemplates is empty: the one straight corridor every connection uses,
+	 *  turned for north-south links. Its environments are not looked at. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Templates")
 	TObjectPtr<UNRCorridorTemplateData> CorridorTemplate;
 

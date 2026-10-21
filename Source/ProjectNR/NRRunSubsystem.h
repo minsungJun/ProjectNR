@@ -118,6 +118,10 @@ public:
 	void SetGeneratedSeed(int32 InSeed) { GeneratedSeed = InSeed; }
 	int32 GetGeneratedSeed() const { return GeneratedSeed; }
 
+	/** Level options the generated map was asked for besides its seed (e.g. GridEnv=Hybrid), kept
+	 *  by every restart. Empty for the map's own defaults. */
+	void SetGeneratedMapOptions(const FString& InOptions) { GeneratedMapOptions = InOptions; }
+
 	/** Whether the run currently allows loadout changes (generated maps only). */
 	bool IsSafePhase() const { return bSafePhase; }
 
@@ -149,4 +153,5 @@ private:
 	bool bManagesSafePhase = false;
 	bool bSafePhase = false;
 	int32 GeneratedSeed = 0;
+	FString GeneratedMapOptions;
 };

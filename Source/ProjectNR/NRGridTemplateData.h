@@ -34,6 +34,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template")
 	TArray<ENRGridRoomType> RoomTypes;
 
+	/** Where this level stands. One template, one environment: to use the same level as another
+	 *  environment too, make a second template asset for it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template")
+	ENRRoomEnvironment Environment = ENRRoomEnvironment::Indoor;
+
 	/** Cells the room covers along its own X and Y, before turning. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template", meta = (ClampMin = "1"))
 	FIntPoint Footprint = FIntPoint(1, 1);
@@ -61,7 +66,11 @@ public:
 	float Size = 3600.0f;
 };
 
-/** A straight corridor level: runs along its local X with ends NRPort.A at -Length/2 and NRPort.B at +Length/2. */
+/**
+ * A straight corridor level: runs along its local X with ends NRPort.A at -Length/2 and NRPort.B at
+ * +Length/2. It joins a room of environment EndpointA to one of EndpointB, either way round; the
+ * generator turns it so its A end meets the EndpointA room. Indoor to Outdoor is never allowed.
+ */
 UCLASS(BlueprintType)
 class PROJECTNR_API UNRCorridorTemplateData : public UDataAsset
 {
@@ -74,4 +83,16 @@ public:
 	/** End to end, in cm. Sets the gap between rooms. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Corridor Template", meta = (ClampMin = "0.0"))
 	float Length = 800.0f;
+
+	/** Environment of the room at the NRPort.A end. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Corridor Template")
+	ENRRoomEnvironment EndpointA = ENRRoomEnvironment::Indoor;
+
+	/** Environment of the room at the NRPort.B end. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Corridor Template")
+	ENRRoomEnvironment EndpointB = ENRRoomEnvironment::Indoor;
+
+	/** Relative chance against the other corridors that join the same two environments. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Corridor Template", meta = (ClampMin = "0.0"))
+	float Weight = 1.0f;
 };

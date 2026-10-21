@@ -33,6 +33,20 @@ enum class ENRGridRoomType : uint8
 	Hall
 };
 
+/**
+ * Whether a room, hall cell or corridor stands indoors, outdoors, or between the two. Separate from
+ * the room type: a Combat room may be any of them. Indoor and Outdoor never meet directly; a
+ * Transition room, hall or corridor always stands between them.
+ */
+UENUM(BlueprintType)
+enum class ENRRoomEnvironment : uint8
+{
+	Indoor,
+	Outdoor,
+	/** Mixed indoor and outdoor ("혼합" in the design docs). Not ENRGridLayoutShape::Mixed. */
+	Transition
+};
+
 /** A doorway place on a room's outline: one side of one of its cells. */
 USTRUCT(BlueprintType)
 struct PROJECTNR_API FNRRoomPort
@@ -69,6 +83,9 @@ struct PROJECTNR_API FNRGeneratedRoom
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
 	ENRGridRoomType RoomType = ENRGridRoomType::Combat;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
+	ENRRoomEnvironment Environment = ENRRoomEnvironment::Indoor;
 
 	/** Quarter turns of yaw applied to the template, 0..3 (0, 90, 180, 270 degrees). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid", meta = (ClampMin = "0", ClampMax = "3"))
@@ -116,6 +133,11 @@ struct PROJECTNR_API FNRGeneratedConnection
 	/** Cell of RoomB it arrives at, next to CellA. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid")
 	FIntPoint CellB = FIntPoint::ZeroValue;
+
+	/** Index into the config's corridor templates, chosen for the environments of its two rooms.
+	 *  INDEX_NONE when the config has none, which uses its single fallback corridor. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Grid")
+	int32 TemplateIndex = INDEX_NONE;
 };
 
 /** A whole map: rooms, the corridors between them, and which rooms start and end the run. */
@@ -243,6 +265,25 @@ namespace NRGrid
 			}
 		}
 		return World;
+	}
+
+	/** Whether two environments may be joined by a corridor: anything but Indoor to Outdoor. */
+	inline bool EnvironmentsMeet(ENRRoomEnvironment A, ENRRoomEnvironment B)
+	{
+		return !((A == ENRRoomEnvironment::Indoor && B == ENRRoomEnvironment::Outdoor)
+			|| (A == ENRRoomEnvironment::Outdoor && B == ENRRoomEnvironment::Indoor));
+	}
+
+	/** One letter for logs and the text grid: I, O or T. */
+	inline TCHAR EnvironmentLetter(ENRRoomEnvironment Environment)
+	{
+		switch (Environment)
+		{
+		case ENRRoomEnvironment::Outdoor: return TEXT('O');
+		case ENRRoomEnvironment::Transition: return TEXT('T');
+		case ENRRoomEnvironment::Indoor:
+		default: return TEXT('I');
+		}
 	}
 
 	/** Suffix used in module actor tags: NRPort.N, NRBlock.E and so on. */

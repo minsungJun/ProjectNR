@@ -12,6 +12,8 @@ class ANRMapGenerator;
 class ANRRoom;
 class ULevelStreamingDynamic;
 class UWorld;
+class UNRCorridorTemplateData;
+struct FNRCorridorTemplateDesc;
 struct FNRRoomTemplateDesc;
 
 /** Where the generator is in building a map. Separate from the run's own won/lost state. */
@@ -76,6 +78,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNRMapFailed, ANRMapGenerator*, G
  * Module spec: rooms are RoomSize square with the floor's top at Z = 0 and the origin at the
  * floor's centre; doorways are centred on each side. Corridors run along their local X with
  * ends at +-CorridorLength/2. Cells are RoomSize + CorridorLength apart.
+ *
+ * Environments (docs/CLAUDE_GRID_ENVIRONMENT_PLAN.md): every room and hall cell is Indoor, Outdoor
+ * or Transition by the settings' EnvironmentMode, and loads a template of its environment. With
+ * the Config's CorridorTemplates, each connection loads the corridor chosen for its two rooms'
+ * environments, turned so its NRPort.A end meets the room of its EndpointA environment.
  */
 UCLASS()
 class PROJECTNR_API ANRMapGenerator : public AActor
@@ -92,6 +99,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Map Generation")
 	bool StartMap(int32 InSeed = 0);
+
+	/**
+	 * StartMap with the connection shape and the environment mode chosen here rather than by the
+	 * Config: the two choices a run start screen offers. A restart of the run keeps them.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Map Generation")
+	bool StartMapWithOptions(int32 InSeed, ENRGridLayoutShape InShape, ENRMapEnvironmentMode InEnvironmentMode);
+
+	/** StartMap with only the environment mode chosen here; the shape stays the Config's. */
+	UFUNCTION(BlueprintCallable, Category = "Map Generation")
+	bool StartMapWithEnvironment(int32 InSeed, ENRMapEnvironmentMode InEnvironmentMode);
+
+	/** StartMap with the shape and environment mode replaced where set, the Config's where not.
+	 *  StartMap uses neither. */
+	bool StartMapWithChoices(int32 InSeed, TOptional<ENRGridLayoutShape> InShape, TOptional<ENRMapEnvironmentMode> InEnvironmentMode);
 
 	/** Unloads and removes every module this generator loaded. */
 	UFUNCTION(BlueprintCallable, Category = "Map Generation")
@@ -115,6 +137,10 @@ public:
 	/** Template descriptions of the Config's rooms, index for index. Empty without a Config. */
 	TArray<FNRRoomTemplateDesc> DescribeTemplates() const;
 
+	/** The Config's corridor templates, index for index (a missing one has weight 0). Empty
+	 *  without any: every link then uses the single fallback corridor. */
+	TArray<FNRCorridorTemplateDesc> DescribeCorridors() const;
+
 	/** Logs every module, the doorway and floor checks, navigation and the placement signature. */
 	void LogStatus() const;
 
@@ -127,9 +153,11 @@ public:
 
 	/**
 	 * Generates a layout only, for debugging (nothing is loaded). Uses Config and its templates,
-	 * or InlineSettings and one-cell rooms without one; ShapeOverride replaces the shape when set.
+	 * or InlineSettings and one-cell rooms without one; the shape and environment mode chosen with
+	 * StartMapWithOptions apply, and ShapeOverride / EnvironmentOverride replace them when set.
 	 */
-	bool GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride = {});
+	bool GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride = {},
+		TOptional<ENRMapEnvironmentMode> EnvironmentOverride = {});
 
 	/** Debug view of a layout: cells, corridors (main path thicker), room number and type. */
 	void DrawLayout(const FNRGeneratedLayout& Layout, float Duration) const;
@@ -138,6 +166,9 @@ public:
 
 	/** Settings in use: the Config asset's, or InlineSettings. */
 	const FNRMapGenSettings& GetSettings() const;
+
+	/** GetSettings with the shape and environment mode chosen for this map, if any. */
+	FNRMapGenSettings GetEffectiveSettings() const;
 
 	/** Debug: request modules in a shuffled order on the next StartMap. */
 	void SetShuffleLoadOrder(bool bShuffle) { bShuffleLoadOrder = bShuffle; }
@@ -262,7 +293,9 @@ private:
 	ULevelStreamingDynamic* LoadModule(const TSoftObjectPtr<UWorld>& Level, const FTransform& Transform, const FString& Name);
 
 	TSoftObjectPtr<UWorld> GetRoomLevel(const FNRGeneratedRoom& Room) const;
-	TSoftObjectPtr<UWorld> GetCorridorLevel() const;
+	/** The corridor template a connection chose, or null for the fallback corridor. */
+	const UNRCorridorTemplateData* GetCorridorTemplate(const FNRGeneratedConnection& Connection) const;
+	TSoftObjectPtr<UWorld> GetCorridorLevel(const FNRGeneratedConnection& Connection) const;
 	float GetCorridorLength() const;
 
 	/** Actors of a loaded module with the given tag. */
@@ -307,4 +340,9 @@ private:
 	bool bShuffleLoadOrder = false;
 	int32 DebugMissingRoomId = INDEX_NONE;
 	int32 DebugEmptyRoomId = INDEX_NONE;
+
+	/** Shape and environment mode chosen for this map instead of the Config's (StartMapWithChoices,
+	 *  the GridShape / GridEnv level options, NR.Grid.Start). */
+	TOptional<ENRGridLayoutShape> ShapeChoice;
+	TOptional<ENRMapEnvironmentMode> EnvironmentChoice;
 };

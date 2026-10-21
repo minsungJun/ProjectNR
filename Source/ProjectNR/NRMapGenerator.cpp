@@ -152,15 +152,29 @@ void ANRMapGenerator::BeginPlay()
 	Super::BeginPlay();
 	if (bStartOnBeginPlay)
 	{
-		// A same-seed restart passes the seed as a level option.
+		// A same-seed restart passes the seed as a level option; a restart of a map started with
+		// a chosen shape or environment mode passes those too.
 		int32 UseSeed = Seed;
 		const AGameModeBase* GameMode = GetWorld()->GetAuthGameMode();
-		const FString Option = GameMode ? UGameplayStatics::ParseOption(GameMode->OptionsString, TEXT("GridSeed")) : FString();
-		if (!Option.IsEmpty())
+		const FString Options = GameMode ? GameMode->OptionsString : FString();
+		const FString SeedOption = UGameplayStatics::ParseOption(Options, TEXT("GridSeed"));
+		if (!SeedOption.IsEmpty())
 		{
-			UseSeed = FCString::Atoi(*Option);
+			UseSeed = FCString::Atoi(*SeedOption);
 		}
-		StartMap(UseSeed);
+		TOptional<ENRGridLayoutShape> ShapeOption;
+		TOptional<ENRMapEnvironmentMode> EnvironmentOption;
+		const int64 ShapeValue = StaticEnum<ENRGridLayoutShape>()->GetValueByNameString(UGameplayStatics::ParseOption(Options, TEXT("GridShape")));
+		if (ShapeValue != INDEX_NONE)
+		{
+			ShapeOption = static_cast<ENRGridLayoutShape>(ShapeValue);
+		}
+		const int64 EnvironmentValue = StaticEnum<ENRMapEnvironmentMode>()->GetValueByNameString(UGameplayStatics::ParseOption(Options, TEXT("GridEnv")));
+		if (EnvironmentValue != INDEX_NONE)
+		{
+			EnvironmentOption = static_cast<ENRMapEnvironmentMode>(EnvironmentValue);
+		}
+		StartMapWithChoices(UseSeed, ShapeOption, EnvironmentOption);
 	}
 }
 
@@ -185,6 +199,20 @@ const FNRMapGenSettings& ANRMapGenerator::GetSettings() const
 	return Config ? Config->Settings : InlineSettings;
 }
 
+FNRMapGenSettings ANRMapGenerator::GetEffectiveSettings() const
+{
+	FNRMapGenSettings Settings = GetSettings();
+	if (ShapeChoice.IsSet())
+	{
+		Settings.Shape = ShapeChoice.GetValue();
+	}
+	if (EnvironmentChoice.IsSet())
+	{
+		Settings.EnvironmentMode = EnvironmentChoice.GetValue();
+	}
+	return Settings;
+}
+
 FVector ANRMapGenerator::GetCellCenter(const FIntPoint& Cell) const
 {
 	const float Pitch = RoomSize + GetCorridorLength();
@@ -206,8 +234,30 @@ FTransform ANRMapGenerator::GetCorridorTransform(const FNRGeneratedConnection& C
 {
 	// Halfway between the two cells, running along the link: the corridor template runs along
 	// its local X, so a north-south link is turned a quarter.
-	const bool bAlongY = Connection.CellA.X == Connection.CellB.X;
-	return FTransform(FRotator(0.0f, bAlongY ? 90.0f : 0.0f, 0.0f), (GetCellCenter(Connection.CellA) + GetCellCenter(Connection.CellB)) * 0.5f);
+	const FVector Middle = (GetCellCenter(Connection.CellA) + GetCellCenter(Connection.CellB)) * 0.5f;
+	const UNRCorridorTemplateData* Template = GetCorridorTemplate(Connection);
+	if (!Template)
+	{
+		// The fallback corridor is the same either way round.
+		const bool bAlongY = Connection.CellA.X == Connection.CellB.X;
+		return FTransform(FRotator(0.0f, bAlongY ? 90.0f : 0.0f, 0.0f), Middle);
+	}
+
+	// A chosen corridor runs from its A end (NRPort.A, local -X) at the room of its EndpointA
+	// environment to its B end at the other room.
+	const FNRGeneratedRoom* RoomA = ActiveLayout.FindRoom(Connection.RoomA);
+	const bool bFromA = !RoomA || RoomA->Environment == Template->EndpointA;
+	ENRGridDirection Direction = ENRGridDirection::East;
+	NRGrid::DirectionBetween(bFromA ? Connection.CellA : Connection.CellB, bFromA ? Connection.CellB : Connection.CellA, Direction);
+	float Yaw = 0.0f;
+	switch (Direction)
+	{
+	case ENRGridDirection::North: Yaw = 90.0f; break;
+	case ENRGridDirection::West: Yaw = 180.0f; break;
+	case ENRGridDirection::South: Yaw = 270.0f; break;
+	default: break;
+	}
+	return FTransform(FRotator(0.0f, Yaw, 0.0f), Middle);
 }
 
 TArray<FNRRoomTemplateDesc> ANRMapGenerator::DescribeTemplates() const
@@ -230,6 +280,7 @@ TArray<FNRRoomTemplateDesc> ANRMapGenerator::DescribeTemplates() const
 			: FNRRoomTemplateDesc::OutlinePorts(Template->Footprint, static_cast<uint8>(Template->PortMask & 0b1111));
 		Desc.RotationMask = static_cast<uint8>(Template->AllowedRotations & 0b1111);
 		Desc.Weight = Template->Weight;
+		Desc.Environment = Template->Environment;
 		Desc.TypeMask = 0;
 		for (ENRGridRoomType Type : Template->RoomTypes)
 		{
@@ -252,27 +303,78 @@ TSoftObjectPtr<UWorld> ANRMapGenerator::GetRoomLevel(const FNRGeneratedRoom& Roo
 	return RoomLevel;
 }
 
-TSoftObjectPtr<UWorld> ANRMapGenerator::GetCorridorLevel() const
+TArray<FNRCorridorTemplateDesc> ANRMapGenerator::DescribeCorridors() const
 {
+	TArray<FNRCorridorTemplateDesc> Descs;
+	if (!Config)
+	{
+		return Descs;
+	}
+	for (const UNRCorridorTemplateData* Template : Config->CorridorTemplates)
+	{
+		FNRCorridorTemplateDesc& Desc = Descs.AddDefaulted_GetRef();
+		if (!Template)
+		{
+			Desc.Weight = 0.0f;
+			continue;
+		}
+		Desc.EndpointA = Template->EndpointA;
+		Desc.EndpointB = Template->EndpointB;
+		Desc.Weight = Template->Weight;
+	}
+	return Descs;
+}
+
+const UNRCorridorTemplateData* ANRMapGenerator::GetCorridorTemplate(const FNRGeneratedConnection& Connection) const
+{
+	if (Config && Config->CorridorTemplates.IsValidIndex(Connection.TemplateIndex))
+	{
+		return Config->CorridorTemplates[Connection.TemplateIndex];
+	}
+	return nullptr;
+}
+
+TSoftObjectPtr<UWorld> ANRMapGenerator::GetCorridorLevel(const FNRGeneratedConnection& Connection) const
+{
+	if (const UNRCorridorTemplateData* Template = GetCorridorTemplate(Connection))
+	{
+		return Template->Level;
+	}
 	return Config && Config->CorridorTemplate ? Config->CorridorTemplate->Level : CorridorLevel;
 }
 
 float ANRMapGenerator::GetCorridorLength() const
 {
+	// Every corridor template is one length (StartMap checks): the grid has one pitch.
+	if (Config)
+	{
+		for (const UNRCorridorTemplateData* Template : Config->CorridorTemplates)
+		{
+			if (Template)
+			{
+				return Template->Length;
+			}
+		}
+	}
 	return Config && Config->CorridorTemplate ? Config->CorridorTemplate->Length : CorridorLength;
 }
 
-bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride)
+bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride,
+	TOptional<ENRMapEnvironmentMode> EnvironmentOverride)
 {
-	FNRMapGenSettings Settings = GetSettings();
+	FNRMapGenSettings Settings = GetEffectiveSettings();
 	if (ShapeOverride.IsSet())
 	{
 		Settings.Shape = ShapeOverride.GetValue();
 	}
+	if (EnvironmentOverride.IsSet())
+	{
+		Settings.EnvironmentMode = EnvironmentOverride.GetValue();
+	}
 
 	GeneratedLayout = FNRGeneratedLayout();
 	FNRGeneratedLayout Layout;
-	if (!FNRGridLayoutGenerator::Generate(Settings, DescribeTemplates(), InSeed, Layout, OutError))
+	if (!FNRGridLayoutGenerator::Generate(Settings, DescribeTemplates(), DescribeCorridors(), InSeed, Layout, OutError))
 	{
 		UE_LOG(LogNRMapGen, Error, TEXT("Layout generation failed: %s"), *OutError);
 		return false;
@@ -281,15 +383,26 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 
 	const UEnum* ShapeEnum = StaticEnum<ENRGridLayoutShape>();
 	const int32 Halls = FNRGridLayoutGenerator::CountHalls(GeneratedLayout);
-	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, attempt %d, v%d): %d rooms, %d hall cell(s), %d corridors, %d loop(s), %d branch room(s)"),
-		InSeed, *ShapeEnum->GetNameStringByValue(static_cast<int64>(Settings.Shape)), GeneratedLayout.Attempt, GeneratedLayout.GeneratorVersion,
-		GeneratedLayout.Rooms.Num() - Halls, Halls, GeneratedLayout.Connections.Num(),
-		FNRGridLayoutGenerator::CountLoops(GeneratedLayout), FNRGridLayoutGenerator::CountBranchRooms(GeneratedLayout));
-	TArray<FString> Lines;
-	FNRGridLayoutGenerator::ToAscii(Settings, GeneratedLayout).ParseIntoArrayLines(Lines, false);
-	for (const FString& Line : Lines)
+	int32 ByEnvironment[3] = { 0, 0, 0 };
+	for (const FNRGeneratedRoom& Room : GeneratedLayout.Rooms)
 	{
-		UE_LOG(LogNRMapGen, Log, TEXT("    %s"), *Line);
+		++ByEnvironment[static_cast<int32>(Room.Environment)];
+	}
+	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, %s, attempt %d, v%d): %d rooms, %d hall cell(s), %d corridors, %d loop(s), %d branch room(s); Indoor %d, Outdoor %d, Transition %d"),
+		InSeed, *ShapeEnum->GetNameStringByValue(static_cast<int64>(Settings.Shape)),
+		*StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(Settings.EnvironmentMode)),
+		GeneratedLayout.Attempt, GeneratedLayout.GeneratorVersion,
+		GeneratedLayout.Rooms.Num() - Halls, Halls, GeneratedLayout.Connections.Num(),
+		FNRGridLayoutGenerator::CountLoops(GeneratedLayout), FNRGridLayoutGenerator::CountBranchRooms(GeneratedLayout),
+		ByEnvironment[0], ByEnvironment[1], ByEnvironment[2]);
+	// Room types on the left, environments (I, O, T) on the right.
+	TArray<FString> Lines;
+	TArray<FString> EnvironmentLines;
+	FNRGridLayoutGenerator::ToAscii(Settings, GeneratedLayout).ParseIntoArrayLines(Lines, false);
+	FNRGridLayoutGenerator::ToAscii(Settings, GeneratedLayout, true).ParseIntoArrayLines(EnvironmentLines, false);
+	for (int32 Index = 0; Index < Lines.Num(); ++Index)
+	{
+		UE_LOG(LogNRMapGen, Log, TEXT("    %s    %s"), *Lines[Index], EnvironmentLines.IsValidIndex(Index) ? *EnvironmentLines[Index] : TEXT(""));
 	}
 	return true;
 }
@@ -298,7 +411,24 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 
 bool ANRMapGenerator::StartMap(int32 InSeed)
 {
+	return StartMapWithChoices(InSeed, {}, {});
+}
+
+bool ANRMapGenerator::StartMapWithOptions(int32 InSeed, ENRGridLayoutShape InShape, ENRMapEnvironmentMode InEnvironmentMode)
+{
+	return StartMapWithChoices(InSeed, InShape, InEnvironmentMode);
+}
+
+bool ANRMapGenerator::StartMapWithEnvironment(int32 InSeed, ENRMapEnvironmentMode InEnvironmentMode)
+{
+	return StartMapWithChoices(InSeed, {}, InEnvironmentMode);
+}
+
+bool ANRMapGenerator::StartMapWithChoices(int32 InSeed, TOptional<ENRGridLayoutShape> InShape, TOptional<ENRMapEnvironmentMode> InEnvironmentMode)
+{
 	UnloadLayout();
+	ShapeChoice = InShape;
+	EnvironmentChoice = InEnvironmentMode;
 	State = ENRMapGenState::Generating;
 	LastError.Reset();
 	HoldPlayer(true);
@@ -324,6 +454,17 @@ bool ANRMapGenerator::StartMap(int32 InSeed)
 				ActiveLayout = FNRGeneratedLayout();
 				ActiveLayout.Seed = UseSeed;
 				Fail(FString::Printf(TEXT("room template %s has %.0f cm cells, the map's are %.0f cm"), *GetNameSafe(Template), Template->Size, RoomSize));
+				return false;
+			}
+		}
+		// One corridor length for the whole grid, whichever corridor a link gets.
+		for (const UNRCorridorTemplateData* Template : Config->CorridorTemplates)
+		{
+			if (Template && !FMath::IsNearlyEqual(Template->Length, GetCorridorLength()))
+			{
+				ActiveLayout = FNRGeneratedLayout();
+				ActiveLayout.Seed = UseSeed;
+				Fail(FString::Printf(TEXT("corridor template %s is %.0f cm long, the others %.0f cm"), *GetNameSafe(Template), Template->Length, GetCorridorLength()));
 				return false;
 			}
 		}
@@ -375,12 +516,6 @@ bool ANRMapGenerator::LoadActiveLayout(FString& OutError)
 		OutError = TEXT("no world");
 		return false;
 	}
-	if (GetCorridorLevel().IsNull())
-	{
-		OutError = TEXT("no corridor level");
-		return false;
-	}
-
 	// Every request decided up front; the order they are sent in must not matter.
 	struct FRequest
 	{
@@ -412,7 +547,13 @@ bool ANRMapGenerator::LoadActiveLayout(FString& OutError)
 			OutError = FString::Printf(TEXT("connection %d does not join neighbouring cells of its two rooms"), Index);
 			return false;
 		}
-		Requests.Add({ true, Index, GetCorridorLevel(), GetCorridorTransform(Connection) });
+		const TSoftObjectPtr<UWorld> Level = GetCorridorLevel(Connection);
+		if (Level.IsNull())
+		{
+			OutError = FString::Printf(TEXT("connection %d has no corridor level"), Index);
+			return false;
+		}
+		Requests.Add({ true, Index, Level, GetCorridorTransform(Connection) });
 	}
 
 	// Every level must exist before anything is requested: a missing one would otherwise only
@@ -950,6 +1091,16 @@ void ANRMapGenerator::BecomeReady()
 	{
 		Run->ResetRun();
 		Run->SetGeneratedSeed(ActiveLayout.Seed);
+		TArray<FString> Choices;
+		if (ShapeChoice.IsSet())
+		{
+			Choices.Add(TEXT("GridShape=") + StaticEnum<ENRGridLayoutShape>()->GetNameStringByValue(static_cast<int64>(ShapeChoice.GetValue())));
+		}
+		if (EnvironmentChoice.IsSet())
+		{
+			Choices.Add(TEXT("GridEnv=") + StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(EnvironmentChoice.GetValue())));
+		}
+		Run->SetGeneratedMapOptions(FString::Join(Choices, TEXT("?")));
 		for (const TWeakObjectPtr<ANRRoom>& Room : GeneratedRooms)
 		{
 			Run->RegisterRoom(Room.Get());
@@ -1037,15 +1188,17 @@ FString ANRMapGenerator::BuildSignature() const
 		}
 		Joined.Sort();
 		const FVector Location = ModuleIndex != INDEX_NONE ? Modules[ModuleIndex].Transform.GetLocation() : FVector::ZeroVector;
-		Parts.Add(FString::Printf(TEXT("R%d t%d r%d %dx%d (%.0f,%.0f) open %s %s"), Room.RoomId, Room.TemplateIndex, Room.RotationSteps,
+		Parts.Add(FString::Printf(TEXT("R%d %c t%d r%d %dx%d (%.0f,%.0f) open %s %s"), Room.RoomId, NRGrid::EnvironmentLetter(Room.Environment),
+			Room.TemplateIndex, Room.RotationSteps,
 			Room.Footprint.X, Room.Footprint.Y, Location.X, Location.Y, *FString::Join(Joined, TEXT(",")), *FString::Join(Ports, TEXT(""))));
 	}
 	for (int32 Index = 0; Index < ActiveLayout.Connections.Num(); ++Index)
 	{
 		const int32 ModuleIndex = FindCorridorModule(Index);
 		const FTransform Transform = ModuleIndex != INDEX_NONE ? Modules[ModuleIndex].Transform : FTransform::Identity;
-		Parts.Add(FString::Printf(TEXT("C%d %d-%d (%.0f,%.0f) yaw %.0f"), Index, ActiveLayout.Connections[Index].RoomA,
-			ActiveLayout.Connections[Index].RoomB, Transform.GetLocation().X, Transform.GetLocation().Y, Transform.Rotator().Yaw));
+		Parts.Add(FString::Printf(TEXT("C%d %d-%d c%d (%.0f,%.0f) yaw %.0f"), Index, ActiveLayout.Connections[Index].RoomA,
+			ActiveLayout.Connections[Index].RoomB, ActiveLayout.Connections[Index].TemplateIndex, Transform.GetLocation().X,
+			Transform.GetLocation().Y, Transform.Rotator().Yaw));
 	}
 	return FString::Join(Parts, TEXT("\n"));
 }
@@ -1093,6 +1246,31 @@ void ANRMapGenerator::LogStatus() const
 		}
 	}
 	UE_LOG(LogNRMapGen, Log, TEXT("  module-tagged actors in the world: %d"), WorldTagged);
+
+	// What stands where: every room's type, environment and template, every corridor's two
+	// environments and the corridor template chosen for them.
+	const UEnum* TypeEnum = StaticEnum<ENRGridRoomType>();
+	for (const FNRGeneratedRoom& Room : ActiveLayout.Rooms)
+	{
+		const UNRRoomTemplateData* Template = Config && Config->RoomTemplates.IsValidIndex(Room.TemplateIndex) ? Config->RoomTemplates[Room.TemplateIndex].Get() : nullptr;
+		UE_LOG(LogNRMapGen, Log, TEXT("  room %d: %s, %s, template %s (t%d), turn %d, cell %d,%d %dx%d%s"), Room.RoomId,
+			*TypeEnum->GetNameStringByValue(static_cast<int64>(Room.RoomType)), *FNRGridLayoutGenerator::EnvironmentName(Room.Environment),
+			Template ? *Template->GetName() : *RoomLevel.GetAssetName(), Room.TemplateIndex, Room.RotationSteps, Room.Cell.X, Room.Cell.Y,
+			Room.Footprint.X, Room.Footprint.Y, Template && Template->Environment != Room.Environment ? TEXT(" - TEMPLATE ENVIRONMENT DIFFERS") : TEXT(""));
+	}
+	for (int32 Index = 0; Index < ActiveLayout.Connections.Num(); ++Index)
+	{
+		const FNRGeneratedConnection& Connection = ActiveLayout.Connections[Index];
+		const FNRGeneratedRoom* A = ActiveLayout.FindRoom(Connection.RoomA);
+		const FNRGeneratedRoom* B = ActiveLayout.FindRoom(Connection.RoomB);
+		const UNRCorridorTemplateData* Template = GetCorridorTemplate(Connection);
+		UE_LOG(LogNRMapGen, Log, TEXT("  corridor %d: rooms %d-%d, %s-%s, %s (c%d)%s"), Index, Connection.RoomA, Connection.RoomB,
+			A ? *FNRGridLayoutGenerator::EnvironmentName(A->Environment) : TEXT("?"), B ? *FNRGridLayoutGenerator::EnvironmentName(B->Environment) : TEXT("?"),
+			Template ? *FString::Printf(TEXT("template %s joins %s-%s"), *Template->GetName(), *FNRGridLayoutGenerator::EnvironmentName(Template->EndpointA),
+				*FNRGridLayoutGenerator::EnvironmentName(Template->EndpointB)) : *FString::Printf(TEXT("fallback %s"), *GetCorridorLevel(Connection).GetAssetName()),
+			Connection.TemplateIndex,
+			A && B && !NRGrid::EnvironmentsMeet(A->Environment, B->Environment) ? TEXT(" - INDOOR MEETS OUTDOOR") : TEXT(""));
+	}
 
 	if (State != ENRMapGenState::Ready)
 	{
@@ -1261,7 +1439,7 @@ void ANRMapGenerator::DrawLayout(const FNRGeneratedLayout& Layout, float Duratio
 		const FVector Extent = (GetCellCenter(Room.Cell + Room.Footprint - FIntPoint(1, 1)) - GetCellCenter(Room.Cell)) * 0.5f + FVector(Half, Half, 0.0f);
 		DrawDebugBox(World, Center, FVector(Extent.X, Extent.Y, 50.0f), Color, Duration > 0.0f, Duration, 0, 40.0f);
 		DrawDebugString(World, Center + FVector(0.0f, 0.0f, 150.0f),
-			FString::Printf(TEXT("R%d %s%s"), Room.RoomId, TypeName,
+			FString::Printf(TEXT("R%d %s %c%s"), Room.RoomId, TypeName, NRGrid::EnvironmentLetter(Room.Environment),
 				Room.MainPathIndex != INDEX_NONE ? *FString::Printf(TEXT(" #%d"), Room.MainPathIndex) : TEXT("")),
 			nullptr, Color, Duration, true, 2.0f);
 	}
@@ -1295,7 +1473,32 @@ namespace NRGridCommands
 		return *It;
 	}
 
-	/** NR.Grid.Start [seed] [shuffle]: build a map; seed 0 or none for a random one. */
+	/**
+	 * Reads a shape (Linear, Branching, Loop, Mixed) or environment mode (IndoorOnly, OutdoorOnly,
+	 * Hybrid; Indoor and Outdoor for short) from one argument. False when it is neither.
+	 */
+	bool ParseChoice(const FString& Arg, TOptional<ENRGridLayoutShape>& OutShape, TOptional<ENRMapEnvironmentMode>& OutEnvironment)
+	{
+		const int64 Shape = StaticEnum<ENRGridLayoutShape>()->GetValueByNameString(Arg);
+		if (Shape != INDEX_NONE)
+		{
+			OutShape = static_cast<ENRGridLayoutShape>(Shape);
+			return true;
+		}
+		const int64 Environment = StaticEnum<ENRMapEnvironmentMode>()->GetValueByNameString(
+			Arg.Equals(TEXT("Indoor"), ESearchCase::IgnoreCase) ? TEXT("IndoorOnly") : Arg.Equals(TEXT("Outdoor"), ESearchCase::IgnoreCase) ? TEXT("OutdoorOnly") : *Arg);
+		if (Environment != INDEX_NONE)
+		{
+			OutEnvironment = static_cast<ENRMapEnvironmentMode>(Environment);
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * NR.Grid.Start [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [shuffle]:
+	 * build a map; seed 0 or none for a random one; shape and environment mode the Config's unless given.
+	 */
 	void Start(const TArray<FString>& Args, UWorld* World)
 	{
 		ANRMapGenerator* Generator = World ? Find(World) : nullptr;
@@ -1303,9 +1506,29 @@ namespace NRGridCommands
 		{
 			return;
 		}
-		Generator->SetShuffleLoadOrder(Args.Num() > 1 && Args[1].Equals(TEXT("shuffle"), ESearchCase::IgnoreCase));
+		int32 InSeed = 0;
+		bool bShuffle = false;
+		TOptional<ENRGridLayoutShape> Shape;
+		TOptional<ENRMapEnvironmentMode> Environment;
+		for (const FString& Arg : Args)
+		{
+			if (Arg.Equals(TEXT("shuffle"), ESearchCase::IgnoreCase))
+			{
+				bShuffle = true;
+			}
+			else if (!ParseChoice(Arg, Shape, Environment))
+			{
+				if (!Arg.IsNumeric())
+				{
+					UE_LOG(LogNRMapGen, Warning, TEXT("NR.Grid.Start: %s is not a seed, a shape (Linear, Branching, Loop, Mixed) or an environment mode (IndoorOnly, OutdoorOnly, Hybrid)"), *Arg);
+					return;
+				}
+				InSeed = FCString::Atoi(*Arg);
+			}
+		}
+		Generator->SetShuffleLoadOrder(bShuffle);
 		Generator->SetDebugMissingRoom(INDEX_NONE);
-		Generator->StartMap(Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 0);
+		Generator->StartMapWithChoices(InSeed, Shape, Environment);
 	}
 
 	/**
@@ -1401,8 +1624,9 @@ namespace NRGridCommands
 		{
 			return;
 		}
-		const FNRMapGenSettings& Settings = Generator->GetSettings();
+		const FNRMapGenSettings Settings = Generator->GetEffectiveSettings();
 		const TArray<FNRRoomTemplateDesc> Templates = Generator->DescribeTemplates();
+		const TArray<FNRCorridorTemplateDesc> Corridors = Generator->DescribeCorridors();
 		const int32 From = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 1;
 		const int32 Count = Args.Num() > 1 ? FCString::Atoi(*Args[1]) : 500;
 		int32 MostRooms = INDEX_NONE;
@@ -1411,7 +1635,7 @@ namespace NRGridCommands
 		{
 			FNRGeneratedLayout Layout;
 			FString Error;
-			if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Seed, Layout, Error))
+			if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, Seed, Layout, Error))
 			{
 				continue;
 			}
@@ -1472,7 +1696,7 @@ namespace NRGridCommands
 		}
 	}
 
-	/** NR.Grid.Generate [seed] [Linear|Branching|Loop|Mixed]: graph only, drawn for a minute. */
+	/** NR.Grid.Generate [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid]: graph only, drawn for a minute. */
 	void Generate(const TArray<FString>& Args, UWorld* World)
 	{
 		ANRMapGenerator* Generator = World ? Find(World) : nullptr;
@@ -1482,18 +1706,17 @@ namespace NRGridCommands
 		}
 		const int32 InSeed = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : FMath::Rand();
 		TOptional<ENRGridLayoutShape> Shape;
-		if (Args.Num() > 1)
+		TOptional<ENRMapEnvironmentMode> Environment;
+		for (int32 Index = 1; Index < Args.Num(); ++Index)
 		{
-			const int64 Value = StaticEnum<ENRGridLayoutShape>()->GetValueByNameString(Args[1]);
-			if (Value == INDEX_NONE)
+			if (!ParseChoice(Args[Index], Shape, Environment))
 			{
-				UE_LOG(LogNRMapGen, Warning, TEXT("Unknown shape %s: Linear, Branching, Loop or Mixed"), *Args[1]);
+				UE_LOG(LogNRMapGen, Warning, TEXT("Unknown shape or environment mode %s: Linear, Branching, Loop, Mixed, IndoorOnly, OutdoorOnly or Hybrid"), *Args[Index]);
 				return;
 			}
-			Shape = static_cast<ENRGridLayoutShape>(Value);
 		}
 		FString Error;
-		if (Generator->GenerateLayout(InSeed, Error, Shape))
+		if (Generator->GenerateLayout(InSeed, Error, Shape, Environment))
 		{
 			Generator->DrawLayout(Generator->GetGeneratedLayout(), 60.0f);
 		}
@@ -1501,7 +1724,7 @@ namespace NRGridCommands
 }
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridStartCommand(TEXT("NR.Grid.Start"),
-	TEXT("NR.Grid.Start [seed] [shuffle]: generate and load a map (seed 0 or none for random; shuffle requests modules in random order)."),
+	TEXT("NR.Grid.Start [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [shuffle]: generate and load a map (seed 0 or none for random; shape and environment mode the config's unless given; shuffle requests modules in random order)."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Start));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridGoToCommand(TEXT("NR.Grid.GoTo"),
@@ -1537,5 +1760,5 @@ static FAutoConsoleCommandWithWorldAndArgs GNRGridSignatureCommand(TEXT("NR.Grid
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Signature));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridGenerateCommand(TEXT("NR.Grid.Generate"),
-	TEXT("NR.Grid.Generate [seed] [Linear|Branching|Loop|Mixed]: generate a layout graph, log it and draw it for a minute."),
+	TEXT("NR.Grid.Generate [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid]: generate a layout graph, log it and draw it for a minute."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Generate));

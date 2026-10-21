@@ -298,8 +298,18 @@ void UNRRunSubsystem::RestartRun(bool bSameSeed)
 		return;
 	}
 	// Reloading the level resets every room, enemy and the player; a fresh subsystem starts
-	// the new run on its begin play. A generated map reads the seed back from the options.
-	const FString Options = bSameSeed && GeneratedSeed != 0 ? FString::Printf(TEXT("GridSeed=%d"), GeneratedSeed) : FString();
+	// the new run on its begin play. A generated map reads the seed (and its shape and
+	// environment, when they were chosen) back from the options.
+	TArray<FString> Parts;
+	if (bSameSeed && GeneratedSeed != 0)
+	{
+		Parts.Add(FString::Printf(TEXT("GridSeed=%d"), GeneratedSeed));
+	}
+	if (!GeneratedMapOptions.IsEmpty())
+	{
+		Parts.Add(GeneratedMapOptions);
+	}
+	const FString Options = FString::Join(Parts, TEXT("?"));
 	UE_LOG(LogNRRun, Log, TEXT("Restarting run%s"), Options.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *Options));
 	// Full package path without the PIE prefix, so a level name shared by two folders
 	// cannot load the wrong one.

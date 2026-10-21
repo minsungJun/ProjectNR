@@ -2,8 +2,9 @@
 
 // Checks for FNRGridLayoutGenerator: many fixed seeds per shape (valid, reproducible, varied),
 // with one-cell rooms and with rooms of several cells, with hall cells (straight, corner, T and
-// crossing corridors between rooms), settings and templates that cannot be met (refused with a
-// reason), and broken layouts Validate must catch. Runs as the automation
+// crossing corridors between rooms), with Indoor, Outdoor and Transition environments and their
+// corridors, settings and templates that cannot be met (refused with a reason), and broken
+// layouts Validate must catch. Runs as the automation
 // test ProjectNR.Grid.LayoutGenerator and from the console as NR.Grid.Test [seeds].
 
 #include "HAL/IConsoleManager.h"
@@ -116,11 +117,437 @@ namespace NRGridTests
 		}).Num();
 	}
 
+	FString EnvName(ENRRoomEnvironment Environment)
+	{
+		return FNRGridLayoutGenerator::EnvironmentName(Environment);
+	}
+
+	FString ModeName(ENRMapEnvironmentMode Mode)
+	{
+		return StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(Mode));
+	}
+
+	/** The plan's minimum asset set: the multi-cell rooms and the four halls both Indoor and Outdoor,
+	 *  a one-cell Transition combat room and four Transition halls. */
+	TArray<FNRRoomTemplateDesc> EnvironmentTemplates()
+	{
+		const uint8 N = 1 << 0, E = 1 << 1, S = 1 << 2, W = 1 << 3;
+		const uint8 Hall = Bit(ENRGridRoomType::Hall);
+		const TArray<FNRRoomTemplateDesc> Rooms = TemplateSets()[2].Templates;
+		TArray<FNRRoomTemplateDesc> Templates;
+		for (ENRRoomEnvironment Environment : { ENRRoomEnvironment::Indoor, ENRRoomEnvironment::Outdoor })
+		{
+			for (FNRRoomTemplateDesc Template : Rooms)
+			{
+				Template.Environment = Environment;
+				Templates.Add(Template);
+			}
+		}
+		Templates.Add(FNRRoomTemplateDesc::Make(FIntPoint(1, 1), N | E | S | W, Bit(ENRGridRoomType::Combat), 1.0f, ENRRoomEnvironment::Transition));
+		for (ENRRoomEnvironment Environment : { ENRRoomEnvironment::Indoor, ENRRoomEnvironment::Outdoor, ENRRoomEnvironment::Transition })
+		{
+			for (const uint8 Mask : { uint8(N | S), uint8(N | E), uint8(N | E | S), uint8(N | E | S | W) })
+			{
+				Templates.Add(FNRRoomTemplateDesc::Make(FIntPoint(1, 1), Mask, Hall, 1.0f, Environment));
+			}
+		}
+		return Templates;
+	}
+
+	/** One corridor per pair that may meet, and a second, rarer Indoor one. */
+	TArray<FNRCorridorTemplateDesc> EnvironmentCorridors()
+	{
+		using E = ENRRoomEnvironment;
+		return {
+			FNRCorridorTemplateDesc::Make(E::Indoor, E::Indoor),
+			FNRCorridorTemplateDesc::Make(E::Indoor, E::Transition),
+			FNRCorridorTemplateDesc::Make(E::Transition, E::Transition),
+			FNRCorridorTemplateDesc::Make(E::Transition, E::Outdoor),
+			FNRCorridorTemplateDesc::Make(E::Outdoor, E::Outdoor),
+			FNRCorridorTemplateDesc::Make(E::Indoor, E::Indoor, 0.3f),
+		};
+	}
+
+	/**
+	 * Environments: every mode, shape and seed gives a valid layout whose rooms and hall cells keep
+	 * to the mode, never join Indoor straight to Outdoor (main path, branches and loops alike),
+	 * stand in templates of their own environment and are joined by corridors made for their two
+	 * environments - the same way every time. Settings or templates that cannot make such a map are
+	 * refused up front, and Validate catches layouts that break the rules.
+	 */
+	void EnvironmentSuite(int32 SeedCount, TArray<FString>& Failures, TArray<FString>& Summary)
+	{
+		const TArray<FNRRoomTemplateDesc> Templates = EnvironmentTemplates();
+		const TArray<FNRCorridorTemplateDesc> Corridors = EnvironmentCorridors();
+		auto MakeSettings = [](ENRGridLayoutShape Shape, ENRMapEnvironmentMode Mode)
+		{
+			FNRMapGenSettings Settings = SettingsFor(Shape, FIntPoint(8, 8));
+			Settings.EnvironmentMode = Mode;
+			Settings.MinHalls = 3;
+			Settings.MaxHalls = 6;
+			return Settings;
+		};
+
+		struct FVariant
+		{
+			const TCHAR* Label;
+			ENRMapEnvironmentMode Mode;
+			TFunction<void(FNRMapGenSettings&)> Adjust;
+		};
+		const TArray<FVariant> Variants = {
+			{ TEXT("IndoorOnly"), ENRMapEnvironmentMode::IndoorOnly, nullptr },
+			{ TEXT("OutdoorOnly"), ENRMapEnvironmentMode::OutdoorOnly, nullptr },
+			{ TEXT("Hybrid"), ENRMapEnvironmentMode::Hybrid, nullptr },
+			{ TEXT("Hybrid from Outdoor, 1-2 transition rooms"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridStartEnvironment = ENRRoomEnvironment::Outdoor;
+					Settings.MaxTransitionRooms = 2;
+				} },
+			{ TEXT("Hybrid, random start"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings) { Settings.bRandomizeHybridStart = true; } },
+		};
+
+		for (const FVariant& Variant : Variants)
+		{
+			int32 Generated = 0;
+			int32 Tried = 0;
+			int32 Retried = 0;
+			int32 Rooms[3] = { 0, 0, 0 };
+			int32 Starts[3] = { 0, 0, 0 };
+			int32 Pairs[3][3] = {};
+			int32 TransitionRuns[4] = { 0, 0, 0, 0 };
+			int32 CorridorUses[6] = { 0, 0, 0, 0, 0, 0 };
+			for (ENRGridLayoutShape Shape : Shapes)
+			{
+				FNRMapGenSettings Settings = MakeSettings(Shape, Variant.Mode);
+				if (Variant.Adjust)
+				{
+					Variant.Adjust(Settings);
+				}
+				for (int32 Seed = 1; Seed <= SeedCount; ++Seed)
+				{
+					++Tried;
+					const FString Where = FString::Printf(TEXT("%s, %s seed %d"), Variant.Label, *ShapeName(Shape), Seed);
+					FNRGeneratedLayout Layout;
+					FString Error;
+					if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, Seed, Layout, Error))
+					{
+						Failures.Add(FString::Printf(TEXT("%s: %s"), *Where, *Error));
+						continue;
+					}
+					++Generated;
+					Retried += Layout.Attempt > 0 ? 1 : 0;
+					for (const FString& Problem : FNRGridLayoutGenerator::Validate(Settings, Templates, Corridors, Layout))
+					{
+						Failures.Add(FString::Printf(TEXT("%s: %s"), *Where, *Problem));
+					}
+
+					// 9. The same seed, settings and templates give the same environments and corridors.
+					FNRGeneratedLayout Again;
+					if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, Seed, Again, Error) || !FNRGridLayoutGenerator::Identical(Layout, Again))
+					{
+						Failures.Add(FString::Printf(TEXT("%s: not reproducible"), *Where));
+					}
+
+					// 1-3. Environments the mode allows: one only, or all three.
+					bool bHas[3] = { false, false, false };
+					for (const FNRGeneratedRoom& Room : Layout.Rooms)
+					{
+						const int32 Environment = static_cast<int32>(Room.Environment);
+						bHas[Environment] = true;
+						++Rooms[Environment];
+						// 7. The template a room stands in is of its environment.
+						if (!Templates.IsValidIndex(Room.TemplateIndex) || Templates[Room.TemplateIndex].Environment != Room.Environment)
+						{
+							Failures.Add(FString::Printf(TEXT("%s: room %d is %s but stands in template %d"), *Where, Room.RoomId, *EnvName(Room.Environment), Room.TemplateIndex));
+						}
+					}
+					const bool bModeOk = Variant.Mode == ENRMapEnvironmentMode::IndoorOnly ? (bHas[0] && !bHas[1] && !bHas[2])
+						: Variant.Mode == ENRMapEnvironmentMode::OutdoorOnly ? (!bHas[0] && bHas[1] && !bHas[2])
+						: (bHas[0] && bHas[1] && bHas[2]);
+					if (!bModeOk)
+					{
+						Failures.Add(FString::Printf(TEXT("%s: environments I%d O%d T%d do not suit %s"), *Where, bHas[0], bHas[1], bHas[2], *ModeName(Variant.Mode)));
+					}
+
+					// 4, 6, 8. Every corridor - main path, branch or loop - joins environments that may
+					// meet, with a corridor template made for them.
+					for (const FNRGeneratedConnection& Connection : Layout.Connections)
+					{
+						const ENRRoomEnvironment A = Layout.FindRoom(Connection.RoomA)->Environment;
+						const ENRRoomEnvironment B = Layout.FindRoom(Connection.RoomB)->Environment;
+						++Pairs[FMath::Min(static_cast<int32>(A), static_cast<int32>(B))][FMath::Max(static_cast<int32>(A), static_cast<int32>(B))];
+						if (!NRGrid::EnvironmentsMeet(A, B))
+						{
+							Failures.Add(FString::Printf(TEXT("%s: corridor %d-%d joins %s straight to %s"), *Where, Connection.RoomA, Connection.RoomB, *EnvName(A), *EnvName(B)));
+						}
+						if (!Corridors.IsValidIndex(Connection.TemplateIndex) || !Corridors[Connection.TemplateIndex].Joins(A, B))
+						{
+							Failures.Add(FString::Printf(TEXT("%s: corridor %d-%d (%s-%s) got corridor template %d"), *Where, Connection.RoomA, Connection.RoomB,
+								*EnvName(A), *EnvName(B), Connection.TemplateIndex));
+						}
+						else
+						{
+							++CorridorUses[Connection.TemplateIndex];
+						}
+					}
+
+					// 5. Hybrid main path: from the start's side to the other side only through Transition.
+					const FNRGeneratedRoom* Start = Layout.FindRoom(Layout.StartRoomId);
+					const FNRGeneratedRoom* Boss = Layout.FindRoom(Layout.BossRoomId);
+					++Starts[static_cast<int32>(Start->Environment)];
+					if (Variant.Mode == ENRMapEnvironmentMode::Hybrid)
+					{
+						TArray<const FNRGeneratedRoom*> Path;
+						for (const FNRGeneratedRoom& Room : Layout.Rooms)
+						{
+							if (Room.MainPathIndex != INDEX_NONE)
+							{
+								Path.SetNum(FMath::Max(Path.Num(), Room.MainPathIndex + 1));
+								Path[Room.MainPathIndex] = &Room;
+							}
+						}
+						int32 Transitions = 0;
+						bool bThrough = Start->Environment != ENRRoomEnvironment::Transition && Boss->Environment != ENRRoomEnvironment::Transition
+							&& Start->Environment != Boss->Environment;
+						for (int32 Step = 0; Step < Path.Num(); ++Step)
+						{
+							bThrough &= Step == 0 || NRGrid::EnvironmentsMeet(Path[Step - 1]->Environment, Path[Step]->Environment);
+							Transitions += Path[Step]->Environment == ENRRoomEnvironment::Transition && Path[Step]->RoomType != ENRGridRoomType::Hall ? 1 : 0;
+						}
+						++TransitionRuns[FMath::Clamp(Transitions, 0, 3)];
+						if (!bThrough || Transitions < Settings.MinTransitionRooms || Transitions > Settings.MaxTransitionRooms)
+						{
+							Failures.Add(FString::Printf(TEXT("%s: main path from %s to %s with %d transition room(s) does not cross through Transition"),
+								*Where, *EnvName(Start->Environment), *EnvName(Boss->Environment), Transitions));
+						}
+					}
+				}
+			}
+			Summary.Add(FString::Printf(TEXT("environments %s: %d/%d generated, %d needed a retry; rooms and halls I %d, O %d, T %d; starts I %d, O %d; corridors I-I %d, I-T %d, T-T %d, T-O %d, O-O %d, I-O %d; transition rooms on the main path 1:%d 2:%d; corridor templates %d/%d/%d/%d/%d/%d"),
+				Variant.Label, Generated, Tried, Retried, Rooms[0], Rooms[1], Rooms[2], Starts[0], Starts[1],
+				Pairs[0][0], Pairs[0][2], Pairs[2][2], Pairs[1][2], Pairs[1][1], Pairs[0][1], TransitionRuns[1], TransitionRuns[2],
+				CorridorUses[0], CorridorUses[1], CorridorUses[2], CorridorUses[3], CorridorUses[4], CorridorUses[5]));
+			if (Variant.Mode == ENRMapEnvironmentMode::Hybrid && Generated > 0 && Pairs[2][2] == 0)
+			{
+				Failures.Add(FString::Printf(TEXT("environments %s: no two Transition rooms or halls were ever joined"), Variant.Label));
+			}
+			if (Generated > 0 && CorridorUses[0] > 0 && CorridorUses[5] == 0)
+			{
+				Failures.Add(FString::Printf(TEXT("environments %s: the second Indoor corridor was never chosen"), Variant.Label));
+			}
+		}
+
+		// A Hybrid example, types left and environments right.
+		{
+			const FNRMapGenSettings Settings = MakeSettings(ENRGridLayoutShape::Mixed, ENRMapEnvironmentMode::Hybrid);
+			FNRGeneratedLayout Layout;
+			FString Error;
+			if (FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, 1, Layout, Error))
+			{
+				TArray<FString> Types;
+				TArray<FString> Environments;
+				FNRGridLayoutGenerator::ToAscii(Settings, Layout).ParseIntoArrayLines(Types, false);
+				FNRGridLayoutGenerator::ToAscii(Settings, Layout, true).ParseIntoArrayLines(Environments, false);
+				Summary.Add(TEXT("environments, Hybrid Mixed seed 1:"));
+				for (int32 Line = 0; Line < Types.Num(); ++Line)
+				{
+					Summary.Add(FString::Printf(TEXT("    %s    %s"), *Types[Line], *Environments[Line]));
+				}
+			}
+		}
+
+		// The plain sets (no environments given) stay Indoor and keep the fallback corridor.
+		{
+			FNRGeneratedLayout Layout;
+			FString Error;
+			if (!FNRGridLayoutGenerator::Generate(SettingsFor(ENRGridLayoutShape::Mixed, FIntPoint(8, 8)), TemplateSets()[2].Templates, 3, Layout, Error))
+			{
+				Failures.Add(FString::Printf(TEXT("environments, default settings: %s"), *Error));
+			}
+			else if (Layout.Rooms.ContainsByPredicate([](const FNRGeneratedRoom& Room) { return Room.Environment != ENRRoomEnvironment::Indoor; })
+				|| Layout.Connections.ContainsByPredicate([](const FNRGeneratedConnection& Connection) { return Connection.TemplateIndex != INDEX_NONE; }))
+			{
+				Failures.Add(TEXT("environments, default settings: not every room Indoor on the fallback corridor"));
+			}
+		}
+
+		// 10. What cannot make a map is refused before anything is placed, with the reason.
+		{
+			using E = ENRRoomEnvironment;
+			struct FRefusal
+			{
+				const TCHAR* Label;
+				const TCHAR* Expect;
+				TFunction<void(FNRMapGenSettings&, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>&)> Apply;
+			};
+			auto Without = [](TArray<FNRRoomTemplateDesc>& Set, TFunction<bool(const FNRRoomTemplateDesc&)> Drop)
+			{
+				Set.RemoveAll([&Drop](const FNRRoomTemplateDesc& Template) { return Drop(Template); });
+			};
+			const TArray<FRefusal> Refusals = {
+				{ TEXT("Hybrid without Transition rooms"), TEXT("Transition templates stand for no room type"),
+					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.MinHalls = Settings.MaxHalls = 0;
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Transition; });
+					} },
+				{ TEXT("Hybrid without Transition halls"), TEXT("no Transition room template for Hall"),
+					[&Without](FNRMapGenSettings&, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Transition && (T.TypeMask & Bit(ENRGridRoomType::Hall)); });
+					} },
+				{ TEXT("Hybrid without an Outdoor boss"), TEXT("no Outdoor room template for Boss"),
+					[&Without](FNRMapGenSettings&, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Outdoor && (T.TypeMask & Bit(ENRGridRoomType::Boss)); });
+					} },
+				{ TEXT("random Hybrid start without an Outdoor start room"), TEXT("no Outdoor room template for Start"),
+					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.bRandomizeHybridStart = true;
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Outdoor && (T.TypeMask & Bit(ENRGridRoomType::Start)); });
+					} },
+				{ TEXT("OutdoorOnly with Indoor templates only"), TEXT("no Outdoor room template"),
+					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.EnvironmentMode = ENRMapEnvironmentMode::OutdoorOnly;
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment != E::Indoor; });
+					} },
+				{ TEXT("Hybrid without a Transition-Outdoor corridor"), TEXT("no corridor template joins Outdoor and Transition"),
+					[](FNRMapGenSettings&, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>& Set)
+					{
+						Set.RemoveAll([](const FNRCorridorTemplateDesc& C) { return C.Joins(E::Transition, E::Outdoor); });
+					} },
+				{ TEXT("an Indoor-Outdoor corridor"), TEXT("joins Indoor and Outdoor"),
+					[](FNRMapGenSettings&, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>& Set)
+					{
+						Set.Add(FNRCorridorTemplateDesc::Make(E::Indoor, E::Outdoor));
+					} },
+				{ TEXT("Hybrid starting in Transition"), TEXT("not Transition"),
+					[](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.HybridStartEnvironment = E::Transition;
+					} },
+				{ TEXT("Hybrid main path too short for its transition rooms"), TEXT("cannot hold 2 transition room(s)"),
+					[](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.bRequireSafe = false;
+						Settings.bRequireElite = false;
+						Settings.MinMainPathLength = Settings.MaxMainPathLength = 3;
+						Settings.MinTransitionRooms = Settings.MaxTransitionRooms = 2;
+					} },
+				{ TEXT("Transition only for safe rooms, two in a row wanted"), TEXT("Transition templates stand for Safe"),
+					[](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.MinTransitionRooms = Settings.MaxTransitionRooms = 2;
+						for (FNRRoomTemplateDesc& T : Set)
+						{
+							if (T.Environment == E::Transition && (T.TypeMask & Bit(ENRGridRoomType::Combat)))
+							{
+								T.TypeMask = Bit(ENRGridRoomType::Safe);
+							}
+						}
+					} },
+			};
+			for (const FRefusal& Refusal : Refusals)
+			{
+				FNRMapGenSettings Settings = MakeSettings(ENRGridLayoutShape::Mixed, ENRMapEnvironmentMode::Hybrid);
+				TArray<FNRRoomTemplateDesc> Set = Templates;
+				TArray<FNRCorridorTemplateDesc> CorridorSet = Corridors;
+				Refusal.Apply(Settings, Set, CorridorSet);
+				FString Error;
+				FNRGeneratedLayout Layout;
+				if (FNRGridLayoutGenerator::Generate(Settings, Set, CorridorSet, 5, Layout, Error))
+				{
+					Failures.Add(FString::Printf(TEXT("environments: '%s' was accepted"), Refusal.Label));
+				}
+				else if (!Error.Contains(Refusal.Expect))
+				{
+					Failures.Add(FString::Printf(TEXT("environments: '%s' refused for another reason: %s"), Refusal.Label, *Error));
+				}
+				else
+				{
+					Summary.Add(FString::Printf(TEXT("refusal '%s': %s"), Refusal.Label, *Error));
+				}
+			}
+		}
+
+		// Broken layouts Validate must catch.
+		{
+			const FNRMapGenSettings Settings = MakeSettings(ENRGridLayoutShape::Mixed, ENRMapEnvironmentMode::Hybrid);
+			FNRGeneratedLayout Good;
+			FString Error;
+			if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, 3, Good, Error))
+			{
+				Failures.Add(FString::Printf(TEXT("environment breaks: seed 3 did not generate: %s"), *Error));
+				return;
+			}
+			// A corridor between an Indoor room and a Transition one, and its index.
+			const int32 Mixed = Good.Connections.IndexOfByPredicate([&Good](const FNRGeneratedConnection& Connection)
+			{
+				const ENRRoomEnvironment A = Good.FindRoom(Connection.RoomA)->Environment;
+				const ENRRoomEnvironment B = Good.FindRoom(Connection.RoomB)->Environment;
+				return A != B && (A == ENRRoomEnvironment::Indoor || B == ENRRoomEnvironment::Indoor);
+			});
+			if (Mixed == INDEX_NONE)
+			{
+				Failures.Add(TEXT("environment breaks: seed 3 has no Indoor-Transition corridor"));
+				return;
+			}
+			struct FBreak
+			{
+				const TCHAR* Label;
+				const TCHAR* Expect;
+				TFunction<void(FNRGeneratedLayout&)> Apply;
+				ENRMapEnvironmentMode Mode;
+			};
+			const TArray<FBreak> Breaks = {
+				{ TEXT("Transition room turned Outdoor next to an Indoor one"), TEXT("straight to"), [Mixed](FNRGeneratedLayout& Layout)
+					{
+						const FNRGeneratedConnection& Connection = Layout.Connections[Mixed];
+						FNRGeneratedRoom* A = Layout.Rooms.FindByPredicate([&Connection](const FNRGeneratedRoom& Room) { return Room.RoomId == Connection.RoomA; });
+						FNRGeneratedRoom* B = Layout.Rooms.FindByPredicate([&Connection](const FNRGeneratedRoom& Room) { return Room.RoomId == Connection.RoomB; });
+						(A->Environment == ENRRoomEnvironment::Transition ? A : B)->Environment = ENRRoomEnvironment::Outdoor;
+					}, ENRMapEnvironmentMode::Hybrid },
+				{ TEXT("room environment not its template's"), TEXT("but its template"), [](FNRGeneratedLayout& Layout)
+					{
+						Layout.Rooms[0].Environment = ENRRoomEnvironment::Transition;
+					}, ENRMapEnvironmentMode::Hybrid },
+				{ TEXT("corridor template for other environments"), TEXT("uses corridor template"), [Mixed](FNRGeneratedLayout& Layout)
+					{
+						Layout.Connections[Mixed].TemplateIndex = 4;
+					}, ENRMapEnvironmentMode::Hybrid },
+				{ TEXT("Hybrid layout checked as IndoorOnly"), TEXT("which a IndoorOnly map does not have"), [](FNRGeneratedLayout&) {},
+					ENRMapEnvironmentMode::IndoorOnly },
+			};
+			for (const FBreak& Break : Breaks)
+			{
+				FNRGeneratedLayout Broken = Good;
+				Break.Apply(Broken);
+				FNRMapGenSettings Checked = Settings;
+				Checked.EnvironmentMode = Break.Mode;
+				const TArray<FString> Problems = FNRGridLayoutGenerator::Validate(Checked, Templates, Corridors, Broken);
+				const FString* Found = Problems.FindByPredicate([&Break](const FString& Problem) { return Problem.Contains(Break.Expect); });
+				if (!Found)
+				{
+					Failures.Add(FString::Printf(TEXT("environment break '%s' not caught (%s)"), Break.Label,
+						Problems.Num() > 0 ? *FString::Join(Problems, TEXT("; ")) : TEXT("no problem reported")));
+				}
+				else
+				{
+					Summary.Add(FString::Printf(TEXT("caught '%s': %s"), Break.Label, **Found));
+				}
+			}
+		}
+	}
+
 	/** Runs every check; returns the failures, each naming its seed or settings. */
 	TArray<FString> RunSuite(int32 SeedCount, FString& OutSummary)
 	{
 		TArray<FString> Failures;
 		TArray<FString> Summary;
+
+		EnvironmentSuite(SeedCount, Failures, Summary);
 
 		// Start and boss corridors: the start room takes at most MaxStartConnections, the boss
 		// exactly one, whatever the shape and templates.
