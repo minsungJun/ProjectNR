@@ -204,7 +204,24 @@ namespace NRGridTests
 					Settings.MaxTransitionRooms = 2;
 				} },
 			{ TEXT("Hybrid, random start"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings) { Settings.bRandomizeHybridStart = true; } },
+			{ TEXT("Hybrid DistanceFlood"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+				} },
+			{ TEXT("Hybrid DistanceFlood, split 0.3"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+					Settings.HybridSplit = 0.3f;
+				} },
+			{ TEXT("Hybrid DistanceFlood, split 0.7, random start"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+					Settings.HybridSplit = 0.7f;
+					Settings.bRandomizeHybridStart = true;
+				} },
 		};
+		// DistanceFlood: the share of the map on the start's side, by split.
+		TMap<float, float> StartShareBySplit;
 
 		for (const FVariant& Variant : Variants)
 		{
@@ -216,6 +233,10 @@ namespace NRGridTests
 			int32 Pairs[3][3] = {};
 			int32 TransitionRuns[4] = { 0, 0, 0, 0 };
 			int32 CorridorUses[6] = { 0, 0, 0, 0, 0, 0 };
+			int32 TransitionCells[5] = { 0, 0, 0, 0, 0 };
+			double StartShare = 0.0;
+			bool bFlood = false;
+			float Split = 0.5f;
 			for (ENRGridLayoutShape Shape : Shapes)
 			{
 				FNRMapGenSettings Settings = MakeSettings(Shape, Variant.Mode);
@@ -223,6 +244,8 @@ namespace NRGridTests
 				{
 					Variant.Adjust(Settings);
 				}
+				bFlood = Settings.EnvironmentMode == ENRMapEnvironmentMode::Hybrid && Settings.HybridAssignment == ENRHybridAssignment::DistanceFlood;
+				Split = Settings.HybridSplit;
 				for (int32 Seed = 1; Seed <= SeedCount; ++Seed)
 				{
 					++Tried;
@@ -315,19 +338,34 @@ namespace NRGridTests
 							Transitions += Path[Step]->Environment == ENRRoomEnvironment::Transition && Path[Step]->RoomType != ENRGridRoomType::Hall ? 1 : 0;
 						}
 						++TransitionRuns[FMath::Clamp(Transitions, 0, 3)];
-						if (!bThrough || Transitions < Settings.MinTransitionRooms || Transitions > Settings.MaxTransitionRooms)
+						// PathSplit counts Transition rooms in a row on the main path; DistanceFlood every
+						// Transition room and hall cell of the map.
+						const int32 Cells = Layout.Rooms.FilterByPredicate([](const FNRGeneratedRoom& Room) { return Room.Environment == ENRRoomEnvironment::Transition; }).Num();
+						++TransitionCells[FMath::Clamp(Cells, 0, 4)];
+						const bool bCountOk = bFlood
+							? (Cells >= Settings.MinTransitionCells && Cells <= Settings.MaxTransitionCells)
+							: (Transitions >= Settings.MinTransitionRooms && Transitions <= Settings.MaxTransitionRooms);
+						if (!bThrough || !bCountOk)
 						{
-							Failures.Add(FString::Printf(TEXT("%s: main path from %s to %s with %d transition room(s) does not cross through Transition"),
-								*Where, *EnvName(Start->Environment), *EnvName(Boss->Environment), Transitions));
+							Failures.Add(FString::Printf(TEXT("%s: main path from %s to %s with %d transition room(s), %d in the map, does not cross through Transition as asked"),
+								*Where, *EnvName(Start->Environment), *EnvName(Boss->Environment), Transitions, Cells));
 						}
+						const int32 StartSide = Layout.Rooms.FilterByPredicate([Start](const FNRGeneratedRoom& Room) { return Room.Environment == Start->Environment; }).Num();
+						StartShare += static_cast<double>(StartSide) / FMath::Max(Layout.Rooms.Num() - Cells, 1);
 					}
 				}
 			}
-			Summary.Add(FString::Printf(TEXT("environments %s: %d/%d generated, %d needed a retry; rooms and halls I %d, O %d, T %d; starts I %d, O %d; corridors I-I %d, I-T %d, T-T %d, T-O %d, O-O %d, I-O %d; transition rooms on the main path 1:%d 2:%d; corridor templates %d/%d/%d/%d/%d/%d"),
+			Summary.Add(FString::Printf(TEXT("environments %s: %d/%d generated, %d needed a retry; rooms and halls I %d, O %d, T %d; starts I %d, O %d; corridors I-I %d, I-T %d, T-T %d, T-O %d, O-O %d, I-O %d; transition rooms on the main path 1:%d 2:%d; transition cells in the map 1:%d 2:%d 3:%d 4+:%d; start side %.0f%% of the rest; corridor templates %d/%d/%d/%d/%d/%d"),
 				Variant.Label, Generated, Tried, Retried, Rooms[0], Rooms[1], Rooms[2], Starts[0], Starts[1],
 				Pairs[0][0], Pairs[0][2], Pairs[2][2], Pairs[1][2], Pairs[1][1], Pairs[0][1], TransitionRuns[1], TransitionRuns[2],
+				TransitionCells[1], TransitionCells[2], TransitionCells[3], TransitionCells[4],
+				Generated > 0 ? 100.0 * StartShare / Generated : 0.0,
 				CorridorUses[0], CorridorUses[1], CorridorUses[2], CorridorUses[3], CorridorUses[4], CorridorUses[5]));
-			if (Variant.Mode == ENRMapEnvironmentMode::Hybrid && Generated > 0 && Pairs[2][2] == 0)
+			if (bFlood && Generated > 0)
+			{
+				StartShareBySplit.Add(Split, static_cast<float>(StartShare / Generated));
+			}
+			if (Variant.Mode == ENRMapEnvironmentMode::Hybrid && !bFlood && Generated > 0 && Pairs[2][2] == 0)
 			{
 				Failures.Add(FString::Printf(TEXT("environments %s: no two Transition rooms or halls were ever joined"), Variant.Label));
 			}
@@ -337,9 +375,19 @@ namespace NRGridTests
 			}
 		}
 
-		// A Hybrid example, types left and environments right.
+		// HybridSplit moves the line: the lower it is, the less of the map is on the start's side.
+		if (StartShareBySplit.Num() == 3 && !(StartShareBySplit.FindRef(0.3f) < StartShareBySplit.FindRef(0.5f)
+			&& StartShareBySplit.FindRef(0.5f) < StartShareBySplit.FindRef(0.7f)))
 		{
-			const FNRMapGenSettings Settings = MakeSettings(ENRGridLayoutShape::Mixed, ENRMapEnvironmentMode::Hybrid);
+			Failures.Add(FString::Printf(TEXT("environments: HybridSplit 0.3/0.5/0.7 gave the start's side %.0f%%/%.0f%%/%.0f%%, not rising"),
+				100.0f * StartShareBySplit.FindRef(0.3f), 100.0f * StartShareBySplit.FindRef(0.5f), 100.0f * StartShareBySplit.FindRef(0.7f)));
+		}
+
+		// Hybrid examples of seed 1 both ways, types left and environments right.
+		for (const ENRHybridAssignment Assignment : { ENRHybridAssignment::PathSplit, ENRHybridAssignment::DistanceFlood })
+		{
+			FNRMapGenSettings Settings = MakeSettings(ENRGridLayoutShape::Mixed, ENRMapEnvironmentMode::Hybrid);
+			Settings.HybridAssignment = Assignment;
 			FNRGeneratedLayout Layout;
 			FString Error;
 			if (FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, 1, Layout, Error))
@@ -348,7 +396,8 @@ namespace NRGridTests
 				TArray<FString> Environments;
 				FNRGridLayoutGenerator::ToAscii(Settings, Layout).ParseIntoArrayLines(Types, false);
 				FNRGridLayoutGenerator::ToAscii(Settings, Layout, true).ParseIntoArrayLines(Environments, false);
-				Summary.Add(TEXT("environments, Hybrid Mixed seed 1:"));
+				Summary.Add(FString::Printf(TEXT("environments, Hybrid %s Mixed seed 1:"),
+					*StaticEnum<ENRHybridAssignment>()->GetNameStringByValue(static_cast<int64>(Assignment))));
 				for (int32 Line = 0; Line < Types.Num(); ++Line)
 				{
 					Summary.Add(FString::Printf(TEXT("    %s    %s"), *Types[Line], *Environments[Line]));
@@ -435,6 +484,31 @@ namespace NRGridTests
 						Settings.bRequireElite = false;
 						Settings.MinMainPathLength = Settings.MaxMainPathLength = 3;
 						Settings.MinTransitionRooms = Settings.MaxTransitionRooms = 2;
+					} },
+				{ TEXT("DistanceFlood without any Transition template"), TEXT("no Transition room or hall template"),
+					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Transition; });
+					} },
+				{ TEXT("DistanceFlood with an Indoor elite only"), TEXT("no Elite room size both an Indoor and an Outdoor"),
+					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Outdoor && (T.TypeMask & Bit(ENRGridRoomType::Elite)); });
+					} },
+				{ TEXT("DistanceFlood with transition cells 3-1"), TEXT("transition cells 3-1"),
+					[](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+						Settings.MinTransitionCells = 3;
+						Settings.MaxTransitionCells = 1;
+					} },
+				{ TEXT("DistanceFlood with HybridSplit 1"), TEXT("HybridSplit 1.00"),
+					[](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>&, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+						Settings.HybridSplit = 1.0f;
 					} },
 				{ TEXT("Transition only for safe rooms, two in a row wanted"), TEXT("Transition templates stand for Safe"),
 					[](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)

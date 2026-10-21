@@ -38,6 +38,19 @@ enum class ENRMapEnvironmentMode : uint8
 	Hybrid
 };
 
+/** How a Hybrid map decides which rooms are Indoor, Outdoor and Transition. */
+UENUM(BlueprintType)
+enum class ENRHybridAssignment : uint8
+{
+	/** Before placement: the main path is cut into the start's side, a run of Transition rooms and
+	 *  the boss's side; branches keep the side they grow from. */
+	PathSplit,
+	/** After placement: every room takes the side it is nearer to, counted in corridors from the
+	 *  start and from the boss (weighed by HybridSplit); wherever the two sides meet, one of the two
+	 *  rooms becomes Transition. */
+	DistanceFlood
+};
+
 /**
  * Everything the layout generator needs, as a plain struct so it can be built in code (tests)
  * as well as read from a UNRMapGenerationConfig asset.
@@ -58,10 +71,8 @@ struct PROJECTNR_API FNRMapGenSettings
 	ENRGridLayoutShape Shape = ENRGridLayoutShape::Mixed;
 
 	/**
-	 * Indoor, outdoor or both. Hybrid: the start room's side of the main path is
-	 * HybridStartEnvironment, the boss's side the other, with MinTransitionRooms-MaxTransitionRooms
-	 * Transition rooms in a row between them. Branches take the environment of the room they grow
-	 * from; a hall cell between rooms of different environments is a Transition one.
+	 * Indoor, outdoor or both. Hybrid: the start room is HybridStartEnvironment, the boss the other,
+	 * with Transition rooms or hall cells wherever the two sides meet - placed by HybridAssignment.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
 	ENRMapEnvironmentMode EnvironmentMode = ENRMapEnvironmentMode::IndoorOnly;
@@ -74,7 +85,27 @@ struct PROJECTNR_API FNRMapGenSettings
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
 	bool bRandomizeHybridStart = false;
 
-	/** Hybrid: Transition rooms in a row on the main path. Hall cells between them do not count. */
+	/** Hybrid: how environments are given out. PathSplit uses MinTransitionRooms-MaxTransitionRooms,
+	 *  DistanceFlood HybridSplit and MinTransitionCells-MaxTransitionCells. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
+	ENRHybridAssignment HybridAssignment = ENRHybridAssignment::PathSplit;
+
+	/**
+	 * DistanceFlood: where the two sides meet, as a fraction of the way from the start to the boss.
+	 * 0.5 halfway; lower gives the boss's side more of the map, higher the start's side.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "0.1", ClampMax = "0.9"))
+	float HybridSplit = 0.5f;
+
+	/** DistanceFlood: Transition rooms and hall cells in the whole map. More places where the two
+	 *  sides touch (through branches and loops) need more; a layout outside the range is retried. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))
+	int32 MinTransitionCells = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))
+	int32 MaxTransitionCells = 3;
+
+	/** Hybrid PathSplit: Transition rooms in a row on the main path. Hall cells between them do not count. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))
 	int32 MinTransitionRooms = 1;
 

@@ -174,7 +174,13 @@ void ANRMapGenerator::BeginPlay()
 		{
 			EnvironmentOption = static_cast<ENRMapEnvironmentMode>(EnvironmentValue);
 		}
-		StartMapWithChoices(UseSeed, ShapeOption, EnvironmentOption);
+		TOptional<ENRHybridAssignment> AssignmentOption;
+		const int64 AssignmentValue = StaticEnum<ENRHybridAssignment>()->GetValueByNameString(UGameplayStatics::ParseOption(Options, TEXT("GridAssign")));
+		if (AssignmentValue != INDEX_NONE)
+		{
+			AssignmentOption = static_cast<ENRHybridAssignment>(AssignmentValue);
+		}
+		StartMapWithChoices(UseSeed, ShapeOption, EnvironmentOption, AssignmentOption);
 	}
 }
 
@@ -209,6 +215,10 @@ FNRMapGenSettings ANRMapGenerator::GetEffectiveSettings() const
 	if (EnvironmentChoice.IsSet())
 	{
 		Settings.EnvironmentMode = EnvironmentChoice.GetValue();
+	}
+	if (AssignmentChoice.IsSet())
+	{
+		Settings.HybridAssignment = AssignmentChoice.GetValue();
 	}
 	return Settings;
 }
@@ -360,7 +370,7 @@ float ANRMapGenerator::GetCorridorLength() const
 }
 
 bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride,
-	TOptional<ENRMapEnvironmentMode> EnvironmentOverride)
+	TOptional<ENRMapEnvironmentMode> EnvironmentOverride, TOptional<ENRHybridAssignment> AssignmentOverride)
 {
 	FNRMapGenSettings Settings = GetEffectiveSettings();
 	if (ShapeOverride.IsSet())
@@ -370,6 +380,10 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 	if (EnvironmentOverride.IsSet())
 	{
 		Settings.EnvironmentMode = EnvironmentOverride.GetValue();
+	}
+	if (AssignmentOverride.IsSet())
+	{
+		Settings.HybridAssignment = AssignmentOverride.GetValue();
 	}
 
 	GeneratedLayout = FNRGeneratedLayout();
@@ -390,7 +404,10 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 	}
 	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, %s, attempt %d, v%d): %d rooms, %d hall cell(s), %d corridors, %d loop(s), %d branch room(s); Indoor %d, Outdoor %d, Transition %d"),
 		InSeed, *ShapeEnum->GetNameStringByValue(static_cast<int64>(Settings.Shape)),
-		*StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(Settings.EnvironmentMode)),
+		*(StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(Settings.EnvironmentMode))
+			+ (Settings.EnvironmentMode == ENRMapEnvironmentMode::Hybrid
+				? TEXT(" ") + StaticEnum<ENRHybridAssignment>()->GetNameStringByValue(static_cast<int64>(Settings.HybridAssignment))
+				: FString())),
 		GeneratedLayout.Attempt, GeneratedLayout.GeneratorVersion,
 		GeneratedLayout.Rooms.Num() - Halls, Halls, GeneratedLayout.Connections.Num(),
 		FNRGridLayoutGenerator::CountLoops(GeneratedLayout), FNRGridLayoutGenerator::CountBranchRooms(GeneratedLayout),
@@ -424,11 +441,13 @@ bool ANRMapGenerator::StartMapWithEnvironment(int32 InSeed, ENRMapEnvironmentMod
 	return StartMapWithChoices(InSeed, {}, InEnvironmentMode);
 }
 
-bool ANRMapGenerator::StartMapWithChoices(int32 InSeed, TOptional<ENRGridLayoutShape> InShape, TOptional<ENRMapEnvironmentMode> InEnvironmentMode)
+bool ANRMapGenerator::StartMapWithChoices(int32 InSeed, TOptional<ENRGridLayoutShape> InShape, TOptional<ENRMapEnvironmentMode> InEnvironmentMode,
+	TOptional<ENRHybridAssignment> InAssignment)
 {
 	UnloadLayout();
 	ShapeChoice = InShape;
 	EnvironmentChoice = InEnvironmentMode;
+	AssignmentChoice = InAssignment;
 	State = ENRMapGenState::Generating;
 	LastError.Reset();
 	HoldPlayer(true);
@@ -1100,6 +1119,10 @@ void ANRMapGenerator::BecomeReady()
 		{
 			Choices.Add(TEXT("GridEnv=") + StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(EnvironmentChoice.GetValue())));
 		}
+		if (AssignmentChoice.IsSet())
+		{
+			Choices.Add(TEXT("GridAssign=") + StaticEnum<ENRHybridAssignment>()->GetNameStringByValue(static_cast<int64>(AssignmentChoice.GetValue())));
+		}
 		Run->SetGeneratedMapOptions(FString::Join(Choices, TEXT("?")));
 		for (const TWeakObjectPtr<ANRRoom>& Room : GeneratedRooms)
 		{
@@ -1474,11 +1497,20 @@ namespace NRGridCommands
 	}
 
 	/**
-	 * Reads a shape (Linear, Branching, Loop, Mixed) or environment mode (IndoorOnly, OutdoorOnly,
-	 * Hybrid; Indoor and Outdoor for short) from one argument. False when it is neither.
+	 * Reads a shape (Linear, Branching, Loop, Mixed), environment mode (IndoorOnly, OutdoorOnly,
+	 * Hybrid; Indoor and Outdoor for short) or Hybrid assignment (PathSplit, DistanceFlood; Split
+	 * and Flood for short) from one argument. False when it is none of them.
 	 */
-	bool ParseChoice(const FString& Arg, TOptional<ENRGridLayoutShape>& OutShape, TOptional<ENRMapEnvironmentMode>& OutEnvironment)
+	bool ParseChoice(const FString& Arg, TOptional<ENRGridLayoutShape>& OutShape, TOptional<ENRMapEnvironmentMode>& OutEnvironment,
+		TOptional<ENRHybridAssignment>& OutAssignment)
 	{
+		const int64 Assignment = StaticEnum<ENRHybridAssignment>()->GetValueByNameString(
+			Arg.Equals(TEXT("Split"), ESearchCase::IgnoreCase) ? TEXT("PathSplit") : Arg.Equals(TEXT("Flood"), ESearchCase::IgnoreCase) ? TEXT("DistanceFlood") : *Arg);
+		if (Assignment != INDEX_NONE)
+		{
+			OutAssignment = static_cast<ENRHybridAssignment>(Assignment);
+			return true;
+		}
 		const int64 Shape = StaticEnum<ENRGridLayoutShape>()->GetValueByNameString(Arg);
 		if (Shape != INDEX_NONE)
 		{
@@ -1496,8 +1528,9 @@ namespace NRGridCommands
 	}
 
 	/**
-	 * NR.Grid.Start [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [shuffle]:
-	 * build a map; seed 0 or none for a random one; shape and environment mode the Config's unless given.
+	 * NR.Grid.Start [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [Split|Flood] [shuffle]:
+	 * build a map; seed 0 or none for a random one; shape, environment mode and Hybrid assignment
+	 * the Config's unless given.
 	 */
 	void Start(const TArray<FString>& Args, UWorld* World)
 	{
@@ -1510,13 +1543,14 @@ namespace NRGridCommands
 		bool bShuffle = false;
 		TOptional<ENRGridLayoutShape> Shape;
 		TOptional<ENRMapEnvironmentMode> Environment;
+		TOptional<ENRHybridAssignment> Assignment;
 		for (const FString& Arg : Args)
 		{
 			if (Arg.Equals(TEXT("shuffle"), ESearchCase::IgnoreCase))
 			{
 				bShuffle = true;
 			}
-			else if (!ParseChoice(Arg, Shape, Environment))
+			else if (!ParseChoice(Arg, Shape, Environment, Assignment))
 			{
 				if (!Arg.IsNumeric())
 				{
@@ -1528,7 +1562,7 @@ namespace NRGridCommands
 		}
 		Generator->SetShuffleLoadOrder(bShuffle);
 		Generator->SetDebugMissingRoom(INDEX_NONE);
-		Generator->StartMapWithChoices(InSeed, Shape, Environment);
+		Generator->StartMapWithChoices(InSeed, Shape, Environment, Assignment);
 	}
 
 	/**
@@ -1707,16 +1741,17 @@ namespace NRGridCommands
 		const int32 InSeed = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : FMath::Rand();
 		TOptional<ENRGridLayoutShape> Shape;
 		TOptional<ENRMapEnvironmentMode> Environment;
+		TOptional<ENRHybridAssignment> Assignment;
 		for (int32 Index = 1; Index < Args.Num(); ++Index)
 		{
-			if (!ParseChoice(Args[Index], Shape, Environment))
+			if (!ParseChoice(Args[Index], Shape, Environment, Assignment))
 			{
-				UE_LOG(LogNRMapGen, Warning, TEXT("Unknown shape or environment mode %s: Linear, Branching, Loop, Mixed, IndoorOnly, OutdoorOnly or Hybrid"), *Args[Index]);
+				UE_LOG(LogNRMapGen, Warning, TEXT("Unknown shape, environment mode or assignment %s: Linear, Branching, Loop, Mixed, IndoorOnly, OutdoorOnly, Hybrid, Split or Flood"), *Args[Index]);
 				return;
 			}
 		}
 		FString Error;
-		if (Generator->GenerateLayout(InSeed, Error, Shape, Environment))
+		if (Generator->GenerateLayout(InSeed, Error, Shape, Environment, Assignment))
 		{
 			Generator->DrawLayout(Generator->GetGeneratedLayout(), 60.0f);
 		}
@@ -1724,7 +1759,7 @@ namespace NRGridCommands
 }
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridStartCommand(TEXT("NR.Grid.Start"),
-	TEXT("NR.Grid.Start [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [shuffle]: generate and load a map (seed 0 or none for random; shape and environment mode the config's unless given; shuffle requests modules in random order)."),
+	TEXT("NR.Grid.Start [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [Split|Flood] [shuffle]: generate and load a map (seed 0 or none for random; shape, environment mode and Hybrid assignment the config's unless given; shuffle requests modules in random order)."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Start));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridGoToCommand(TEXT("NR.Grid.GoTo"),
@@ -1760,5 +1795,5 @@ static FAutoConsoleCommandWithWorldAndArgs GNRGridSignatureCommand(TEXT("NR.Grid
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Signature));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridGenerateCommand(TEXT("NR.Grid.Generate"),
-	TEXT("NR.Grid.Generate [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid]: generate a layout graph, log it and draw it for a minute."),
+	TEXT("NR.Grid.Generate [seed] [Linear|Branching|Loop|Mixed] [IndoorOnly|OutdoorOnly|Hybrid] [Split|Flood]: generate a layout graph, log it and draw it for a minute."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Generate));

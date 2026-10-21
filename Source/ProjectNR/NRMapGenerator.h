@@ -111,9 +111,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Map Generation")
 	bool StartMapWithEnvironment(int32 InSeed, ENRMapEnvironmentMode InEnvironmentMode);
 
-	/** StartMap with the shape and environment mode replaced where set, the Config's where not.
-	 *  StartMap uses neither. */
-	bool StartMapWithChoices(int32 InSeed, TOptional<ENRGridLayoutShape> InShape, TOptional<ENRMapEnvironmentMode> InEnvironmentMode);
+	/** StartMap with the shape, environment mode and Hybrid assignment replaced where set, the
+	 *  Config's where not. StartMap uses none. */
+	bool StartMapWithChoices(int32 InSeed, TOptional<ENRGridLayoutShape> InShape, TOptional<ENRMapEnvironmentMode> InEnvironmentMode,
+		TOptional<ENRHybridAssignment> InAssignment = {});
 
 	/** Unloads and removes every module this generator loaded. */
 	UFUNCTION(BlueprintCallable, Category = "Map Generation")
@@ -157,7 +158,7 @@ public:
 	 * StartMapWithOptions apply, and ShapeOverride / EnvironmentOverride replace them when set.
 	 */
 	bool GenerateLayout(int32 InSeed, FString& OutError, TOptional<ENRGridLayoutShape> ShapeOverride = {},
-		TOptional<ENRMapEnvironmentMode> EnvironmentOverride = {});
+		TOptional<ENRMapEnvironmentMode> EnvironmentOverride = {}, TOptional<ENRHybridAssignment> AssignmentOverride = {});
 
 	/** Debug view of a layout: cells, corridors (main path thicker), room number and type. */
 	void DrawLayout(const FNRGeneratedLayout& Layout, float Duration) const;
@@ -341,8 +342,9 @@ private:
 	int32 DebugMissingRoomId = INDEX_NONE;
 	int32 DebugEmptyRoomId = INDEX_NONE;
 
-	/** Shape and environment mode chosen for this map instead of the Config's (StartMapWithChoices,
-	 *  the GridShape / GridEnv level options, NR.Grid.Start). */
+	/** Shape, environment mode and Hybrid assignment chosen for this map instead of the Config's
+	 *  (StartMapWithChoices, the GridShape / GridEnv / GridAssign level options, NR.Grid.Start). */
 	TOptional<ENRGridLayoutShape> ShapeChoice;
 	TOptional<ENRMapEnvironmentMode> EnvironmentChoice;
+	TOptional<ENRHybridAssignment> AssignmentChoice;
 };

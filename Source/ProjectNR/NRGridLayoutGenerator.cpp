@@ -68,6 +68,12 @@ namespace NRGridGen
 		return FNRGridLayoutGenerator::EnvironmentName(Environment);
 	}
 
+	/** Hybrid with environments given out after placement, by distance. */
+	bool IsFlood(const FNRMapGenSettings& Settings)
+	{
+		return IsHybrid(Settings) && Settings.HybridAssignment == ENRHybridAssignment::DistanceFlood;
+	}
+
 	bool NeedsBranch(ENRGridLayoutShape Shape)
 	{
 		return Shape == ENRGridLayoutShape::Branching || Shape == ENRGridLayoutShape::Mixed;
@@ -146,6 +152,27 @@ namespace NRGridGen
 			}
 		}
 		return false;
+	}
+
+	/** Corridors from From to every room by index, MAX_int32 for one it cannot reach. */
+	TArray<int32> Distances(const TArray<TArray<int32>>& Neighbours, int32 From)
+	{
+		TArray<int32> Distance;
+		Distance.Init(MAX_int32, Neighbours.Num());
+		Distance[From] = 0;
+		TArray<int32> Queue = { From };
+		for (int32 Head = 0; Head < Queue.Num(); ++Head)
+		{
+			for (int32 Next : Neighbours[Queue[Head]])
+			{
+				if (Distance[Next] == MAX_int32)
+				{
+					Distance[Next] = Distance[Queue[Head]] + 1;
+					Queue.Add(Next);
+				}
+			}
+		}
+		return Distance;
 	}
 
 	TMap<int32, int32> IndexRooms(const FNRGeneratedLayout& Layout)
@@ -272,19 +299,22 @@ namespace NRGridGen
 		TArray<FNRRoomPort> Ports;
 		TArray<const FTurnedRoom*> Turns;
 		float Weight = 0.0f;
+		/** A shape shared by two environments: the other one's shape of the same size, which must
+		 *  cover the room's doorways too. */
+		const FShape* Also = nullptr;
 
 		bool HasPort(const FNRRoomPort& Port) const
 		{
 			return Ports.Contains(Port);
 		}
 
-		/** Whether some turn of some template has every one of Used. */
+		/** Whether some turn of some template has every one of Used (in both environments, for a shared shape). */
 		bool Covers(const TArray<FNRRoomPort>& Used) const
 		{
 			return Turns.ContainsByPredicate([&Used](const FTurnedRoom* Turned)
 			{
 				return !Used.ContainsByPredicate([Turned](const FNRRoomPort& Port) { return !Turned->HasPort(Port.Cell, Port.Side); });
-			});
+			}) && (!Also || Also->Covers(Used));
 		}
 	};
 
@@ -305,6 +335,12 @@ namespace NRGridGen
 		{
 			return For(Type, Environment).Num() > 0;
 		}
+
+		/**
+		 * By ENRGridRoomType: the sizes both an Indoor and an Outdoor template have, with the doorway
+		 * places both have - for a room placed before it is known which side it ends up on.
+		 */
+		TArray<FShape> Shared[RoomTypeCount];
 
 		/** bAnyEnvironment: every template stands in for every environment (the implicit one-cell room). */
 		FCatalog(const TArray<FNRRoomTemplateDesc>& Templates, bool bAnyEnvironment)
@@ -370,6 +406,26 @@ namespace NRGridGen
 						}
 						Shape.Weight += Templates[Turned->Template].Weight / FMath::Max(Sizes, 1);
 					}
+				}
+			}
+
+			// Shapes is complete too: shared shapes point into it.
+			for (int32 Type = 0; Type < RoomTypeCount; ++Type)
+			{
+				for (const FShape& Indoor : Shapes[Type][static_cast<int32>(ENRRoomEnvironment::Indoor)])
+				{
+					const FShape* Outdoor = Shapes[Type][static_cast<int32>(ENRRoomEnvironment::Outdoor)].FindByPredicate(
+						[&Indoor](const FShape& Other) { return Other.Size == Indoor.Size; });
+					if (!Outdoor)
+					{
+						continue;
+					}
+					FShape& Both = Shared[Type].AddDefaulted_GetRef();
+					Both.Size = Indoor.Size;
+					Both.Turns = Indoor.Turns;
+					Both.Weight = Indoor.Weight;
+					Both.Also = Outdoor;
+					Both.Ports = Indoor.Ports.FilterByPredicate([Outdoor](const FNRRoomPort& Port) { return Outdoor->HasPort(Port); });
 				}
 			}
 		}
@@ -709,11 +765,19 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, co
 	{
 		OutError = TEXT("a Hybrid map starts Indoor or Outdoor, not Transition");
 	}
-	else if (IsHybrid(Settings) && (Settings.MinTransitionRooms < 1 || Settings.MinTransitionRooms > Settings.MaxTransitionRooms))
+	else if (IsHybrid(Settings) && !IsFlood(Settings) && (Settings.MinTransitionRooms < 1 || Settings.MinTransitionRooms > Settings.MaxTransitionRooms))
 	{
 		OutError = FString::Printf(TEXT("transition rooms %d-%d: at least one, and Min no more than Max"), Settings.MinTransitionRooms, Settings.MaxTransitionRooms);
 	}
-	else if (IsHybrid(Settings) && PathMax < Settings.MinTransitionRooms + 2)
+	else if (IsFlood(Settings) && (Settings.MinTransitionCells < 1 || Settings.MinTransitionCells > Settings.MaxTransitionCells))
+	{
+		OutError = FString::Printf(TEXT("transition cells %d-%d: at least one, and Min no more than Max"), Settings.MinTransitionCells, Settings.MaxTransitionCells);
+	}
+	else if (IsFlood(Settings) && (Settings.HybridSplit <= 0.0f || Settings.HybridSplit >= 1.0f))
+	{
+		OutError = FString::Printf(TEXT("HybridSplit %.2f must lie between 0 and 1"), Settings.HybridSplit);
+	}
+	else if (IsHybrid(Settings) && !IsFlood(Settings) && PathMax < Settings.MinTransitionRooms + 2)
 	{
 		OutError = FString::Printf(TEXT("a main path of at most %d rooms cannot hold %d transition room(s) with a room of each side around them"),
 			PathMax, Settings.MinTransitionRooms);
@@ -806,7 +870,8 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, co
 			Needed.Add({ ENRGridRoomType::Combat, ENRRoomEnvironment::Outdoor });
 		}
 	}
-	if (Settings.MaxHalls > 0)
+	// A distance-flood map checks its halls below, by the shapes both sides share.
+	if (Settings.MaxHalls > 0 && !IsFlood(Settings))
 	{
 		for (ENRRoomEnvironment Environment : ModeEnvironments(Settings))
 		{
@@ -827,6 +892,47 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, co
 					Settings.GridSize.X, Settings.GridSize.Y);
 			return false;
 		}
+	}
+
+	// DistanceFlood: any room but the start and the boss may end up on either side, so each type
+	// needs a size both an Indoor and an Outdoor template have; and some type must have a
+	// Transition template to stand where the sides meet.
+	if (IsFlood(Settings))
+	{
+		const FCatalog Catalog(Templates, false);
+		TArray<ENRGridRoomType> Either;
+		if (bCombat)
+		{
+			Either.Add(ENRGridRoomType::Combat);
+		}
+		if (Settings.bRequireSafe)
+		{
+			Either.Add(ENRGridRoomType::Safe);
+		}
+		if (Settings.bRequireElite)
+		{
+			Either.Add(ENRGridRoomType::Elite);
+		}
+		if (Settings.MaxHalls > 0)
+		{
+			Either.Add(ENRGridRoomType::Hall);
+		}
+		bool bAnyTransition = false;
+		for (ENRGridRoomType Type : Either)
+		{
+			if (Catalog.Shared[static_cast<int32>(Type)].Num() == 0)
+			{
+				OutError = FString::Printf(TEXT("no %s room size both an Indoor and an Outdoor template have; a DistanceFlood map may put one on either side"), *TypeName(Type));
+				return false;
+			}
+			bAnyTransition |= Catalog.Has(Type, ENRRoomEnvironment::Transition);
+		}
+		if (!bAnyTransition)
+		{
+			OutError = TEXT("no Transition room or hall template to stand where Indoor meets Outdoor");
+			return false;
+		}
+		return true;
 	}
 
 	// Hybrid: some main path length must take a run of Transition rooms, from every start side.
@@ -922,17 +1028,30 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 	// Room types along the main path.
 	const TArray<ENRGridRoomType> PathTypes = MainPathTypes(Settings, PathRooms);
 
-	// Environments along the main path, before anything is placed: one throughout, or (Hybrid) the
-	// start side, a run of Transition rooms, and the other side up to the boss.
-	TArray<ENRRoomEnvironment> PathEnvironments;
-	PathEnvironments.Init(SingleEnvironment(Settings), PathRooms);
-	if (IsHybrid(Settings))
+	// Environments along the main path, before anything is placed: one throughout, or (Hybrid
+	// PathSplit) the start side, a run of Transition rooms, and the other side up to the boss. A
+	// DistanceFlood map is placed first with shapes both sides share (the start and the boss
+	// excepted) and gets its environments after the loops, by distance.
+	const bool bFlood = IsFlood(Settings);
+	const ENRRoomEnvironment StartEnvironment = !IsHybrid(Settings) ? SingleEnvironment(Settings)
+		: Settings.bRandomizeHybridStart ? (Stream.FRand() < 0.5f ? ENRRoomEnvironment::Indoor : ENRRoomEnvironment::Outdoor)
+		: Settings.HybridStartEnvironment;
+	auto ShapesFor = [&Catalog, bFlood, StartEnvironment](ENRGridRoomType Type, ENRRoomEnvironment Environment) -> const TArray<FShape>&
 	{
-		const ENRRoomEnvironment From = Settings.bRandomizeHybridStart
-			? (Stream.FRand() < 0.5f ? ENRRoomEnvironment::Indoor : ENRRoomEnvironment::Outdoor)
-			: Settings.HybridStartEnvironment;
+		if (!bFlood)
+		{
+			return Catalog.For(Type, Environment);
+		}
+		return Type == ENRGridRoomType::Start ? Catalog.For(Type, StartEnvironment)
+			: Type == ENRGridRoomType::Boss ? Catalog.For(Type, OtherSide(StartEnvironment))
+			: Catalog.Shared[static_cast<int32>(Type)];
+	};
+	TArray<ENRRoomEnvironment> PathEnvironments;
+	PathEnvironments.Init(StartEnvironment, PathRooms);
+	if (IsHybrid(Settings) && !bFlood)
+	{
 		const int32 TransitionRooms = Stream.RandRange(Settings.MinTransitionRooms, Settings.MaxTransitionRooms);
-		const TArray<int32> Starts = TransitionStarts(PathTypes, From, TransitionRooms,
+		const TArray<int32> Starts = TransitionStarts(PathTypes, StartEnvironment, TransitionRooms,
 			[&Catalog](ENRGridRoomType Type, ENRRoomEnvironment Environment) { return Catalog.Has(Type, Environment); });
 		if (Starts.Num() == 0)
 		{
@@ -942,7 +1061,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		const int32 First = Starts[Stream.RandRange(0, Starts.Num() - 1)];
 		for (int32 Room = 0; Room < PathRooms; ++Room)
 		{
-			PathEnvironments[Room] = Room < First ? From : Room < First + TransitionRooms ? ENRRoomEnvironment::Transition : OtherSide(From);
+			PathEnvironments[Room] = Room < First ? StartEnvironment : Room < First + TransitionRooms ? ENRRoomEnvironment::Transition : OtherSide(StartEnvironment);
 		}
 	}
 	auto GapEnvironment = [&PathEnvironments](int32 Gap) { return BetweenEnvironment(PathEnvironments[Gap], PathEnvironments[Gap + 1]); };
@@ -955,7 +1074,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 	int32 HallGaps = 0;
 	for (int32 Gap = 0; Gap < Gaps; ++Gap)
 	{
-		HallGaps += Catalog.Has(ENRGridRoomType::Hall, GapEnvironment(Gap)) ? 1 : 0;
+		HallGaps += ShapesFor(ENRGridRoomType::Hall, GapEnvironment(Gap)).Num() > 0 ? 1 : 0;
 	}
 	const int32 MainHallsMax = FMath::Min(HallTarget, HallGaps * Settings.MaxHallsInRow);
 	const int32 MainHallsMin = FMath::Max(HallTarget - (TargetRooms - PathRooms), FMath::Min((HallTarget + 1) / 2, MainHallsMax));
@@ -972,7 +1091,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		TArray<int32> Open;
 		for (int32 Gap = 0; Gap < Gaps; ++Gap)
 		{
-			if (HallsInGap[Gap] < Settings.MaxHallsInRow && Catalog.Has(ENRGridRoomType::Hall, GapEnvironment(Gap)))
+			if (HallsInGap[Gap] < Settings.MaxHallsInRow && ShapesFor(ENRGridRoomType::Hall, GapEnvironment(Gap)).Num() > 0)
 			{
 				Open.Add(Gap);
 			}
@@ -1071,7 +1190,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 			return;
 		}
 		const ENRGridDirection EntrySide = NRGrid::Opposite(Exit.Side);
-		for (const FShape& Shape : Catalog.For(Type, Environment))
+		for (const FShape& Shape : ShapesFor(Type, Environment))
 		{
 			for (const FNRRoomPort& Entry : Shape.Ports)
 			{
@@ -1107,7 +1226,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 	TArray<FFrame> Frames;
 	{
 		FFrame& First = Frames.AddDefaulted_GetRef();
-		for (const FShape& Shape : Catalog.For(ENRGridRoomType::Start, Environments[0]))
+		for (const FShape& Shape : ShapesFor(ENRGridRoomType::Start, Environments[0]))
 		{
 			for (int32 Y = 0; Y + Shape.Size.Y <= Settings.GridSize.Y; ++Y)
 			{
@@ -1306,6 +1425,16 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 
 	// 3. Loops: extra corridors between rooms facing each other doorway to doorway, never to
 	//    the boss, never around a required room, never from Indoor straight to Outdoor.
+	struct FLink
+	{
+		int32 A;
+		int32 B;
+		FNRRoomPort PortA;
+		FNRRoomPort PortB;
+		FIntPoint CellA;
+		FIntPoint CellB;
+	};
+	TArray<FLink> Loops;
 	if (NeedsLoop(Settings.Shape))
 	{
 		const int32 SafeIndex = FindOfType(Layout, ENRGridRoomType::Safe);
@@ -1313,15 +1442,6 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		const int32 LoopTarget = Stream.RandRange(Settings.MinLoops, Settings.MaxLoops);
 		for (int32 Loop = 0; Loop < LoopTarget; ++Loop)
 		{
-			struct FLink
-			{
-				int32 A;
-				int32 B;
-				FNRRoomPort PortA;
-				FNRRoomPort PortB;
-				FIntPoint CellA;
-				FIntPoint CellB;
-			};
 			TArray<FLink> Candidates;
 			for (int32 A = 0; A < Placed.Num(); ++A)
 			{
@@ -1371,15 +1491,125 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 			AddConnection(Layout, Pick.A, Pick.B, Pick.CellA, Pick.CellB);
 			Used[Pick.A].Add(Pick.PortA);
 			Used[Pick.B].Add(Pick.PortB);
+			Loops.Add(Pick);
 		}
 	}
 
-	// 4. Templates: for every room, a turn of a template of its shape with every doorway it uses.
+	// 3b. DistanceFlood: every room takes the side it is nearer to in corridors - the start's or
+	//     the boss's, weighed by HybridSplit; a room as near to both becomes Transition where it can.
+	//     Then, wherever the two sides still touch, one of the two rooms becomes Transition: one
+	//     that has a Transition template of its type and size, a hall cell before a combat room
+	//     before any other. Too many Transition places (loops make more): a loop across the line
+	//     goes, while there are more loops than MinLoops.
+	if (bFlood)
+	{
+		const ENRRoomEnvironment To = OtherSide(StartEnvironment);
+		const double Split = Settings.HybridSplit;
+		auto Convertible = [&](int32 Room)
+		{
+			return Room != 0 && Room != BossIndex
+				&& Catalog.For(Types[Room], ENRRoomEnvironment::Transition).ContainsByPredicate([&](const FShape& Shape)
+				{
+					return Shape.Size == Placed[Room].Shape->Size && Shape.Covers(Used[Room]);
+				});
+		};
+		auto Rank = [&Types](int32 Room) { return Types[Room] == ENRGridRoomType::Hall ? 0 : Types[Room] == ENRGridRoomType::Combat ? 1 : 2; };
+		auto Paint = [&]() -> FString
+		{
+			const TArray<TArray<int32>> Neighbours = Adjacency(Layout, IndexRooms(Layout));
+			const TArray<int32> FromStart = Distances(Neighbours, 0);
+			const TArray<int32> FromBoss = Distances(Neighbours, BossIndex);
+			for (int32 Room = 0; Room < Placed.Num(); ++Room)
+			{
+				// Split of the way from the start: a room there has FromStart (1 - Split) = FromBoss Split.
+				const double StartSide = FromStart[Room] * (1.0 - Split);
+				const double BossSide = FromBoss[Room] * Split;
+				Environments[Room] = FMath::IsNearlyEqual(StartSide, BossSide) && Convertible(Room) ? ENRRoomEnvironment::Transition
+					: StartSide <= BossSide ? StartEnvironment : To;
+			}
+			Environments[0] = StartEnvironment;
+			Environments[BossIndex] = To;
+			for (bool bChanged = true; bChanged;)
+			{
+				bChanged = false;
+				for (const FNRGeneratedConnection& Connection : Layout.Connections)
+				{
+					const int32 A = Connection.RoomA;
+					const int32 B = Connection.RoomB;
+					if (NRGrid::EnvironmentsMeet(Environments[A], Environments[B]))
+					{
+						continue;
+					}
+					const bool bA = Convertible(A);
+					const bool bB = Convertible(B);
+					if (!bA && !bB)
+					{
+						return FString::Printf(TEXT("neither %s %d nor %s %d, where Indoor meets Outdoor, has a Transition template"),
+							*TypeName(Types[A]), A, *TypeName(Types[B]), B);
+					}
+					const int32 Pick = !bA ? B : !bB ? A
+						: Rank(A) != Rank(B) ? (Rank(A) < Rank(B) ? A : B)
+						: (Stream.FRand() < 0.5f ? A : B);
+					Environments[Pick] = ENRRoomEnvironment::Transition;
+					bChanged = true;
+				}
+			}
+			return FString();
+		};
+		auto CountTransitions = [&Environments]()
+		{
+			return Environments.FilterByPredicate([](ENRRoomEnvironment Environment) { return Environment == ENRRoomEnvironment::Transition; }).Num();
+		};
+
+		FString Problem = Paint();
+		while (Problem.IsEmpty() && CountTransitions() > Settings.MaxTransitionCells && Loops.Num() > Settings.MinLoops)
+		{
+			// The newest loop that crosses from one side to the other.
+			const int32 Across = Loops.FindLastByPredicate([&Environments](const FLink& Link) { return Environments[Link.A] != Environments[Link.B]; });
+			if (Across == INDEX_NONE)
+			{
+				break;
+			}
+			const FLink Link = Loops[Across];
+			Loops.RemoveAt(Across);
+			Layout.Connections.RemoveAll([&Link](const FNRGeneratedConnection& Connection)
+			{
+				return Connection.RoomA == FMath::Min(Link.A, Link.B) && Connection.RoomB == FMath::Max(Link.A, Link.B);
+			});
+			Used[Link.A].RemoveSingle(Link.PortA);
+			Used[Link.B].RemoveSingle(Link.PortB);
+			Problem = Paint();
+		}
+		if (!Problem.IsEmpty())
+		{
+			OutReason = Problem;
+			return false;
+		}
+		const int32 Transitions = CountTransitions();
+		if (Transitions < Settings.MinTransitionCells || Transitions > Settings.MaxTransitionCells)
+		{
+			OutReason = FString::Printf(TEXT("%d transition room(s) and hall cell(s) where the sides meet, wanted %d-%d"),
+				Transitions, Settings.MinTransitionCells, Settings.MaxTransitionCells);
+			return false;
+		}
+		for (int32 Index = 0; Index < Placed.Num(); ++Index)
+		{
+			Layout.Rooms[Index].Environment = Environments[Index];
+		}
+	}
+
+	// 4. Templates: for every room, a turn of a template of its shape with every doorway it uses
+	//    (a DistanceFlood room: of the shape its environment has in that size).
 	for (int32 Index = 0; Index < Placed.Num(); ++Index)
 	{
 		// A hall cell is exactly the corridor it carries: no blocked stub.
 		const bool bHall = Types[Index] == ENRGridRoomType::Hall;
-		const FTurnedRoom* Turned = PickTurn(*Placed[Index].Shape, Used[Index], Templates, bHall && InTemplates.Num() > 0, Stream);
+		const FShape* Shape = Placed[Index].Shape;
+		if (bFlood)
+		{
+			Shape = Catalog.For(Types[Index], Environments[Index]).FindByPredicate([Shape](const FShape& Other) { return Other.Size == Shape->Size; });
+		}
+		const FTurnedRoom* Turned = Shape ? PickTurn(*Shape, Used[Index], Templates, bHall && InTemplates.Num() > 0, Stream) : nullptr;
 		if (!Turned)
 		{
 			OutReason = bHall
@@ -1547,6 +1777,26 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			if (IsHybrid(Settings) && Counts[static_cast<int32>(Environment)] == 0)
 			{
 				Problems.Add(FString::Printf(TEXT("a Hybrid map without %s rooms"), *EnvName(Environment)));
+			}
+		}
+
+		// DistanceFlood: the start on its side, the boss on the other, and a bounded number of
+		// Transition places between them.
+		const FNRGeneratedRoom* Start = Layout.FindRoom(Layout.StartRoomId);
+		const FNRGeneratedRoom* Boss = Layout.FindRoom(Layout.BossRoomId);
+		if (IsFlood(Settings) && Start && Boss)
+		{
+			const ENRRoomEnvironment From = Settings.bRandomizeHybridStart ? Start->Environment : Settings.HybridStartEnvironment;
+			if (From == ENRRoomEnvironment::Transition || Start->Environment != From || Boss->Environment != OtherSide(From))
+			{
+				Problems.Add(FString::Printf(TEXT("start is %s and boss %s; a Hybrid map runs from %s to %s"), *EnvName(Start->Environment),
+					*EnvName(Boss->Environment), *EnvName(From), *EnvName(OtherSide(From))));
+			}
+			const int32 Transitions = Counts[static_cast<int32>(ENRRoomEnvironment::Transition)];
+			if (Transitions < Settings.MinTransitionCells || Transitions > Settings.MaxTransitionCells)
+			{
+				Problems.Add(FString::Printf(TEXT("%d transition room(s) and hall cell(s), wanted %d-%d"), Transitions,
+					Settings.MinTransitionCells, Settings.MaxTransitionCells));
 			}
 		}
 	}
@@ -1746,8 +1996,8 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			Problems.Add(FString::Printf(TEXT("main path of %d rooms, wanted %d-%d"), PathRooms, Settings.MinMainPathLength, Settings.MaxMainPathLength));
 		}
 
-		// Hybrid: the main path's rooms run start side, Transition, other side - in that order.
-		if (IsHybrid(Settings))
+		// Hybrid PathSplit: the main path's rooms run start side, Transition, other side - in that order.
+		if (IsHybrid(Settings) && !IsFlood(Settings))
 		{
 			TArray<ENRRoomEnvironment> Sequence;
 			FString Letters;
