@@ -74,6 +74,28 @@ namespace NRGridGen
 		return IsHybrid(Settings) && Settings.HybridAssignment == ENRHybridAssignment::DistanceFlood;
 	}
 
+	/** Cells a room covers: 1 for a one-cell room or a hall cell, 4 for a 2x2 boss. */
+	int32 Area(const FNRGeneratedRoom& Room)
+	{
+		return Room.Footprint.X * Room.Footprint.Y;
+	}
+
+	/** Share of the cells outside Transition rooms that are of the given (start) environment. */
+	double SideShare(const FNRGeneratedLayout& Layout, ENRRoomEnvironment Side)
+	{
+		int32 Mine = 0;
+		int32 Sides = 0;
+		for (const FNRGeneratedRoom& Room : Layout.Rooms)
+		{
+			if (Room.Environment != ENRRoomEnvironment::Transition)
+			{
+				Sides += Area(Room);
+				Mine += Room.Environment == Side ? Area(Room) : 0;
+			}
+		}
+		return Sides > 0 ? static_cast<double>(Mine) / Sides : 0.0;
+	}
+
 	bool NeedsBranch(ENRGridLayoutShape Shape)
 	{
 		return Shape == ENRGridLayoutShape::Branching || Shape == ENRGridLayoutShape::Mixed;
@@ -183,6 +205,40 @@ namespace NRGridGen
 			IndexById.Add(Layout.Rooms[Index].RoomId, Index);
 		}
 		return IndexById;
+	}
+
+	/** Pieces the Indoor and Outdoor rooms fall into, each joined only through rooms of its own
+	 *  environment: 2 when each side is one piece. */
+	int32 SidePieces(const FNRGeneratedLayout& Layout)
+	{
+		const TMap<int32, int32> IndexById = IndexRooms(Layout);
+		const TArray<TArray<int32>> Neighbours = Adjacency(Layout, IndexById);
+		TArray<bool> Seen;
+		Seen.Init(false, Layout.Rooms.Num());
+		int32 Pieces = 0;
+		for (int32 Index = 0; Index < Layout.Rooms.Num(); ++Index)
+		{
+			const ENRRoomEnvironment Mine = Layout.Rooms[Index].Environment;
+			if (Mine == ENRRoomEnvironment::Transition || Seen[Index])
+			{
+				continue;
+			}
+			++Pieces;
+			TArray<int32> Queue = { Index };
+			Seen[Index] = true;
+			for (int32 Head = 0; Head < Queue.Num(); ++Head)
+			{
+				for (int32 Next : Neighbours[Queue[Head]])
+				{
+					if (!Seen[Next] && Layout.Rooms[Next].Environment == Mine)
+					{
+						Seen[Next] = true;
+						Queue.Add(Next);
+					}
+				}
+			}
+		}
+		return Pieces;
 	}
 
 	int32 FindOfType(const FNRGeneratedLayout& Layout, ENRGridRoomType Type)
@@ -776,6 +832,10 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, co
 	else if (IsFlood(Settings) && (Settings.HybridSplit <= 0.0f || Settings.HybridSplit >= 1.0f))
 	{
 		OutError = FString::Printf(TEXT("HybridSplit %.2f must lie between 0 and 1"), Settings.HybridSplit);
+	}
+	else if (IsFlood(Settings) && Settings.MaxHybridImbalance <= 0.0f)
+	{
+		OutError = FString::Printf(TEXT("MaxHybridImbalance %.2f leaves no room for a map; at least a little above 0"), Settings.MaxHybridImbalance);
 	}
 	else if (IsHybrid(Settings) && !IsFlood(Settings) && PathMax < Settings.MinTransitionRooms + 2)
 	{
@@ -1495,12 +1555,14 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		}
 	}
 
-	// 3b. DistanceFlood: every room takes the side it is nearer to in corridors - the start's or
-	//     the boss's, weighed by HybridSplit; a room as near to both becomes Transition where it can.
+	// 3b. DistanceFlood: the two sides grow from the start and from the boss along the corridors,
+	//     one room at a time - the side further below its share of the cells (HybridSplit for the
+	//     start's) taking the free room next to it nearest its own end - until every room is taken.
 	//     Then, wherever the two sides still touch, one of the two rooms becomes Transition: one
 	//     that has a Transition template of its type and size, a hall cell before a combat room
 	//     before any other. Too many Transition places (loops make more): a loop across the line
-	//     goes, while there are more loops than MinLoops.
+	//     goes, while there are more loops than MinLoops. A map whose sides end up further than
+	//     MaxHybridImbalance from HybridSplit (Transition rooms not counted) is given up.
 	if (bFlood)
 	{
 		const ENRRoomEnvironment To = OtherSide(StartEnvironment);
@@ -1519,16 +1581,82 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 			const TArray<TArray<int32>> Neighbours = Adjacency(Layout, IndexRooms(Layout));
 			const TArray<int32> FromStart = Distances(Neighbours, 0);
 			const TArray<int32> FromBoss = Distances(Neighbours, BossIndex);
+			// Both sides grow from their end, one room at a time: the side further below its share
+			// of the cells (HybridSplit for the start's) takes the room next to it that is nearest its
+			// end. Each side stays one connected piece.
+			TArray<int32> Side;
+			Side.Init(INDEX_NONE, Placed.Num());
+			Side[0] = 0;
+			Side[BossIndex] = 1;
+			double Cells[2] = { 0.0, 0.0 };
+			auto CellsOf = [&Placed](int32 Room) { return static_cast<double>(Placed[Room].Shape->Size.X * Placed[Room].Shape->Size.Y); };
+			Cells[0] = CellsOf(0);
+			Cells[1] = CellsOf(BossIndex);
+			const double Want[2] = { Split, 1.0 - Split };
+			for (int32 Left = Placed.Num() - 2; Left > 0; --Left)
+			{
+				// Each side's best room to take: a free neighbour, nearest that side's end.
+				int32 Best[2] = { INDEX_NONE, INDEX_NONE };
+				for (int32 Room = 0; Room < Placed.Num(); ++Room)
+				{
+					if (Side[Room] != INDEX_NONE)
+					{
+						continue;
+					}
+					for (int32 Taker = 0; Taker < 2; ++Taker)
+					{
+						const TArray<int32>& Far = Taker == 0 ? FromStart : FromBoss;
+						if (Neighbours[Room].ContainsByPredicate([&Side, Taker](int32 Next) { return Side[Next] == Taker; })
+							&& (Best[Taker] == INDEX_NONE || Far[Room] < Far[Best[Taker]]))
+						{
+							Best[Taker] = Room;
+						}
+					}
+				}
+				const bool bStartTurn = Cells[0] / Want[0] <= Cells[1] / Want[1];
+				const int32 Taker = Best[bStartTurn ? 0 : 1] != INDEX_NONE ? (bStartTurn ? 0 : 1) : (bStartTurn ? 1 : 0);
+				if (Best[Taker] == INDEX_NONE)
+				{
+					break;
+				}
+				Side[Best[Taker]] = Taker;
+				Cells[Taker] += CellsOf(Best[Taker]);
+			}
 			for (int32 Room = 0; Room < Placed.Num(); ++Room)
 			{
-				// Split of the way from the start: a room there has FromStart (1 - Split) = FromBoss Split.
-				const double StartSide = FromStart[Room] * (1.0 - Split);
-				const double BossSide = FromBoss[Room] * Split;
-				Environments[Room] = FMath::IsNearlyEqual(StartSide, BossSide) && Convertible(Room) ? ENRRoomEnvironment::Transition
-					: StartSide <= BossSide ? StartEnvironment : To;
+				Environments[Room] = Side[Room] == 0 ? StartEnvironment : To;
 			}
-			Environments[0] = StartEnvironment;
-			Environments[BossIndex] = To;
+			// Whether turning Room Transition would cut the rest of its side in two.
+			auto Splits = [&](int32 Room)
+			{
+				const ENRRoomEnvironment Mine = Environments[Room];
+				TArray<int32> Queue;
+				int32 Count = 0;
+				for (int32 Other = 0; Other < Placed.Num(); ++Other)
+				{
+					if (Other != Room && Environments[Other] == Mine)
+					{
+						++Count;
+						if (Queue.Num() == 0)
+						{
+							Queue.Add(Other);
+						}
+					}
+				}
+				TSet<int32> Seen(Queue);
+				for (int32 Head = 0; Head < Queue.Num(); ++Head)
+				{
+					for (int32 Next : Neighbours[Queue[Head]])
+					{
+						if (Next != Room && Environments[Next] == Mine && !Seen.Contains(Next))
+						{
+							Seen.Add(Next);
+							Queue.Add(Next);
+						}
+					}
+				}
+				return Queue.Num() != Count;
+			};
 			for (bool bChanged = true; bChanged;)
 			{
 				bChanged = false;
@@ -1540,11 +1668,12 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 					{
 						continue;
 					}
-					const bool bA = Convertible(A);
-					const bool bB = Convertible(B);
+					// A room may turn only if it has a Transition template and its side stays in one piece.
+					const bool bA = Convertible(A) && !Splits(A);
+					const bool bB = Convertible(B) && !Splits(B);
 					if (!bA && !bB)
 					{
-						return FString::Printf(TEXT("neither %s %d nor %s %d, where Indoor meets Outdoor, has a Transition template"),
+						return FString::Printf(TEXT("neither %s %d nor %s %d, where Indoor meets Outdoor, can turn Transition (no template, or its side would fall apart)"),
 							*TypeName(Types[A]), A, *TypeName(Types[B]), B);
 					}
 					const int32 Pick = !bA ? B : !bB ? A
@@ -1595,6 +1724,13 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		for (int32 Index = 0; Index < Placed.Num(); ++Index)
 		{
 			Layout.Rooms[Index].Environment = Environments[Index];
+		}
+		const double Share = SideShare(Layout, StartEnvironment);
+		if (FMath::Abs(Share - Settings.HybridSplit) > Settings.MaxHybridImbalance)
+		{
+			OutReason = FString::Printf(TEXT("the start's side holds %.0f%% of the cells, wanted %.0f%% +-%.0f"), 100.0 * Share,
+				100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance);
+			return false;
 		}
 	}
 
@@ -1797,6 +1933,17 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			{
 				Problems.Add(FString::Printf(TEXT("%d transition room(s) and hall cell(s), wanted %d-%d"), Transitions,
 					Settings.MinTransitionCells, Settings.MaxTransitionCells));
+			}
+			const int32 Pieces = SidePieces(Layout);
+			if (Pieces > 2)
+			{
+				Problems.Add(FString::Printf(TEXT("the Indoor and Outdoor rooms fall into %d pieces, not one each"), Pieces));
+			}
+			const double Share = SideShare(Layout, From);
+			if (FMath::Abs(Share - Settings.HybridSplit) > Settings.MaxHybridImbalance + UE_KINDA_SMALL_NUMBER)
+			{
+				Problems.Add(FString::Printf(TEXT("the start's side holds %.0f%% of the cells, wanted %.0f%% +-%.0f"), 100.0 * Share,
+					100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance));
 			}
 		}
 	}

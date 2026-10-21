@@ -93,12 +93,15 @@ struct PROJECTNR_API FNRCorridorTemplateDesc
  * whose environments may meet. A room only takes a shape and template of its own environment.
  *
  * Hybrid with HybridAssignment DistanceFlood works the other way round: rooms (all but the start
- * and the boss) are placed with shapes both an Indoor and an Outdoor template have, and after the
- * loops every room takes the side it is nearer to in corridors - the start's or the boss's,
- * weighed by HybridSplit. Wherever the two sides still touch, one of the two rooms (one with a
- * Transition template of its type and size; hall cells first, then combat rooms) becomes
- * Transition. MinTransitionCells-MaxTransitionCells bound how many; loops across the line are
- * dropped (down to MinLoops) before a layout is given up.
+ * and the boss) are placed with shapes both an Indoor and an Outdoor template have. After the
+ * loops both sides grow from their end along the corridors, one room at a time: the side further
+ * below its share of the cells (HybridSplit for the start's) takes the free room next to it that
+ * is nearest its own end, so each side stays one connected piece. Wherever the
+ * two sides still touch, one of the two rooms (one with a Transition template of its type and
+ * size; hall cells first, then combat rooms) becomes Transition. MinTransitionCells-
+ * MaxTransitionCells bound how many, and loops across the line are dropped (down to MinLoops)
+ * to stay within them; a layout outside them, or with its start side further than
+ * MaxHybridImbalance from HybridSplit, is given up.
  *
  * Steps 1-3 place rooms by shape: a size, with every doorway place some template of that size
  * and type has at some allowed turn. A doorway is only used while some template still has all

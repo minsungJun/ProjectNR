@@ -45,9 +45,9 @@ enum class ENRHybridAssignment : uint8
 	/** Before placement: the main path is cut into the start's side, a run of Transition rooms and
 	 *  the boss's side; branches keep the side they grow from. */
 	PathSplit,
-	/** After placement: every room takes the side it is nearer to, counted in corridors from the
-	 *  start and from the boss (weighed by HybridSplit); wherever the two sides meet, one of the two
-	 *  rooms becomes Transition. */
+	/** After placement: both sides grow from their end (the start, the boss) along the corridors,
+	 *  one room at a time, keeping the start's side near HybridSplit of the cells; wherever the two
+	 *  sides meet, one of the two rooms becomes Transition. */
 	DistanceFlood
 };
 
@@ -86,16 +86,21 @@ struct PROJECTNR_API FNRMapGenSettings
 	bool bRandomizeHybridStart = false;
 
 	/** Hybrid: how environments are given out. PathSplit uses MinTransitionRooms-MaxTransitionRooms,
-	 *  DistanceFlood HybridSplit and MinTransitionCells-MaxTransitionCells. */
+	 *  DistanceFlood HybridSplit, MaxHybridImbalance and MinTransitionCells-MaxTransitionCells. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
 	ENRHybridAssignment HybridAssignment = ENRHybridAssignment::PathSplit;
 
 	/**
-	 * DistanceFlood: where the two sides meet, as a fraction of the way from the start to the boss.
-	 * 0.5 halfway; lower gives the boss's side more of the map, higher the start's side.
+	 * DistanceFlood: the share of the map's cells (Transition rooms not counted) on the start's side.
+	 * 0.5 for as much indoors as outdoors: the side further below its share takes the next room.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "0.1", ClampMax = "0.9"))
 	float HybridSplit = 0.5f;
+
+	/** DistanceFlood: how far a map's start side may end up from HybridSplit (0.1 = 10 points
+	 *  either way, 40-60% at 0.5) before the map is given up and generated again. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "0.01", ClampMax = "0.5"))
+	float MaxHybridImbalance = 0.1f;
 
 	/** DistanceFlood: Transition rooms and hall cells in the whole map. More places where the two
 	 *  sides touch (through branches and loops) need more; a layout outside the range is retried. */
