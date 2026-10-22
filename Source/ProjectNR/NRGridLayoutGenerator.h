@@ -99,7 +99,9 @@ struct PROJECTNR_API FNRCorridorTemplateDesc
  * HybridBalance) takes the free room next to it that
  * is nearest its own end, so each side stays one connected piece. Wherever the
  * two sides still touch, one of the two rooms (one with a Transition template of its type and
- * size; hall cells first, then combat rooms) becomes Transition. MinTransitionCells-
+ * size; combat rooms first, then other rooms, hall cells last) becomes Transition. At least one
+ * Transition place is a room, never hall cells alone: failing that, a room next to a Transition
+ * hall cell turns too. MinTransitionCells-
  * MaxTransitionCells bound how many, and loops across the line are dropped (down to MinLoops)
  * to stay within them; a layout outside them, or with its start side further than
  * MaxHybridImbalance from HybridSplit, is given up.
@@ -118,7 +120,7 @@ class PROJECTNR_API FNRGridLayoutGenerator
 {
 public:
 	/** Bump whenever a change would make a seed produce a different layout. */
-	static constexpr int32 Version = 7;
+	static constexpr int32 Version = 8;
 
 	/** Whether the settings and templates can be met at all. False with the reason when they cannot. */
 	static bool CheckSettings(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& Templates,

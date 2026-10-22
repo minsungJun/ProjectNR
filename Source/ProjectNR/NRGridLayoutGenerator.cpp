@@ -993,11 +993,11 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, co
 				OutError = FString::Printf(TEXT("no %s room size both an Indoor and an Outdoor template have; a DistanceFlood map may put one on either side"), *TypeName(Type));
 				return false;
 			}
-			bAnyTransition |= Catalog.Has(Type, ENRRoomEnvironment::Transition);
+			bAnyTransition |= Type != ENRGridRoomType::Hall && Catalog.Has(Type, ENRRoomEnvironment::Transition);
 		}
 		if (!bAnyTransition)
 		{
-			OutError = TEXT("no Transition room or hall template to stand where Indoor meets Outdoor");
+			OutError = TEXT("no Transition room template (hall cells alone do not count) to stand where Indoor meets Outdoor");
 			return false;
 		}
 		return true;
@@ -1583,7 +1583,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 					return Shape.Size == Placed[Room].Shape->Size && Shape.Covers(Used[Room]);
 				});
 		};
-		auto Rank = [&Types](int32 Room) { return Types[Room] == ENRGridRoomType::Hall ? 0 : Types[Room] == ENRGridRoomType::Combat ? 1 : 2; };
+		auto Rank = [&Types](int32 Room) { return Types[Room] == ENRGridRoomType::Combat ? 0 : Types[Room] == ENRGridRoomType::Hall ? 2 : 1; };
 		auto Paint = [&]() -> FString
 		{
 			const TArray<TArray<int32>> Neighbours = Adjacency(Layout, IndexRooms(Layout));
@@ -1694,6 +1694,31 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 					Environments[Pick] = ENRRoomEnvironment::Transition;
 					bChanged = true;
 				}
+			}
+			// At least one Transition place is a room, not hall cells alone: failing that, a room
+			// next to a Transition hall cell turns too (combat rooms first, then room order).
+			bool bTransitionRoom = false;
+			for (int32 Room = 0; Room < Placed.Num(); ++Room)
+			{
+				bTransitionRoom |= Environments[Room] == ENRRoomEnvironment::Transition && Types[Room] != ENRGridRoomType::Hall;
+			}
+			if (!bTransitionRoom)
+			{
+				int32 Extra = INDEX_NONE;
+				for (int32 Room = 0; Room < Placed.Num(); ++Room)
+				{
+					if (Environments[Room] != ENRRoomEnvironment::Transition && Types[Room] != ENRGridRoomType::Hall
+						&& Neighbours[Room].ContainsByPredicate([&Environments](int32 Next) { return Environments[Next] == ENRRoomEnvironment::Transition; })
+						&& Convertible(Room) && !Splits(Room) && (Extra == INDEX_NONE || Rank(Room) < Rank(Extra)))
+					{
+						Extra = Room;
+					}
+				}
+				if (Extra == INDEX_NONE)
+				{
+					return TEXT("only hall cells stand where Indoor meets Outdoor, and no room next to them can turn Transition");
+				}
+				Environments[Extra] = ENRRoomEnvironment::Transition;
 			}
 			return FString();
 		};
@@ -1926,6 +1951,14 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			{
 				Problems.Add(FString::Printf(TEXT("a Hybrid map without %s rooms"), *EnvName(Environment)));
 			}
+		}
+		if (IsHybrid(Settings) && Counts[static_cast<int32>(ENRRoomEnvironment::Transition)] > 0
+			&& !Layout.Rooms.ContainsByPredicate([](const FNRGeneratedRoom& Room)
+			{
+				return Room.Environment == ENRRoomEnvironment::Transition && Room.RoomType != ENRGridRoomType::Hall;
+			}))
+		{
+			Problems.Add(TEXT("every Transition place is a hall cell; a Hybrid map needs at least one Transition room"));
 		}
 
 		// DistanceFlood: the start on its side, the boss on the other, and a bounded number of

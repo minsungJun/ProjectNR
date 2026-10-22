@@ -323,6 +323,15 @@ namespace NRGridTests
 						}
 					}
 
+					// Hybrid: at least one Transition room, never hall cells alone.
+					if (Variant.Mode == ENRMapEnvironmentMode::Hybrid && !Layout.Rooms.ContainsByPredicate([](const FNRGeneratedRoom& Room)
+						{
+							return Room.Environment == ENRRoomEnvironment::Transition && Room.RoomType != ENRGridRoomType::Hall;
+						}))
+					{
+						Failures.Add(FString::Printf(TEXT("%s: no Transition room, only hall cells"), *Where));
+					}
+
 					// 5. Hybrid main path: from the start's side to the other side only through Transition.
 					const FNRGeneratedRoom* Start = Layout.FindRoom(Layout.StartRoomId);
 					const FNRGeneratedRoom* Boss = Layout.FindRoom(Layout.BossRoomId);
@@ -545,7 +554,13 @@ namespace NRGridTests
 						Settings.MinMainPathLength = Settings.MaxMainPathLength = 3;
 						Settings.MinTransitionRooms = Settings.MaxTransitionRooms = 2;
 					} },
-				{ TEXT("DistanceFlood without any Transition template"), TEXT("no Transition room or hall template"),
+				{ TEXT("DistanceFlood with Transition hall cells only"), TEXT("no Transition room template (hall cells alone do not count)"),
+					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
+					{
+						Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+						Without(Set, [](const FNRRoomTemplateDesc& T) { return T.Environment == E::Transition && T.TypeMask != Bit(ENRGridRoomType::Hall); });
+					} },
+				{ TEXT("DistanceFlood without any Transition template"), TEXT("no Transition room template"),
 					[&Without](FNRMapGenSettings& Settings, TArray<FNRRoomTemplateDesc>& Set, TArray<FNRCorridorTemplateDesc>&)
 					{
 						Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
