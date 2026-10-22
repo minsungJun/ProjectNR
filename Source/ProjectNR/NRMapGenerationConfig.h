@@ -46,9 +46,19 @@ enum class ENRHybridAssignment : uint8
 	 *  the boss's side; branches keep the side they grow from. */
 	PathSplit,
 	/** After placement: both sides grow from their end (the start, the boss) along the corridors,
-	 *  one room at a time, keeping the start's side near HybridSplit of the cells; wherever the two
-	 *  sides meet, one of the two rooms becomes Transition. */
+	 *  one room at a time, keeping the start's side near HybridSplit of the map (HybridBalance);
+	 *  wherever the two sides meet, one of the two rooms becomes Transition. */
 	DistanceFlood
+};
+
+/** What DistanceFlood weighs when it keeps the two sides of a Hybrid map even. */
+UENUM(BlueprintType)
+enum class ENRHybridBalance : uint8
+{
+	/** Every room and hall cell counts once, whatever its size. What the log's per-environment counts show. */
+	Rooms,
+	/** Every cell a room covers counts: a 2x2 boss weighs 4, a 1x2 elite 2. */
+	Cells
 };
 
 /**
@@ -91,11 +101,16 @@ struct PROJECTNR_API FNRMapGenSettings
 	ENRHybridAssignment HybridAssignment = ENRHybridAssignment::PathSplit;
 
 	/**
-	 * DistanceFlood: the share of the map's cells (Transition rooms not counted) on the start's side.
-	 * 0.5 for as much indoors as outdoors: the side further below its share takes the next room.
+	 * DistanceFlood: the share of the map (rooms or cells, by HybridBalance; Transition rooms not
+	 * counted) on the start's side. 0.5 for as much indoors as outdoors: the side further below its
+	 * share takes the next room.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "0.1", ClampMax = "0.9"))
 	float HybridSplit = 0.5f;
+
+	/** DistanceFlood: whether HybridSplit counts rooms and hall cells (each once) or the cells they cover. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
+	ENRHybridBalance HybridBalance = ENRHybridBalance::Rooms;
 
 	/** DistanceFlood: how far a map's start side may end up from HybridSplit (0.1 = 10 points
 	 *  either way, 40-60% at 0.5) before the map is given up and generated again. */

@@ -208,6 +208,11 @@ namespace NRGridTests
 				{
 					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
 				} },
+			{ TEXT("Hybrid DistanceFlood, by cells"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+					Settings.HybridBalance = ENRHybridBalance::Cells;
+				} },
 			{ TEXT("Hybrid DistanceFlood, split 0.3"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
 				{
 					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
@@ -354,15 +359,16 @@ namespace NRGridTests
 							Failures.Add(FString::Printf(TEXT("%s: main path from %s to %s with %d transition room(s), %d in the map, does not cross through Transition as asked"),
 								*Where, *EnvName(Start->Environment), *EnvName(Boss->Environment), Transitions, Cells));
 						}
-						// The start's side as a share of the cells outside Transition rooms.
+						// The start's side as a share of the rooms (or cells) outside Transition rooms.
 						int32 Mine = 0;
 						int32 Sides = 0;
 						for (const FNRGeneratedRoom& Room : Layout.Rooms)
 						{
 							if (Room.Environment != ENRRoomEnvironment::Transition)
 							{
-								Sides += Room.Footprint.X * Room.Footprint.Y;
-								Mine += Room.Environment == Start->Environment ? Room.Footprint.X * Room.Footprint.Y : 0;
+								const int32 Weight = Settings.HybridBalance == ENRHybridBalance::Cells ? Room.Footprint.X * Room.Footprint.Y : 1;
+								Sides += Weight;
+								Mine += Room.Environment == Start->Environment ? Weight : 0;
 							}
 						}
 						const double Share = static_cast<double>(Mine) / FMath::Max(Sides, 1);
@@ -403,13 +409,13 @@ namespace NRGridTests
 						WithinFive += FMath::Abs(Share - Settings.HybridSplit) <= 0.05 + UE_KINDA_SMALL_NUMBER ? 1 : 0;
 						if (bFlood && FMath::Abs(Share - Settings.HybridSplit) > Settings.MaxHybridImbalance + UE_KINDA_SMALL_NUMBER)
 						{
-							Failures.Add(FString::Printf(TEXT("%s: the start's side holds %.0f%% of the cells, wanted %.0f%% +-%.0f"),
+							Failures.Add(FString::Printf(TEXT("%s: the start's side holds %.0f%% of the map, wanted %.0f%% +-%.0f"),
 								*Where, 100.0 * Share, 100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance));
 						}
 					}
 				}
 			}
-			Summary.Add(FString::Printf(TEXT("environments %s: %d/%d generated, %d needed a retry; rooms and halls I %d, O %d, T %d; starts I %d, O %d; corridors I-I %d, I-T %d, T-T %d, T-O %d, O-O %d, I-O %d; transition rooms on the main path 1:%d 2:%d; transition cells in the map 1:%d 2:%d 3:%d 4+:%d; start side %.0f%% of the other cells (%.0f-%.0f%%, %d within 5 points of the split); %d with a side in pieces; corridor templates %d/%d/%d/%d/%d/%d"),
+			Summary.Add(FString::Printf(TEXT("environments %s: %d/%d generated, %d needed a retry; rooms and halls I %d, O %d, T %d; starts I %d, O %d; corridors I-I %d, I-T %d, T-T %d, T-O %d, O-O %d, I-O %d; transition rooms on the main path 1:%d 2:%d; transition cells in the map 1:%d 2:%d 3:%d 4+:%d; start side %.0f%% of the rest (by HybridBalance) (%.0f-%.0f%%, %d within 5 points of the split); %d with a side in pieces; corridor templates %d/%d/%d/%d/%d/%d"),
 				Variant.Label, Generated, Tried, Retried, Rooms[0], Rooms[1], Rooms[2], Starts[0], Starts[1],
 				Pairs[0][0], Pairs[0][2], Pairs[2][2], Pairs[1][2], Pairs[1][1], Pairs[0][1], TransitionRuns[1], TransitionRuns[2],
 				TransitionCells[1], TransitionCells[2], TransitionCells[3], TransitionCells[4],

@@ -397,12 +397,15 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 
 	const UEnum* ShapeEnum = StaticEnum<ENRGridLayoutShape>();
 	const int32 Halls = FNRGridLayoutGenerator::CountHalls(GeneratedLayout);
+	// Rooms and hall cells per environment, and the cells they cover.
 	int32 ByEnvironment[3] = { 0, 0, 0 };
+	int32 CellsByEnvironment[3] = { 0, 0, 0 };
 	for (const FNRGeneratedRoom& Room : GeneratedLayout.Rooms)
 	{
 		++ByEnvironment[static_cast<int32>(Room.Environment)];
+		CellsByEnvironment[static_cast<int32>(Room.Environment)] += Room.Footprint.X * Room.Footprint.Y;
 	}
-	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, %s, attempt %d, v%d): %d rooms, %d hall cell(s), %d corridors, %d loop(s), %d branch room(s); Indoor %d, Outdoor %d, Transition %d"),
+	UE_LOG(LogNRMapGen, Log, TEXT("Layout seed %d (%s, %s, attempt %d, v%d): %d rooms, %d hall cell(s), %d corridors, %d loop(s), %d branch room(s); Indoor %d (%d cells), Outdoor %d (%d cells), Transition %d (%d cells)"),
 		InSeed, *ShapeEnum->GetNameStringByValue(static_cast<int64>(Settings.Shape)),
 		*(StaticEnum<ENRMapEnvironmentMode>()->GetNameStringByValue(static_cast<int64>(Settings.EnvironmentMode))
 			+ (Settings.EnvironmentMode == ENRMapEnvironmentMode::Hybrid
@@ -411,7 +414,7 @@ bool ANRMapGenerator::GenerateLayout(int32 InSeed, FString& OutError, TOptional<
 		GeneratedLayout.Attempt, GeneratedLayout.GeneratorVersion,
 		GeneratedLayout.Rooms.Num() - Halls, Halls, GeneratedLayout.Connections.Num(),
 		FNRGridLayoutGenerator::CountLoops(GeneratedLayout), FNRGridLayoutGenerator::CountBranchRooms(GeneratedLayout),
-		ByEnvironment[0], ByEnvironment[1], ByEnvironment[2]);
+		ByEnvironment[0], CellsByEnvironment[0], ByEnvironment[1], CellsByEnvironment[1], ByEnvironment[2], CellsByEnvironment[2]);
 	// Room types on the left, environments (I, O, T) on the right.
 	TArray<FString> Lines;
 	TArray<FString> EnvironmentLines;

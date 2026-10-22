@@ -95,7 +95,8 @@ struct PROJECTNR_API FNRCorridorTemplateDesc
  * Hybrid with HybridAssignment DistanceFlood works the other way round: rooms (all but the start
  * and the boss) are placed with shapes both an Indoor and an Outdoor template have. After the
  * loops both sides grow from their end along the corridors, one room at a time: the side further
- * below its share of the cells (HybridSplit for the start's) takes the free room next to it that
+ * below its share of the map (HybridSplit for the start's, counted in rooms or cells by
+ * HybridBalance) takes the free room next to it that
  * is nearest its own end, so each side stays one connected piece. Wherever the
  * two sides still touch, one of the two rooms (one with a Transition template of its type and
  * size; hall cells first, then combat rooms) becomes Transition. MinTransitionCells-
@@ -117,7 +118,7 @@ class PROJECTNR_API FNRGridLayoutGenerator
 {
 public:
 	/** Bump whenever a change would make a seed produce a different layout. */
-	static constexpr int32 Version = 6;
+	static constexpr int32 Version = 7;
 
 	/** Whether the settings and templates can be met at all. False with the reason when they cannot. */
 	static bool CheckSettings(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& Templates,

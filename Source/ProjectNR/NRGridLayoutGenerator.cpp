@@ -80,8 +80,15 @@ namespace NRGridGen
 		return Room.Footprint.X * Room.Footprint.Y;
 	}
 
-	/** Share of the cells outside Transition rooms that are of the given (start) environment. */
-	double SideShare(const FNRGeneratedLayout& Layout, ENRRoomEnvironment Side)
+	/** What HybridSplit counts, for messages. */
+	const TCHAR* BalanceUnit(ENRHybridBalance Balance)
+	{
+		return Balance == ENRHybridBalance::Cells ? TEXT("cells") : TEXT("rooms and hall cells");
+	}
+
+	/** Share of the map outside Transition rooms - rooms and hall cells, or the cells they cover -
+	 *  that is of the given (start) environment. */
+	double SideShare(const FNRGeneratedLayout& Layout, ENRRoomEnvironment Side, ENRHybridBalance Balance)
 	{
 		int32 Mine = 0;
 		int32 Sides = 0;
@@ -89,8 +96,9 @@ namespace NRGridGen
 		{
 			if (Room.Environment != ENRRoomEnvironment::Transition)
 			{
-				Sides += Area(Room);
-				Mine += Room.Environment == Side ? Area(Room) : 0;
+				const int32 Weight = Balance == ENRHybridBalance::Cells ? Area(Room) : 1;
+				Sides += Weight;
+				Mine += Room.Environment == Side ? Weight : 0;
 			}
 		}
 		return Sides > 0 ? static_cast<double>(Mine) / Sides : 0.0;
@@ -1582,14 +1590,18 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 			const TArray<int32> FromStart = Distances(Neighbours, 0);
 			const TArray<int32> FromBoss = Distances(Neighbours, BossIndex);
 			// Both sides grow from their end, one room at a time: the side further below its share
-			// of the cells (HybridSplit for the start's) takes the room next to it that is nearest its
-			// end. Each side stays one connected piece.
+			// of the map (HybridSplit for the start's, in rooms or cells) takes the room next to it
+			// that is nearest its end. Each side stays one connected piece.
 			TArray<int32> Side;
 			Side.Init(INDEX_NONE, Placed.Num());
 			Side[0] = 0;
 			Side[BossIndex] = 1;
 			double Cells[2] = { 0.0, 0.0 };
-			auto CellsOf = [&Placed](int32 Room) { return static_cast<double>(Placed[Room].Shape->Size.X * Placed[Room].Shape->Size.Y); };
+			const bool bByCells = Settings.HybridBalance == ENRHybridBalance::Cells;
+			auto CellsOf = [&Placed, bByCells](int32 Room)
+			{
+				return bByCells ? static_cast<double>(Placed[Room].Shape->Size.X * Placed[Room].Shape->Size.Y) : 1.0;
+			};
 			Cells[0] = CellsOf(0);
 			Cells[1] = CellsOf(BossIndex);
 			const double Want[2] = { Split, 1.0 - Split };
@@ -1725,11 +1737,11 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		{
 			Layout.Rooms[Index].Environment = Environments[Index];
 		}
-		const double Share = SideShare(Layout, StartEnvironment);
+		const double Share = SideShare(Layout, StartEnvironment, Settings.HybridBalance);
 		if (FMath::Abs(Share - Settings.HybridSplit) > Settings.MaxHybridImbalance)
 		{
-			OutReason = FString::Printf(TEXT("the start's side holds %.0f%% of the cells, wanted %.0f%% +-%.0f"), 100.0 * Share,
-				100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance);
+			OutReason = FString::Printf(TEXT("the start's side holds %.0f%% of the %s, wanted %.0f%% +-%.0f"), 100.0 * Share,
+				BalanceUnit(Settings.HybridBalance), 100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance);
 			return false;
 		}
 	}
@@ -1939,11 +1951,11 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			{
 				Problems.Add(FString::Printf(TEXT("the Indoor and Outdoor rooms fall into %d pieces, not one each"), Pieces));
 			}
-			const double Share = SideShare(Layout, From);
+			const double Share = SideShare(Layout, From, Settings.HybridBalance);
 			if (FMath::Abs(Share - Settings.HybridSplit) > Settings.MaxHybridImbalance + UE_KINDA_SMALL_NUMBER)
 			{
-				Problems.Add(FString::Printf(TEXT("the start's side holds %.0f%% of the cells, wanted %.0f%% +-%.0f"), 100.0 * Share,
-					100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance));
+				Problems.Add(FString::Printf(TEXT("the start's side holds %.0f%% of the %s, wanted %.0f%% +-%.0f"), 100.0 * Share,
+					BalanceUnit(Settings.HybridBalance), 100.0 * Settings.HybridSplit, 100.0 * Settings.MaxHybridImbalance));
 			}
 		}
 	}
