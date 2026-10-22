@@ -63,7 +63,7 @@ public:
 
 	/** Outer size of one cell, in cm. Must match the map's room size. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template", meta = (ClampMin = "100.0"))
-	float Size = 3600.0f;
+	float Size = 2400.0f;
 };
 
 /**

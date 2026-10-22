@@ -1719,6 +1719,49 @@ namespace NRGridCommands
 		}
 	}
 
+	/** NR.Grid.NavProbe: for every room, whether its centre is on the navmesh and how far a path
+	 *  from the start room reaches; for every corridor, whether its two cells are joined. Works
+	 *  while the generator still waits for navigation, to see where the map falls apart. */
+	void NavProbe(const TArray<FString>& Args, UWorld* World)
+	{
+		const ANRMapGenerator* Generator = World ? Find(World) : nullptr;
+		UNavigationSystemV1* Navigation = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+		if (!Generator || !Navigation)
+		{
+			return;
+		}
+		const FNRGeneratedLayout& Layout = Generator->GetActiveLayout();
+		const FNRGeneratedRoom* Start = Layout.FindRoom(Layout.StartRoomId);
+		if (!Start)
+		{
+			return;
+		}
+		const FVector Up(0.0f, 0.0f, 50.0f);
+		UE_LOG(LogNRMapGen, Log, TEXT("Nav probe (building %d):"), Navigation->IsNavigationBuildInProgress() ? 1 : 0);
+		for (const FNRGeneratedRoom& Room : Layout.Rooms)
+		{
+			const FVector Center = Generator->GetRoomCenter(Room) + Up;
+			FNavLocation OnMesh;
+			const bool bOnMesh = Navigation->ProjectPointToNavigation(Center, OnMesh, FVector(300.0f, 300.0f, 300.0f));
+			const UNavigationPath* Path = Navigation->FindPathToLocationSynchronously(World, Generator->GetRoomCenter(*Start) + Up, Center);
+			const bool bWhole = Path && Path->IsValid() && !Path->IsPartial();
+			const FVector End = Path && Path->PathPoints.Num() > 0 ? Path->PathPoints.Last() : FVector::ZeroVector;
+			UE_LOG(LogNRMapGen, Log, TEXT("  room %d (template %d, cell %d,%d): centre %s navmesh, path from start %s, ends at %s"), Room.RoomId,
+				Room.TemplateIndex, Room.Cell.X, Room.Cell.Y, bOnMesh ? TEXT("on") : TEXT("OFF"), bWhole ? TEXT("whole") : TEXT("PARTIAL"),
+				*End.ToCompactString());
+		}
+		for (const FNRGeneratedConnection& Connection : Layout.Connections)
+		{
+			const UNavigationPath* Path = Navigation->FindPathToLocationSynchronously(World, Generator->GetCellCenter(Connection.CellA) + Up,
+				Generator->GetCellCenter(Connection.CellB) + Up);
+			if (!(Path && Path->IsValid() && !Path->IsPartial()))
+			{
+				UE_LOG(LogNRMapGen, Warning, TEXT("  corridor %d-%d: no whole path between cells %d,%d and %d,%d"), Connection.RoomA, Connection.RoomB,
+					Connection.CellA.X, Connection.CellA.Y, Connection.CellB.X, Connection.CellB.Y);
+			}
+		}
+	}
+
 	/** NR.Grid.Signature: the full placement text the signature hash is taken from. */
 	void Signature(const TArray<FString>& Args, UWorld* World)
 	{
@@ -1792,6 +1835,10 @@ static FAutoConsoleCommandWithWorldAndArgs GNRGridUnloadCommand(TEXT("NR.Grid.Un
 static FAutoConsoleCommandWithWorldAndArgs GNRGridStatusCommand(TEXT("NR.Grid.Status"),
 	TEXT("Log the map generator's modules, collision and navigation checks and placement signature."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Status));
+
+static FAutoConsoleCommandWithWorldAndArgs GNRGridNavProbeCommand(TEXT("NR.Grid.NavProbe"),
+	TEXT("Log, per room, whether its centre is on the navmesh and reachable from the start room, and every corridor whose cells are not joined."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::NavProbe));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridSignatureCommand(TEXT("NR.Grid.Signature"),
 	TEXT("Log the full placement text of the loaded map."),

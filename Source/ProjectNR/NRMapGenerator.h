@@ -233,7 +233,7 @@ protected:
 
 	/** Outer size of one cell of a room, in cm. Every room template must match it. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Spec", meta = (ClampMin = "100.0"))
-	float RoomSize = 3600.0f;
+	float RoomSize = 2400.0f;
 
 	/** Corridor length when the Config has no corridor template, in cm. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Spec", meta = (ClampMin = "0.0"))
