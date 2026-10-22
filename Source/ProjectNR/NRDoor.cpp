@@ -21,6 +21,11 @@ ANRDoor::ANRDoor()
 	DoorMesh->SetupAttachment(Root);
 	DoorMesh->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 
+	// Second leaf of a double door: no mesh unless the instance sets one.
+	DoorMeshRight = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DoorMeshRight"));
+	DoorMeshRight->SetupAttachment(Root);
+	DoorMeshRight->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+
 	// A visible slab by default, standing on the actor's origin: 3 m wide, 25 cm thick, 3 m tall.
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (Cube.Succeeded())
@@ -36,6 +41,7 @@ void ANRDoor::BeginPlay()
 	Super::BeginPlay();
 
 	ClosedLocation = DoorMesh->GetRelativeLocation();
+	ClosedLocationRight = DoorMeshRight->GetRelativeLocation();
 	bWantOpen = bStartOpen;
 	Alpha = bStartOpen ? 1.0f : 0.0f;
 	ApplyAlpha();
@@ -93,9 +99,16 @@ void ANRDoor::ApplyAlpha()
 	const float Eased = FMath::InterpEaseInOut(0.0f, 1.0f, Alpha, 2.0f);
 	DoorMesh->SetRelativeLocation(ClosedLocation + OpenOffset * Eased);
 	DoorMesh->SetVisibility(Alpha < 1.0f);
+	if (DoorMeshRight->GetStaticMesh())
+	{
+		DoorMeshRight->SetRelativeLocation(ClosedLocationRight + OpenOffsetRight * Eased);
+		DoorMeshRight->SetVisibility(Alpha < 1.0f);
+	}
 }
 
 void ANRDoor::SetBlocking(bool bBlocking)
 {
-	DoorMesh->SetCollisionEnabled(bBlocking ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+	const ECollisionEnabled::Type Mode = bBlocking ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision;
+	DoorMesh->SetCollisionEnabled(Mode);
+	DoorMeshRight->SetCollisionEnabled(Mode);
 }

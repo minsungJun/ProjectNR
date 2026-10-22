@@ -47,6 +47,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Door")
 	TObjectPtr<UStaticMeshComponent> DoorMesh;
 
+	/**
+	 * Optional second leaf for a double sliding door. Has no mesh by default; give it one and
+	 * it moves by OpenOffsetRight while DoorMesh moves by OpenOffset, so the two leaves can
+	 * part sideways into the walls.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Door")
+	TObjectPtr<UStaticMeshComponent> DoorMeshRight;
+
 	/** State at the start of play. Doors between rooms start closed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door")
 	bool bStartOpen = false;
@@ -54,6 +62,10 @@ protected:
 	/** Where the mesh moves to when open, relative to where it sits closed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door")
 	FVector OpenOffset = FVector(0.0f, 0.0f, -310.0f);
+
+	/** Where the second leaf moves to when open, relative to where it sits closed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door")
+	FVector OpenOffsetRight = FVector(0.0f, 0.0f, -310.0f);
 
 	/** Seconds from fully closed to fully open (and back). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Door", meta = (ClampMin = "0.0"))
@@ -64,6 +76,7 @@ private:
 	void SetBlocking(bool bBlocking);
 
 	FVector ClosedLocation = FVector::ZeroVector;
+	FVector ClosedLocationRight = FVector::ZeroVector;
 
 	/** 0 closed, 1 open. */
 	float Alpha = 0.0f;
