@@ -25,7 +25,8 @@
 // move or block the "Traversable" channel - a Movable block that does gets links and a path up its
 // wall, a Movable block that does not gets none, and LevelBlock_Traversable (sample content, half
 // sunk into the floor as placed by default) gets links when the asset is there. One tagged NoClimb
-// gets none, and nor does a wall too thin to stand on.
+// gets none, and nor does a wall too thin to stand on. Under a 3 m ceiling a 1.3 m block is climbed
+// and a 2 m one is not.
 //
 // NeuralAI.Climb.Down, with links: a crawler up on the 4 m platform or the 6 m tower, the player on
 // the floor, climbs down the wall to get at them; up on the 2 m block (lower than ClimbDownMinHeight)
@@ -722,6 +723,34 @@ bool FEnemyClimbTraversableTest::RunTest(const FString& Parameters)
 		Thin->SetActorScale3D(FVector(0.5f, 4.0f, 3.0f));
 		Thin->SetActorLocation(FVector(-2600.0f, 1300.0f, 150.0f));
 		TestEqual(TEXT("a wall 50 cm thick gets none"), Links->AddLinksFor(Thin), 0);
+
+		// Under a 3 m ceiling, as in a roofed room: a 1.3 m console leaves room for a body on top
+		// and is climbed; a 2 m shelf does not. The ceiling itself is never taken for the top.
+		struct FRoofCase { const TCHAR* Name; float Y; float Height; bool bClimbable; };
+		for (const FRoofCase& Case : { FRoofCase{ TEXT("a 1.3 m block under a 3 m ceiling"), -500.0f, 130.0f, true },
+			FRoofCase{ TEXT("a 2 m block under a 3 m ceiling"), 500.0f, 200.0f, false } })
+		{
+			const float Side = FMath::Sign(Case.Y);
+			AStaticMeshActor* Block = SpawnMovableBlock(World, FVector2D(-1600.0f, Case.Y), NAME_None);
+			Block->SetActorScale3D(FVector(2.0f, 2.0f, Case.Height / 100.0f));
+			Block->SetActorLocation(FVector(-1600.0f, Case.Y, Case.Height * 0.5f));
+			AStaticMeshActor* Roof = SpawnMovableBlock(World, FVector2D(-1600.0f, Case.Y), NAME_None);
+			Roof->SetActorScale3D(FVector(6.0f, 6.0f, 0.25f));
+			Roof->SetActorLocation(FVector(-1600.0f, Case.Y, 312.5f));
+			FEnemyClimbLedge Ledge;
+			const FVector Start(-1600.0f, Case.Y - Side * 250.0f, 62.0f);
+			const EEnemyClimbProbeResult Result = FEnemyClimbProbe::ProbeFrom(World, FEnemyClimbProbe::FBody(), Start,
+				FVector(0.0f, Side, 0.0f), *GetDefault<UEnemyClimbSettings>(), 0.7f, nullptr, Ledge);
+			const FString What = FString::Printf(TEXT("%s (%s, top %.0f)"), Case.Name, FEnemyClimbProbe::ToString(Result), Ledge.TopZ);
+			if (Case.bClimbable)
+			{
+				TestTrue(What + TEXT(": climbed onto the block"), Result == EEnemyClimbProbeResult::Ok && FMath::IsNearlyEqual(Ledge.TopZ, Case.Height, 2.0f));
+			}
+			else
+			{
+				TestTrue(What + TEXT(": not climbed"), Result != EEnemyClimbProbeResult::Ok);
+			}
+		}
 		TestTrue(FString::Printf(TEXT("a Movable block that blocks Traversable gets links (%d)"), TraversableLinks), TraversableLinks > 0);
 		TestEqual(TEXT("a Movable block that does not gets none"), PlainLinks, 0);
 

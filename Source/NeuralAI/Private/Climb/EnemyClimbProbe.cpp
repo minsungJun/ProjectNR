@@ -158,7 +158,16 @@ EEnemyClimbProbeResult FEnemyClimbProbe::ProbeFrom(const UWorld* World, const FB
 	// The top: straight down onto where it would stand, from as high as it may climb and a body
 	// over. Starting inside something means the wall goes on above that.
 	const FVector StandProbe = OutLedge.WallPoint - OutLedge.WallNormal * (Body.Radius + Settings.TopInset);
-	const FVector TopStart(StandProbe.X, StandProbe.Y, OutLedge.FloorZ + Settings.MaxClimbHeight + Body.HalfHeight * 2.0f + 50.0f);
+	float SearchTopZ = OutLedge.FloorZ + Settings.MaxClimbHeight + Body.HalfHeight * 2.0f + 50.0f;
+	// Under a ceiling, look only below it: from above, the ceiling's own top would be found as the
+	// top, and every way up would then run into the ceiling. A wall that reaches the ceiling still
+	// gives NoTop (the search starts inside it).
+	FHitResult RoofHit;
+	if (World->LineTraceSingleByObjectType(RoofHit, OutLedge.BaseCenter, FVector(OutLedge.BaseCenter.X, OutLedge.BaseCenter.Y, SearchTopZ), Geometry, Params))
+	{
+		SearchTopZ = RoofHit.ImpactPoint.Z - 10.0f;
+	}
+	const FVector TopStart(StandProbe.X, StandProbe.Y, SearchTopZ);
 	if (World->OverlapAnyTestByObjectType(TopStart, FQuat::Identity, Geometry, FCollisionShape::MakeSphere(5.0f), Params))
 	{
 		OutLedge.TopZ = TopStart.Z;
