@@ -1,6 +1,7 @@
 // ProjectNR player pawn.
 
 #include "NRPlayerPawn.h"
+#include "NRTraversalDebug.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -470,7 +471,16 @@ void ANRPlayerPawn::OnJumpStarted(const FInputActionValue& Value)
 	// over the Traversing mode the traversal had just queued. The montage then played while
 	// the walking and falling modes moved the capsule, which is what drove the character
 	// into the wall.
+	const bool bLogTraversal = NRTraversalDebug::IsLogging();
+	if (bLogTraversal)
+	{
+		NRTraversalDebug::LogProbe(this, TEXT("jump key"));
+	}
 	OnTraversePressed();
+	if (bLogTraversal)
+	{
+		NRTraversalDebug::LogOutcome(this);
+	}
 
 	// A traversal that took the input is now playing its montage, so this press is spent.
 	if (Mesh)
@@ -562,7 +572,16 @@ void ANRPlayerPawn::OnTraverseStarted(const FInputActionValue& Value)
 {
 	// Everything past this point lives in Blueprint: AC_TraversalLogic takes and returns
 	// user-defined structs, so native code can only hand over control here.
+	const bool bLogTraversal = NRTraversalDebug::IsLogging();
+	if (bLogTraversal)
+	{
+		NRTraversalDebug::LogProbe(this, TEXT("traverse key"));
+	}
 	OnTraversePressed();
+	if (bLogTraversal)
+	{
+		NRTraversalDebug::LogOutcome(this);
+	}
 }
 
 void ANRPlayerPawn::ProduceInput_Implementation(int32 SimTimeMs, FMoverInputCmdContext& InputCmdResult)
