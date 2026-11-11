@@ -9,6 +9,7 @@
 #include "NRLootChest.generated.h"
 
 class UMaterialInterface;
+class UNRLootTable;
 class UPointLightComponent;
 class USceneComponent;
 class UStaticMesh;
@@ -19,7 +20,8 @@ class UStaticMeshComponent;
  * front of it as pickups, which the player then walks over to collect - the same pickups
  * enemies drop, spawned through UNRLootSubsystem.
  *
- * Opens once. Place it in the level and set LootTable and ItemCount per chest. The front is
+ * Opens once. Place it in the level and set LootTable per chest (a UNRLootTable data asset; empty
+ * uses the chest table in Project Settings > NR Loot). The front is
  * the actor's +X: face that towards where the player will come from.
  *
  * Built from engine basic shapes until there is art; a Blueprint child can swap the meshes.
@@ -39,6 +41,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Chest")
 	bool IsOpened() const { return bOpened; }
+
+	/** Gives this chest another loot table (a chest spawn point's override). */
+	void SetLootTable(UNRLootTable* Table) { LootTable = Table; }
 
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -68,13 +73,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Chest")
 	TObjectPtr<UPointLightComponent> Glow;
 
-	/** Each item is picked from here by weight. */
+	/** What this chest drops. Empty uses the chest table in Project Settings > NR Loot. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chest|Loot")
-	TArray<FNRLootEntry> LootTable;
-
-	/** How many picks from LootTable one chest gives. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chest|Loot", meta = (ClampMin = "0"))
-	int32 ItemCount = 2;
+	TObjectPtr<UNRLootTable> LootTable;
 
 	/** How far in front of the chest the items land, in cm. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chest|Loot", meta = (ClampMin = "0.0"))

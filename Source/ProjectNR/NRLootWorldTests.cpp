@@ -4,8 +4,9 @@
 // game put it: the gun in hand starts with a full magazine and StartingReserveMagazines in
 // reserve; emptied, it cannot reload; an ammo box dropped on the player fills its reserve by a
 // magazine and a reload then takes from it; with every gun's reserve full a box is left lying; gold
-// dropped on the player goes to the run; and a killed enemy drops gold and an ammo box (their
-// chances set to 1 for the test). Automation test ProjectNR.Loot.World (editor only).
+// dropped on the player goes to the run; and a killed enemy drops what its loot table gives (a
+// table of its own for the test: gold 2..6 and an ammo box, both sure). Automation test
+// ProjectNR.Loot.World (editor only).
 
 #include "Characters/EnemyCharacter.h"
 #include "Components/HealthComponent.h"
@@ -17,9 +18,11 @@
 #include "NRItemPickup.h"
 #include "NRLootSettings.h"
 #include "NRLootSubsystem.h"
+#include "NRLootTable.h"
 #include "NRRunSubsystem.h"
 #include "NRWeaponComponent.h"
 #include "Tests/AutomationCommon.h"
+#include "UObject/StrongObjectPtr.h"
 
 #if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
 
@@ -32,9 +35,9 @@ namespace NRLootWorldTest
 		int32 MaxMagazine = 0;
 		int32 MoneyBefore = 0;
 		FVector EnemyAt = FVector::ZeroVector;
-		float SavedMoneyChance = 1.0f;
-		float SavedAmmoChance = 0.4f;
-		float SavedDropChance = 0.3f;
+		TSoftObjectPtr<UNRLootTable> SavedEnemyLoot;
+		TMap<TSoftClassPtr<AActor>, TSoftObjectPtr<UNRLootTable>> SavedEnemyLootByClass;
+		TStrongObjectPtr<UNRLootTable> TestLoot;
 	};
 
 	UWorld* World()
@@ -141,14 +144,23 @@ bool FNRLootWorldTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("a full reserve: the ammo box is left lying"), CountPickups(ENRItemType::Ammo, Player()->GetActorLocation(), 200.0f), 1);
 		TestEqual(TEXT("gold picked up: the run's gold up by 7"), World()->GetSubsystem<UNRRunSubsystem>()->GetMoney(), State->MoneyBefore + 7);
 
-		// A killed enemy drops gold and ammo (their chances made sure for the test, items off).
+		// A killed enemy drops what its table gives: one of its own for the test, gold 2..6 and an
+		// ammo box, both sure.
+		UNRLootTable* Table = NewObject<UNRLootTable>(GetTransientPackage(), TEXT("NRLootWorldTestTable"));
+		FNRLootRoll& GoldRoll = Table->Rolls.AddDefaulted_GetRef();
+		FNRLootEntry& Gold = GoldRoll.Entries.AddDefaulted_GetRef();
+		Gold.ItemType = ENRItemType::Money;
+		Gold.Count = 2;
+		Gold.MaxCount = 6;
+		FNRLootRoll& AmmoRoll = Table->Rolls.AddDefaulted_GetRef();
+		AmmoRoll.Entries.AddDefaulted_GetRef().ItemType = ENRItemType::Ammo;
+		State->TestLoot.Reset(Table);
+
 		UNRLootSettings* Settings = GetMutableDefault<UNRLootSettings>();
-		State->SavedMoneyChance = Settings->EnemyMoneyChance;
-		State->SavedAmmoChance = Settings->EnemyAmmoChance;
-		State->SavedDropChance = Settings->EnemyDropChance;
-		Settings->EnemyMoneyChance = 1.0f;
-		Settings->EnemyAmmoChance = 1.0f;
-		Settings->EnemyDropChance = 0.0f;
+		State->SavedEnemyLoot = Settings->EnemyLoot;
+		State->SavedEnemyLootByClass = Settings->EnemyLootByClass;
+		Settings->EnemyLoot = Table;
+		Settings->EnemyLootByClass.Reset();
 
 		State->EnemyAt = Player()->GetActorLocation() + FVector(0.0f, 900.0f, 0.0f);
 		FActorSpawnParameters Params;
@@ -164,14 +176,13 @@ bool FNRLootWorldTest::RunTest(const FString& Parameters)
 	{
 		int32 Gold = 0;
 		TestEqual(TEXT("a killed enemy drops gold"), CountPickups(ENRItemType::Money, State->EnemyAt, 150.0f, &Gold), 1);
-		const UNRLootSettings* Settings = GetDefault<UNRLootSettings>();
-		TestTrue(FString::Printf(TEXT("as much as the settings say (%d)"), Gold), Gold >= Settings->EnemyMoneyMin && Gold <= Settings->EnemyMoneyMax);
+		TestTrue(FString::Printf(TEXT("as much as the table says, 2..6 (%d)"), Gold), Gold >= 2 && Gold <= 6);
 		TestEqual(TEXT("a killed enemy drops an ammo box"), CountPickups(ENRItemType::Ammo, State->EnemyAt, 150.0f), 1);
 
 		UNRLootSettings* Mutable = GetMutableDefault<UNRLootSettings>();
-		Mutable->EnemyMoneyChance = State->SavedMoneyChance;
-		Mutable->EnemyAmmoChance = State->SavedAmmoChance;
-		Mutable->EnemyDropChance = State->SavedDropChance;
+		Mutable->EnemyLoot = State->SavedEnemyLoot;
+		Mutable->EnemyLootByClass = State->SavedEnemyLootByClass;
+		State->TestLoot.Reset();
 	}, 0.5f));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());

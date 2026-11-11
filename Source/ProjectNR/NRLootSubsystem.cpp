@@ -11,6 +11,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "NRItemPickup.h"
 #include "NRLootSettings.h"
+#include "NRLootTable.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRLoot, Log, All);
 
@@ -48,34 +49,38 @@ void UNRLootSubsystem::HandleAnyDamaged(UHealthComponent* Health, float Damage)
 		return;
 	}
 
-	// Gold, ammo and an item, each rolled on its own, spread a little round the body.
-	const UNRLootSettings* Settings = GetDefault<UNRLootSettings>();
+	// Every roll of the enemy's table, spread a little round the body.
+	const UNRLootTable* Table = GetDefault<UNRLootSettings>()->FindEnemyLoot(Owner);
+	if (!Table)
+	{
+		UE_LOG(LogNRLoot, Warning, TEXT("%s has no loot table (Project Settings > NR Loot)"), *Owner->GetName());
+		return;
+	}
+	TArray<FNRLootDrop> Drops;
+	Table->Roll(Drops);
 	const FVector Where = Owner->GetActorLocation();
-	if (FMath::FRand() < Settings->EnemyMoneyChance)
+	for (const FNRLootDrop& Drop : Drops)
 	{
-		SpawnPickupNear(ENRItemType::Money, FMath::RandRange(Settings->EnemyMoneyMin, FMath::Max(Settings->EnemyMoneyMin, Settings->EnemyMoneyMax)), Where);
-	}
-	if (FMath::FRand() < Settings->EnemyAmmoChance)
-	{
-		SpawnPickupNear(ENRItemType::Ammo, 1, Where);
-	}
-	if (FMath::FRand() < Settings->EnemyDropChance)
-	{
-		if (const FNRLootEntry* Entry = NRItems::PickEntry(Settings->EnemyDropTable))
-		{
-			SpawnPickupNear(Entry->ItemType, Entry->Count, Where);
-		}
+		SpawnDropNear(Drop, Where);
 	}
 }
 
-ANRItemPickup* UNRLootSubsystem::SpawnPickupNear(ENRItemType ItemType, int32 Count, const FVector& Location)
+ANRItemPickup* UNRLootSubsystem::SpawnDropNear(const FNRLootDrop& Drop, const FVector& Location)
 {
 	const float Angle = FMath::FRandRange(0.0f, 2.0f * PI);
 	const float Distance = FMath::FRandRange(30.0f, 70.0f);
-	return SpawnPickup(ItemType, Count, Location + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Distance);
+	return SpawnDrop(Drop, Location + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Distance);
 }
 
 ANRItemPickup* UNRLootSubsystem::SpawnPickup(ENRItemType ItemType, int32 Count, const FVector& Location)
+{
+	FNRLootDrop Drop;
+	Drop.ItemType = ItemType;
+	Drop.Count = Count;
+	return SpawnDrop(Drop, Location);
+}
+
+ANRItemPickup* UNRLootSubsystem::SpawnDrop(const FNRLootDrop& Drop, const FVector& Location)
 {
 	UWorld* World = GetWorld();
 	if (!World)
@@ -115,14 +120,21 @@ ANRItemPickup* UNRLootSubsystem::SpawnPickup(ENRItemType ItemType, int32 Count, 
 	{
 		return nullptr;
 	}
-	Pickup->SetItem(ItemType, Count);
+	if (Drop.ItemType == ENRItemType::WeaponPart)
+	{
+		Pickup->SetPart(Drop.Part, Drop.Level);
+	}
+	else
+	{
+		Pickup->SetItem(Drop.ItemType, Drop.Count);
+	}
 	Pickup->FinishSpawning(FTransform(Pickup->GetActorRotation(), SpawnLocation));
 
-	UE_LOG(LogNRLoot, Log, TEXT("Dropped %d %s at %s"), Count, NRItems::GetDisplayName(ItemType), *SpawnLocation.ToCompactString());
+	UE_LOG(LogNRLoot, Log, TEXT("Dropped %s at %s"), *Pickup->Describe(), *SpawnLocation.ToCompactString());
 	return Pickup;
 }
 
-// NR.Loot.Drop [potion|shield|ammo|gold] [count]: drop an item 250 cm in front of the player.
+// NR.Loot.Drop [potion|shield|ammo|gold|part] [count|I|II|III]: drop an item 250 cm in front of the player.
 namespace NRLootCommands
 {
 	void Drop(const TArray<FString>& Args, UWorld* World)
@@ -143,12 +155,30 @@ namespace NRLootCommands
 				: Args[0].Equals(TEXT("gold"), ESearchCase::IgnoreCase) || Args[0].Equals(TEXT("money"), ESearchCase::IgnoreCase) ? ENRItemType::Money
 				: ENRItemType::Potion;
 		}
-		const int32 Count = Args.Num() > 1 ? FMath::Max(FCString::Atoi(*Args[1]), 1) : 1;
 		const FVector Forward = Pawn->GetActorForwardVector().GetSafeNormal2D();
-		Loot->SpawnPickup(Type, Count, Pawn->GetActorLocation() + Forward * 250.0f);
+		const FVector At = Pawn->GetActorLocation() + Forward * 250.0f;
+		if (Args.Num() > 0 && Args[0].Equals(TEXT("part"), ESearchCase::IgnoreCase))
+		{
+			// A random part; the level from the second argument, else by the default weights.
+			FNRLootDrop Drop;
+			Drop.ItemType = ENRItemType::WeaponPart;
+			Drop.Part = UNRLootTable::PickPart({});
+			const FString Level = Args.Num() > 1 ? Args[1] : FString();
+			Drop.Level = Level.Equals(TEXT("III"), ESearchCase::IgnoreCase) ? ENRWeaponPartLevel::III
+				: Level.Equals(TEXT("II"), ESearchCase::IgnoreCase) ? ENRWeaponPartLevel::II
+				: Level.Equals(TEXT("I"), ESearchCase::IgnoreCase) ? ENRWeaponPartLevel::I
+				: NRItems::RollPartLevel(FNRLootEntry());
+			if (Drop.Part)
+			{
+				Loot->SpawnDrop(Drop, At);
+			}
+			return;
+		}
+		const int32 Count = Args.Num() > 1 ? FMath::Max(FCString::Atoi(*Args[1]), 1) : 1;
+		Loot->SpawnPickup(Type, Count, At);
 	}
 }
 
 static FAutoConsoleCommandWithWorldAndArgs GNRLootDropCommand(TEXT("NR.Loot.Drop"),
-	TEXT("NR.Loot.Drop [potion|shield|ammo|gold] [count]: drop an item in front of the player."),
+	TEXT("NR.Loot.Drop [potion|shield|ammo|gold|part] [count|I|II|III]: drop an item in front of the player."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRLootCommands::Drop));

@@ -8,6 +8,7 @@
 #include "NRItemPickup.generated.h"
 
 class UMaterialInterface;
+class UNRWeaponPartData;
 class UPointLightComponent;
 class USphereComponent;
 class UStaticMesh;
@@ -17,7 +18,7 @@ class UStaticMeshComponent;
  * An item lying in the world. The player collects it by walking into it and the pickup
  * disappears: potions and shields go into the player's UNRConsumableComponent, an ammo box into
  * its guns' reserves (UNRWeaponComponent - left lying while they are all full), gold into the
- * run (UNRRunSubsystem).
+ * run (UNRRunSubsystem), a weapon part into the parts inventory (UNRWeaponPartComponent).
  *
  * Only player-controlled pawns collect, so enemies walk over drops without taking them.
  * Without art yet, it draws an engine basic shape tinted per item type, slowly spinning and
@@ -34,6 +35,19 @@ public:
 	/** Sets what this pickup gives and updates its look. Call right after spawning. */
 	UFUNCTION(BlueprintCallable, Category = "Pickup")
 	void SetItem(ENRItemType InItemType, int32 InCount);
+
+	/** Makes this pickup one weapon part at one level. Call right after spawning. */
+	UFUNCTION(BlueprintCallable, Category = "Pickup")
+	void SetPart(UNRWeaponPartData* InPart, ENRWeaponPartLevel InLevel);
+
+	UFUNCTION(BlueprintPure, Category = "Pickup")
+	UNRWeaponPartData* GetPart() const { return PartData; }
+
+	UFUNCTION(BlueprintPure, Category = "Pickup")
+	ENRWeaponPartLevel GetPartLevel() const { return PartLevel; }
+
+	/** "3 GOLD", "DA_WeaponPart_Damage II": for logs. */
+	FString Describe() const;
 
 	UFUNCTION(BlueprintPure, Category = "Pickup")
 	ENRItemType GetItemType() const { return ItemType; }
@@ -70,6 +84,13 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup", meta = (ClampMin = "1"))
 	int32 Count = 1;
+
+	/** The part a WeaponPart pickup gives, and at which level. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup", meta = (EditCondition = "ItemType == ENRItemType::WeaponPart"))
+	TObjectPtr<UNRWeaponPartData> PartData;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup", meta = (EditCondition = "ItemType == ENRItemType::WeaponPart"))
+	ENRWeaponPartLevel PartLevel = ENRWeaponPartLevel::I;
 
 	/** Seconds before it disappears on its own. 0 keeps it until collected. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup", meta = (ClampMin = "0.0"))
@@ -112,6 +133,22 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
 	FLinearColor MoneyColor = FLinearColor(1.0f, 0.8f, 0.15f);
+
+	/** A weapon part: a flat chip, coloured by its level. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	TObjectPtr<UStaticMesh> PartMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FVector PartScale = FVector(0.3f, 0.3f, 0.07f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FLinearColor PartLevelIColor = FLinearColor(0.75f, 0.75f, 0.75f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FLinearColor PartLevelIIColor = FLinearColor(0.2f, 0.55f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")
+	FLinearColor PartLevelIIIColor = FLinearColor(0.75f, 0.25f, 1.0f);
 
 	/** Tinted through its "Color" parameter. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pickup|Look")

@@ -8,8 +8,10 @@
 #include "NRMapGenerationConfig.h"
 #include "NRMapGenerator.generated.h"
 
+class ANRChestSpawnPoint;
 class ANRMapGenerator;
 class ANRRoom;
+class ULevel;
 class ULevelStreamingDynamic;
 class UWorld;
 class UNRCorridorTemplateData;
@@ -314,6 +316,13 @@ private:
 
 	/** Hands every room level its room setup; adds problems to Errors. */
 	void InitializeRooms(TArray<FString>& Errors);
+
+	/**
+	 * Spawns chests on some of a room's chest spawn points (Config's MinChestsPerRoom..Max, picked by
+	 * weight with the map's seed), into the room's own level so they go when it is unloaded.
+	 * Returns how many.
+	 */
+	int32 SpawnChests(const FNRGeneratedRoom& Room, ULevel* Level, const TArray<ANRChestSpawnPoint*>& Points);
 
 	/** Takes the player's input away while the map loads, and gives it back. */
 	void HoldPlayer(bool bHold);

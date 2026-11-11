@@ -13,7 +13,9 @@
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "NRLootSettings.h"
 #include "NRLootSubsystem.h"
+#include "NRLootTable.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -80,20 +82,6 @@ ANRLootChest::ANRLootChest()
 	Glow->SetCastShadows(false);
 
 	Prompt = NSLOCTEXT("NRChest", "Open", "OPEN");
-
-	FNRLootEntry Potion;
-	Potion.ItemType = ENRItemType::Potion;
-	LootTable.Add(Potion);
-	FNRLootEntry Shield;
-	Shield.ItemType = ENRItemType::Shield;
-	LootTable.Add(Shield);
-	FNRLootEntry AmmoBox;
-	AmmoBox.ItemType = ENRItemType::Ammo;
-	LootTable.Add(AmmoBox);
-	FNRLootEntry Gold;
-	Gold.ItemType = ENRItemType::Money;
-	Gold.Count = 15;
-	LootTable.Add(Gold);
 }
 
 void ANRLootChest::OnConstruction(const FTransform& Transform)
@@ -123,8 +111,11 @@ void ANRLootChest::ApplyLook()
 
 FVector ANRLootChest::GetInteractLocation() const
 {
-	// Above the lid, where the prompt reads clearly.
-	return GetActorLocation() + FVector(0.0f, 0.0f, NRChestShape::BodyHeight + 45.0f);
+	// Above the top, where the prompt reads clearly. A Blueprint child may give the body another
+	// mesh and size, so the top comes from its bounds.
+	const FVector Location = GetActorLocation();
+	const float Top = Body && Body->GetStaticMesh() ? Body->Bounds.GetBox().Max.Z : Location.Z + NRChestShape::BodyHeight;
+	return FVector(Location.X, Location.Y, Top + 45.0f);
 }
 
 void ANRLootChest::Interact(APawn* User)
@@ -173,19 +164,22 @@ void ANRLootChest::SpawnItems()
 		return;
 	}
 
+	const UNRLootTable* Table = LootTable ? LootTable.Get() : GetDefault<UNRLootSettings>()->ChestLoot.LoadSynchronous();
+	if (!Table)
+	{
+		UE_LOG(LogNRChest, Warning, TEXT("%s has no loot table (set LootTable, or the chest table in Project Settings > NR Loot)"), *GetName());
+		return;
+	}
+	TArray<FNRLootDrop> Drops;
+	Table->Roll(Drops);
+
 	// In a row across the front, centred on the chest.
 	const FVector Front = GetActorLocation() + GetActorForwardVector().GetSafeNormal2D() * ItemDistance;
 	const FVector Side = GetActorRightVector().GetSafeNormal2D();
-	for (int32 Index = 0; Index < ItemCount; ++Index)
+	for (int32 Index = 0; Index < Drops.Num(); ++Index)
 	{
-		const FNRLootEntry* Entry = NRItems::PickEntry(LootTable);
-		if (!Entry)
-		{
-			break;
-		}
-
-		const float Offset = (Index - (ItemCount - 1) * 0.5f) * ItemSpacing;
-		Loot->SpawnPickup(Entry->ItemType, Entry->Count, Front + Side * Offset + FVector(0.0f, 0.0f, 60.0f));
+		const float Offset = (Index - (Drops.Num() - 1) * 0.5f) * ItemSpacing;
+		Loot->SpawnDrop(Drops[Index], Front + Side * Offset + FVector(0.0f, 0.0f, 60.0f));
 	}
 }
 
@@ -208,13 +202,20 @@ namespace NRChestCommands
 			Location = Hit.ImpactPoint;
 		}
 
+		// The crate Blueprint when it is there, the basic-shape chest otherwise.
+		UClass* ChestClass = LoadClass<ANRLootChest>(nullptr, TEXT("/Game/Levels/GridRun/Props/BP_NR_LootCrate_01.BP_NR_LootCrate_01_C"));
+		if (!ChestClass)
+		{
+			ChestClass = ANRLootChest::StaticClass();
+		}
+
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		const ANRLootChest* Chest = World->SpawnActor<ANRLootChest>(Location, (-Forward).Rotation(), Params);
+		const ANRLootChest* Chest = World->SpawnActor<ANRLootChest>(ChestClass, Location, (-Forward).Rotation(), Params);
 		UE_LOG(LogNRChest, Log, TEXT("Spawned %s at %s"), *GetNameSafe(Chest), *Location.ToCompactString());
 	}
 }
 
 static FAutoConsoleCommandWithWorldAndArgs GNRChestSpawnCommand(TEXT("NR.Chest.Spawn"),
-	TEXT("Spawn a loot chest in front of the player, facing them."),
+	TEXT("Spawn a loot chest (BP_NR_LootCrate_01 when it exists) in front of the player, facing them."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRChestCommands::Spawn));

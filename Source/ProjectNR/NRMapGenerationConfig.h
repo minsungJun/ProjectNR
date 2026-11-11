@@ -7,6 +7,7 @@
 #include "NRGridTypes.h"
 #include "NRMapGenerationConfig.generated.h"
 
+class ANRLootChest;
 class UNRCorridorTemplateData;
 class UNREncounterData;
 class UNRRoomTemplateData;
@@ -253,4 +254,15 @@ public:
 	/** What fighting rooms spawn from their spawn points. Empty: the class defaults. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Encounters")
 	TObjectPtr<UNREncounterData> Encounters;
+
+	/** Spawned on the chest spawn points (ANRChestSpawnPoint) picked in each room. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Chests")
+	TSoftClassPtr<ANRLootChest> ChestClass = TSoftClassPtr<ANRLootChest>(FSoftObjectPath(TEXT("/Game/Levels/GridRun/Props/BP_NR_LootCrate_01.BP_NR_LootCrate_01_C")));
+
+	/** How many of a room's chest spawn points get a chest, picked by the map's seed (never more than it has). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Chests", meta = (ClampMin = "0"))
+	int32 MinChestsPerRoom = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Chests", meta = (ClampMin = "0"))
+	int32 MaxChestsPerRoom = 2;
 };

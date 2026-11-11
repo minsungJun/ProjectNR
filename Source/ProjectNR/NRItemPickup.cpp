@@ -12,6 +12,8 @@
 #include "NRConsumableComponent.h"
 #include "NRLootSettings.h"
 #include "NRRunSubsystem.h"
+#include "NRWeaponPartComponent.h"
+#include "NRWeaponPartData.h"
 #include "NRWeaponComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -50,6 +52,7 @@ ANRItemPickup::ANRItemPickup()
 	ShieldMesh = CubeFinder.Object;
 	AmmoMesh = CubeFinder.Object;
 	MoneyMesh = CylinderFinder.Object;
+	PartMesh = CubeFinder.Object;
 	TintMaterial = MaterialFinder.Object;
 }
 
@@ -90,6 +93,24 @@ void ANRItemPickup::SetItem(ENRItemType InItemType, int32 InCount)
 	ApplyLook();
 }
 
+void ANRItemPickup::SetPart(UNRWeaponPartData* InPart, ENRWeaponPartLevel InLevel)
+{
+	ItemType = ENRItemType::WeaponPart;
+	Count = 1;
+	PartData = InPart;
+	PartLevel = InLevel;
+	ApplyLook();
+}
+
+FString ANRItemPickup::Describe() const
+{
+	if (ItemType == ENRItemType::WeaponPart)
+	{
+		return FString::Printf(TEXT("PART %s %s"), *GetNameSafe(PartData), *UNRWeaponPartData::GetLevelText(PartLevel).ToString());
+	}
+	return FString::Printf(TEXT("%d %s"), Count, NRItems::GetDisplayName(ItemType));
+}
+
 void ANRItemPickup::ApplyLook()
 {
 	FLinearColor Color = PotionColor;
@@ -116,6 +137,14 @@ void ANRItemPickup::ApplyLook()
 		Shape = MoneyMesh;
 		Scale = MoneyScale;
 		Rotation = FRotator(0.0f, 0.0f, 90.0f);
+		break;
+	case ENRItemType::WeaponPart:
+		// A flat chip tilted towards the camera; its colour says the level.
+		Color = PartLevel == ENRWeaponPartLevel::III ? PartLevelIIIColor
+			: PartLevel == ENRWeaponPartLevel::II ? PartLevelIIColor : PartLevelIColor;
+		Shape = PartMesh;
+		Scale = PartScale;
+		Rotation = FRotator(0.0f, 0.0f, 25.0f);
 		break;
 	default:
 		break;
@@ -180,6 +209,13 @@ bool ANRItemPickup::TryCollect(AActor* Collector)
 			bTaken = true;
 		}
 		break;
+	case ENRItemType::WeaponPart:
+		// Into the parts inventory, unfitted: the player places it in a safe area.
+		if (UNRWeaponPartComponent* Parts = Pawn->FindComponentByClass<UNRWeaponPartComponent>())
+		{
+			bTaken = PartData && Parts->AddPart(PartData, PartLevel).IsValid();
+		}
+		break;
 	default:
 		if (UNRConsumableComponent* Consumables = Pawn->FindComponentByClass<UNRConsumableComponent>())
 		{
@@ -193,7 +229,7 @@ bool ANRItemPickup::TryCollect(AActor* Collector)
 	}
 
 	bCollected = true;
-	UE_LOG(LogNRPickup, Log, TEXT("%s picked up %d %s"), *GetNameSafe(Pawn), Count, NRItems::GetDisplayName(ItemType));
+	UE_LOG(LogNRPickup, Log, TEXT("%s picked up %s"), *GetNameSafe(Pawn), *Describe());
 	Destroy();
 	return true;
 }

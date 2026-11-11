@@ -4,13 +4,15 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
-#include "NRItemTypes.h"
 #include "NRLootSettings.generated.h"
 
+class AActor;
 class ANRItemPickup;
+class UNRLootTable;
 
 /**
- * What enemies drop and how often. Project Settings > Game > NR Loot; saved to DefaultGame.ini.
+ * Which loot tables drop where. Project Settings > Game > NR Loot; saved to DefaultGame.ini.
+ * The tables themselves are UNRLootTable data assets (/Game/DataAssets/Loot).
  */
 UCLASS(config = Game, defaultconfig, meta = (DisplayName = "NR Loot"))
 class PROJECTNR_API UNRLootSettings : public UDeveloperSettings
@@ -22,28 +24,17 @@ public:
 
 	virtual FName GetCategoryName() const override { return TEXT("Game"); }
 
-	/** Chance that a killed enemy drops anything at all. */
-	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float EnemyDropChance = 0.3f;
-
-	/** When a drop happens, one entry is picked from here by weight. */
+	/** What a killed enemy drops when its class has no table of its own below. */
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops")
-	TArray<FNRLootEntry> EnemyDropTable;
+	TSoftObjectPtr<UNRLootTable> EnemyLoot;
 
-	/** Chance that a killed enemy drops gold, rolled apart from the items above. */
-	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Gold", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float EnemyMoneyChance = 1.0f;
+	/** A table per enemy class (Blueprint classes too). The closest class an enemy is wins. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops")
+	TMap<TSoftClassPtr<AActor>, TSoftObjectPtr<UNRLootTable>> EnemyLootByClass;
 
-	/** Gold in one drop: anywhere from Min to Max. */
-	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Gold", meta = (ClampMin = "1"))
-	int32 EnemyMoneyMin = 2;
-
-	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Gold", meta = (ClampMin = "1"))
-	int32 EnemyMoneyMax = 6;
-
-	/** Chance that a killed enemy drops an ammo box, rolled apart from the rest. */
-	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Enemy Drops|Ammo", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float EnemyAmmoChance = 0.4f;
+	/** What a chest drops when it has no table of its own. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Chests")
+	TSoftObjectPtr<UNRLootTable> ChestLoot;
 
 	/** Magazines' worth one ammo box puts into each gun's reserve. */
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Pickup", meta = (ClampMin = "0.1"))
@@ -52,4 +43,7 @@ public:
 	/** Spawned for every drop. Empty uses ANRItemPickup itself; set a Blueprint child to restyle it. */
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Pickup")
 	TSoftClassPtr<ANRItemPickup> PickupClass;
+
+	/** The table for a killed Enemy: its closest class in EnemyLootByClass, else EnemyLoot. May be null. */
+	const UNRLootTable* FindEnemyLoot(const AActor* Enemy) const;
 };

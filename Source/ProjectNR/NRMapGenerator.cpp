@@ -21,8 +21,10 @@
 #include "Engine/Engine.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerController.h"
+#include "NRChestSpawnPoint.h"
 #include "NRDoor.h"
 #include "NRGridTemplateData.h"
+#include "NRLootChest.h"
 #include "NRRoom.h"
 #include "NREncounterData.h"
 #include "NRMapGenerationConfig.h"
@@ -755,10 +757,12 @@ void ANRMapGenerator::HoldPlayer(bool bHold)
 void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 {
 	const TMap<int32, TArray<FNRRoomPort>> Open = NRMapGen::OpenPorts(ActiveLayout);
+	int32 Chests = 0;
+	int32 ChestRooms = 0;
 	for (const FNRGeneratedRoom& Room : ActiveLayout.Rooms)
 	{
 		const int32 ModuleIndex = FindRoomModule(Room.RoomId);
-		const ULevel* Level = Streamings.IsValidIndex(ModuleIndex) && Streamings[ModuleIndex] ? Streamings[ModuleIndex]->GetLoadedLevel() : nullptr;
+		ULevel* Level = Streamings.IsValidIndex(ModuleIndex) && Streamings[ModuleIndex] ? Streamings[ModuleIndex]->GetLoadedLevel() : nullptr;
 		if (!Level)
 		{
 			continue;
@@ -767,6 +771,7 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 		TArray<ANRRoom*> RoomActors;
 		TArray<AActor*> Enemies;
 		TArray<ANRSpawnPoint*> SpawnPoints;
+		TArray<ANRChestSpawnPoint*> ChestPoints;
 		for (AActor* Actor : Level->Actors)
 		{
 			if (ANRRoom* RoomActor = Cast<ANRRoom>(Actor))
@@ -780,6 +785,10 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 			else if (ANRSpawnPoint* Point = Cast<ANRSpawnPoint>(Actor))
 			{
 				SpawnPoints.Add(Point);
+			}
+			else if (ANRChestSpawnPoint* ChestPoint = Cast<ANRChestSpawnPoint>(Actor))
+			{
+				ChestPoints.Add(ChestPoint);
 			}
 		}
 
@@ -877,9 +886,87 @@ void ANRMapGenerator::InitializeRooms(TArray<FString>& Errors)
 			continue;
 		}
 
+		// Before navigation is built over the new rooms, so enemies walk round the chests.
+		if (const int32 Made = SpawnChests(Room, Level, ChestPoints))
+		{
+			Chests += Made;
+			++ChestRooms;
+		}
+
 		RoomActors[0]->InitializeGenerated(Room.RoomId, Room.RoomType, Room.RoomId == ActiveLayout.BossRoomId, Doors, Enemies, SpawnPoints);
 		GeneratedRooms.Add(RoomActors[0]);
 	}
+	UE_LOG(LogNRMapGen, Log, TEXT("Generation %d: %d chest(s) in %d room(s)"), Generation, Chests, ChestRooms);
+}
+
+int32 ANRMapGenerator::SpawnChests(const FNRGeneratedRoom& Room, ULevel* Level, const TArray<ANRChestSpawnPoint*>& Points)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Level || Points.Num() == 0)
+	{
+		return 0;
+	}
+
+	int32 MinCount = 1;
+	int32 MaxCount = 2;
+	UClass* DefaultClass = nullptr;
+	if (Config)
+	{
+		MinCount = Config->MinChestsPerRoom;
+		MaxCount = Config->MaxChestsPerRoom;
+		DefaultClass = Config->ChestClass.LoadSynchronous();
+	}
+	if (!DefaultClass)
+	{
+		DefaultClass = ANRLootChest::StaticClass();
+	}
+
+	// Seeded by the map and the room: the same seed puts the same chests in the same places.
+	FRandomStream Stream(HashCombine(GetTypeHash(ActiveLayout.Seed), GetTypeHash(Room.RoomId * 7919 + 17)));
+	const int32 Count = FMath::Min(Points.Num(), Stream.RandRange(FMath::Min(MinCount, MaxCount), FMath::Max(MinCount, MaxCount)));
+
+	TArray<ANRChestSpawnPoint*> Left = Points;
+	int32 Made = 0;
+	for (int32 Pick = 0; Pick < Count && Left.Num() > 0; ++Pick)
+	{
+		float Total = 0.0f;
+		for (const ANRChestSpawnPoint* Point : Left)
+		{
+			Total += FMath::Max(Point->Weight, 0.01f);
+		}
+		float Roll = Stream.FRandRange(0.0f, Total);
+		int32 Chosen = Left.Num() - 1;
+		for (int32 Index = 0; Index < Left.Num(); ++Index)
+		{
+			Roll -= FMath::Max(Left[Index]->Weight, 0.01f);
+			if (Roll < 0.0f)
+			{
+				Chosen = Index;
+				break;
+			}
+		}
+		const ANRChestSpawnPoint* Point = Left[Chosen];
+		Left.RemoveAt(Chosen);
+
+		UClass* Class = Point->ChestClassOverride ? Point->ChestClassOverride.Get() : DefaultClass;
+		const FTransform Where(Point->GetActorRotation(), Point->GetActorLocation());
+		FActorSpawnParameters Params;
+		Params.OverrideLevel = Level;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Params.bDeferConstruction = true;
+		ANRLootChest* Chest = World->SpawnActor<ANRLootChest>(Class, Where, Params);
+		if (!Chest)
+		{
+			continue;
+		}
+		if (Point->LootTableOverride)
+		{
+			Chest->SetLootTable(Point->LootTableOverride);
+		}
+		Chest->FinishSpawning(Where);
+		++Made;
+	}
+	return Made;
 }
 
 TArray<AActor*> ANRMapGenerator::FindTagged(int32 ModuleIndex, FName Tag) const

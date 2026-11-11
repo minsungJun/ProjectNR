@@ -46,7 +46,8 @@ public class ProjectNR : ModuleRules
 			"NeuralAI"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		// AssetRegistry: a loot table with no part list draws from every weapon part asset.
+		PrivateDependencyModuleNames.AddRange(new string[] { "AssetRegistry" });
 
 		// ProjectNR.Loot.World opens a map in PIE and ends it again (FEndPlayMapCommand).
 		if (Target.bBuildEditor)
