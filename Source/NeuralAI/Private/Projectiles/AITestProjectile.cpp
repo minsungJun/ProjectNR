@@ -140,7 +140,7 @@ void AAITestProjectile::OnSphereHit(UPrimitiveComponent* HitComponent, AActor* O
 		{
 			// Direction of travel is what the victim needs to know, not the surface normal.
 			const FVector HitDirection = GetProjectileVelocity().GetSafeNormal();
-			Health->ApplyDamage(Damage, GetInstigator(), HitDirection);
+			Health->ApplyDamage(Damage, GetInstigator(), HitDirection, DamageSource);
 		}
 	}
 

@@ -70,18 +70,40 @@ public:
 	void ApplyProfile(const UEnemyAIProfile* Profile);
 
 	/**
-	 * Scales the synapses a future evolution system is allowed to touch.
+	 * Adapts behaviour along the six axes (Dodge, Strafe, Caution, Approach, Retreat,
+	 * Aggression): the adaptation wiring scales or adds synapses and resting bias.
 	 *
-	 * Modifiers are applied to preserved base weights rather than to the live ones, so
-	 * calling this repeatedly cannot compound: each call recomputes from the original
-	 * circuit. Nothing in this prototype generates a profile; this is the seam where a
-	 * generational system would attach.
+	 * Always recomputed from the circuit as authored, so calling this repeatedly replaces the
+	 * previous adaptation instead of stacking on it. Safe before or after BeginPlay.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Brain|Adaptation")
 	void ApplyAdaptationProfile(const FEnemyAdaptationProfile& Profile);
 
 	UFUNCTION(BlueprintPure, Category = "Brain|Adaptation")
 	const FEnemyAdaptationProfile& GetAdaptationProfile() const { return AdaptationProfile; }
+
+	/**
+	 * Which way the adapted strafe wiring circles: onto StrafeRight, or mirrored onto StrafeLeft.
+	 * Picked at random at BeginPlay and swapped every few seconds while the Strafe axis is up,
+	 * so an adapted enemy weaves rather than orbiting one way for ever.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Brain|Adaptation")
+	void SetStrafeSide(bool bRight);
+
+	UFUNCTION(BlueprintPure, Category = "Brain|Adaptation")
+	bool IsStrafingRight() const { return bStrafeRight; }
+
+	/** Summed weight of the live synapses From -> To, 0 when there is none. For tests and diagnostics. */
+	float GetSynapseWeight(ENeuronId From, ENeuronId To) const;
+
+	/** Resting drive the adaptation adds to a neuron. For tests and diagnostics. */
+	float GetAdaptiveBias(ENeuronId Neuron) const;
+
+	/** Builds the brain now instead of at BeginPlay, for tests that run it without a world. */
+	void InitializeForTest() { BuildDefaultBrain(); }
+
+	/** Turns the random swap of strafe side on or off (tests). */
+	void SetStrafeSwapEnabled(bool bEnabled) { bStrafeSwapEnabled = bEnabled; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -106,8 +128,17 @@ protected:
 	/** Replaces definitions, synapses and mappings with the asset's, where it provides them. */
 	void ApplyBrainAsset();
 
-	/** Recomputes live synapse weights from the base circuit plus the adaptation profile. */
+	/** Recomputes live synapse weights and adaptive bias from the base circuit plus the adaptation profile. */
 	void RebuildSynapses();
+
+	/** The built-in adaptation wiring, used unless a brain asset brings its own. */
+	void BuildDefaultAdaptation();
+
+	/** StrafeRight onto the side currently circled; every other neuron unchanged. */
+	ENeuronId MirrorStrafe(ENeuronId Neuron) const;
+
+	/** Seconds until the next strafe side swap, drawn anew after each swap. */
+	void ResetStrafeSwapTimer();
 
 	/**
 	 * Checks the wiring for feedback that can never settle, and reports the half-life of
@@ -141,8 +172,16 @@ private:
 	TArray<FNeuralInputMapping> InputMappings;
 	TArray<FNeuralOutputMapping> OutputMappings;
 	TArray<FAdaptableSynapse> AdaptableSynapses;
+	TArray<FAdaptableBias> AdaptableBiases;
 
 	FEnemyAdaptationProfile AdaptationProfile;
+
+	/** Resting drive per neuron from the adaptation, on top of the definition's own bias. */
+	TArray<float> AdaptiveBias;
+
+	bool bStrafeRight = true;
+	bool bStrafeSwapEnabled = true;
+	float StrafeSwapSecondsLeft = 0.0f;
 
 	TArray<FNeuronRuntimeState> States;
 

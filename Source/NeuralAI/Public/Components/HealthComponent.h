@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Core/NeuralTypes.h"
 #include "HealthComponent.generated.h"
 
 class UHealthComponent;
@@ -32,10 +33,34 @@ class NEURALAI_API UHealthComponent : public UActorComponent
 public:
 	UHealthComponent();
 
-	/** Applies damage and broadcasts. Armor takes a flat amount off first, then the shield
-	 *  soaks what is left before health does. Returns the amount actually removed from both. */
+	/** Applies damage and broadcasts. Resistance to the player weapon it came from (Source) comes
+	 *  off first, then armor takes a flat amount, then the shield soaks what is left before health
+	 *  does. Returns the amount actually removed from both. */
 	UFUNCTION(BlueprintCallable, Category = "Health")
-	float ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection);
+	float ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection,
+		EAdaptationWeapon Source = EAdaptationWeapon::None);
+
+	/** Share of damage from Weapon ignored, 0..0.9. None is never resisted. */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void SetWeaponResistance(EAdaptationWeapon Weapon, float Resistance);
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetWeaponResistance(EAdaptationWeapon Weapon) const;
+
+	/** Player weapon of the hit being broadcast (or the last one taken): OnAnyDamaged listeners
+	 *  read it to tell which weapon did the damage. */
+	UFUNCTION(BlueprintPure, Category = "Health")
+	EAdaptationWeapon GetLastDamageSource() const { return LastDamageSource; }
+
+	/**
+	 * Regenerates Fraction of max health per second once RegenDelay seconds have passed since the
+	 * last hit. 0 turns it off. Runs on a timer, so a component without regen costs nothing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void SetRegeneration(float FractionPerSecond, float DelaySeconds = 3.0f);
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetRegenPerSecond() const { return RegenPerSecond; }
 
 	/** Ignores all damage for the next Seconds of game time. A shorter window never cuts a
 	 *  longer one already running short. */
@@ -139,6 +164,18 @@ private:
 
 	/** Game time until which ApplyDamage does nothing. */
 	float InvulnerableUntil = -1.0f;
+
+	/** Resistance per EAdaptationWeapon value. */
+	float WeaponResistance[static_cast<int32>(EAdaptationWeapon::Num)] = {};
+
+	EAdaptationWeapon LastDamageSource = EAdaptationWeapon::None;
+
+	float RegenPerSecond = 0.0f;
+	float RegenDelay = 3.0f;
+	float LastDamageTime = -1000.0f;
+	FTimerHandle RegenTimer;
+
+	void TickRegeneration();
 
 	static TArray<TWeakObjectPtr<UHealthComponent>> ActiveComponents;
 };

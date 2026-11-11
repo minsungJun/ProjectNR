@@ -9,6 +9,7 @@
 #include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
 #include "NavigationSystem.h"
+#include "NRAdaptationSubsystem.h"
 #include "NREncounterData.h"
 #include "NRRoom.h"
 #include "NRSpawnPicker.h"
@@ -134,6 +135,14 @@ bool UNRSpawnSubsystem::SpawnForRoom(ANRRoom* Room)
 	Params.Rule = Data->GetRule(Room->GetRoomType());
 	Params.bHasBoss = Data->BossClass != nullptr;
 	Params.MinSpacing = Data->MinPointSpacing;
+	if (const UNRAdaptationSubsystem* Adaptation = World->GetSubsystem<UNRAdaptationSubsystem>())
+	{
+		const UNRAdaptationConfig& Config = Adaptation->GetConfig();
+		Params.RangedBias = Adaptation->GetRangedBias();
+		Params.MaxRangedShift = Config.MaxRangedShift;
+		Params.AnyRangedChanceShift = Config.AnyRangedChanceShift;
+		Params.ConvertChance = Config.ConvertChance;
+	}
 	// Same run seed, same room: same enemies in the same places.
 	const int32 RoomKey = Room->IsGenerated() ? Room->GetGeneratedRoomId() : static_cast<int32>(GetTypeHash(Room->GetName()));
 	FRandomStream Random(HashCombine(static_cast<uint32>(Seed), static_cast<uint32>(RoomKey) * 7919u));
@@ -188,8 +197,8 @@ bool UNRSpawnSubsystem::SpawnForRoom(ANRRoom* Room)
 	}
 
 	const int32 Unusable = Candidates.FilterByPredicate([](const FNRSpawnPicker::FCandidate& Candidate) { return !Candidate.bUsable; }).Num();
-	UE_LOG(LogNRSpawn, Log, TEXT("%s: %d enemy(s) coming on %d of %d point(s) in %.1f s (%d ranged, %d boss, %d point(s) unusable)"),
-		*Room->GetLabel(), Entry.Planned.Num(), Picks.Num(), Candidates.Num(), Data->TelegraphSeconds, Ranged, Bosses, Unusable);
+	UE_LOG(LogNRSpawn, Log, TEXT("%s: %d enemy(s) coming on %d of %d point(s) in %.1f s (%d ranged, %d boss, %d point(s) unusable, ranged shift %+.2f)"),
+		*Room->GetLabel(), Entry.Planned.Num(), Picks.Num(), Candidates.Num(), Data->TelegraphSeconds, Ranged, Bosses, Unusable, Params.RangedBias);
 
 	if (Data->TelegraphSeconds <= 0.0f)
 	{

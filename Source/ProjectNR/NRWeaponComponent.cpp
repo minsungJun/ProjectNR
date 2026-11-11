@@ -1375,6 +1375,7 @@ int32 UNRWeaponComponent::Fire()
 			bool bCritical = false;
 			const float FinalDamage = Stats.RollDamage(BaseDamage, bCritical);
 			Projectile->InitializeDamage(FinalDamage);
+			Projectile->SetDamageSource(NRToAdaptationWeapon(Weapon->WeaponId));
 			Projectile->FinishSpawning(SpawnTransform);
 			Projectile->LaunchInDirection(Direction);
 

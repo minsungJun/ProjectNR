@@ -2,6 +2,7 @@
 
 #include "Components/HealthComponent.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 #include "NeuralAI.h"
 
 UHealthComponent::UHealthComponent()
@@ -92,11 +93,17 @@ float UHealthComponent::GetHealthNormalized() const
 	return MaxHealth > 0.0f ? FMath::Clamp(CurrentHealth / MaxHealth, 0.0f, 1.0f) : 0.0f;
 }
 
-float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection)
+float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, const FVector& HitDirection, EAdaptationWeapon Source)
 {
 	if (bDead || Amount <= 0.0f)
 	{
 		return 0.0f;
+	}
+
+	// The weapon this enemy has adapted to bites less. Before armor, so armor's floor still holds.
+	if (const float Resistance = GetWeaponResistance(Source); Resistance > 0.0f)
+	{
+		Amount *= 1.0f - Resistance;
 	}
 
 	if (IsInvulnerable())
@@ -118,6 +125,12 @@ float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, cons
 	UE_LOG(LogNeuralAI, Verbose, TEXT("%s took %.1f damage (%.1f/%.1f, shield %.1f)"),
 		*GetNameSafe(GetOwner()), Applied, CurrentHealth, MaxHealth, CurrentShield);
 
+	LastDamageSource = Source;
+	if (const UWorld* World = GetWorld())
+	{
+		LastDamageTime = World->GetTimeSeconds();
+	}
+
 	OnDamaged.Broadcast(Applied, DamageInstigator, HitDirection);
 	OnAnyDamaged.Broadcast(this, Applied);
 
@@ -129,4 +142,52 @@ float UHealthComponent::ApplyDamage(float Amount, AActor* DamageInstigator, cons
 	}
 
 	return Applied;
+}
+
+void UHealthComponent::SetWeaponResistance(EAdaptationWeapon Weapon, float Resistance)
+{
+	const int32 Index = static_cast<int32>(Weapon);
+	if (Weapon != EAdaptationWeapon::None && Index < static_cast<int32>(EAdaptationWeapon::Num))
+	{
+		WeaponResistance[Index] = FMath::Clamp(Resistance, 0.0f, 0.9f);
+	}
+}
+
+float UHealthComponent::GetWeaponResistance(EAdaptationWeapon Weapon) const
+{
+	const int32 Index = static_cast<int32>(Weapon);
+	return Weapon != EAdaptationWeapon::None && Index < static_cast<int32>(EAdaptationWeapon::Num) ? WeaponResistance[Index] : 0.0f;
+}
+
+void UHealthComponent::SetRegeneration(float FractionPerSecond, float DelaySeconds)
+{
+	RegenPerSecond = FMath::Clamp(FractionPerSecond, 0.0f, 1.0f);
+	RegenDelay = FMath::Max(DelaySeconds, 0.0f);
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	if (RegenPerSecond > 0.0f)
+	{
+		if (!World->GetTimerManager().IsTimerActive(RegenTimer))
+		{
+			World->GetTimerManager().SetTimer(RegenTimer, this, &UHealthComponent::TickRegeneration, 0.25f, true);
+		}
+	}
+	else
+	{
+		World->GetTimerManager().ClearTimer(RegenTimer);
+	}
+}
+
+void UHealthComponent::TickRegeneration()
+{
+	const UWorld* World = GetWorld();
+	if (!World || bDead || RegenPerSecond <= 0.0f || CurrentHealth >= MaxHealth
+		|| World->GetTimeSeconds() - LastDamageTime < RegenDelay)
+	{
+		return;
+	}
+	Heal(MaxHealth * RegenPerSecond * 0.25f);
 }

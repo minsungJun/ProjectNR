@@ -598,7 +598,7 @@ void UNRMeleeComponent::TestHits(const FNRMeleeAttack& Attack)
 		// Rolled per target, from the stats frozen at the start of the swing.
 		bool bCritical = false;
 		const float Damage = AttackStats.RollDamage(Attack.Damage, bCritical);
-		Health->ApplyDamage(Damage, Owner, ToOtherDir);
+		Health->ApplyDamage(Damage, Owner, ToOtherDir, EAdaptationWeapon::Melee);
 		UE_LOG(LogNRMelee, Log, TEXT("%s hit %s for %.1f%s"), *GetNameSafe(Owner), *GetNameSafe(Other), Damage,
 			bCritical ? TEXT(" (critical)") : TEXT(""));
 	}

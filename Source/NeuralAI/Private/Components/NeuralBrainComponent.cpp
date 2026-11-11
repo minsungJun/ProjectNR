@@ -16,6 +16,8 @@ void UNeuralBrainComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	bStrafeRight = FMath::RandBool();
+	ResetStrafeSwapTimer();
 	BuildDefaultBrain();
 
 	UE_LOG(LogNeuralAI, Log, TEXT("%s brain built: %d neurons, %d synapses, %.0fHz"),
@@ -34,6 +36,7 @@ void UNeuralBrainComponent::BuildDefaultBrain()
 	DriveScratch.SetNumZeroed(Count);
 	LastDrive.SetNumZeroed(Count);
 	PrevActivations.SetNumZeroed(Count);
+	AdaptiveBias.SetNumZeroed(Count);
 
 	// Leak per role. This single number is what separates a reflex from a memory:
 	// a sensory neuron must mirror its input this instant, while ThreatMemory must
@@ -239,6 +242,7 @@ void UNeuralBrainComponent::BuildDefaultBrain()
 	// silently drop them, and an asset's synapses would get Phase 8 stacked on top.
 	BaseSynapses = Synapses;
 	BuildDefaultMappings();
+	BuildDefaultAdaptation();
 	ApplyBrainAsset();
 	RebuildSynapses();
 }
@@ -277,6 +281,17 @@ void UNeuralBrainComponent::Advance(float DeltaTime, const FEnemySensorData& Sen
 	if (StepsThisFrame > 0)
 	{
 		ReadMotorOutput();
+	}
+
+	// An adapted strafer swaps sides now and then, so it weaves instead of orbiting.
+	if (bStrafeSwapEnabled && AdaptationProfile.Strafe > 0.05f)
+	{
+		StrafeSwapSecondsLeft -= DeltaTime;
+		if (StrafeSwapSecondsLeft <= 0.0f)
+		{
+			ResetStrafeSwapTimer();
+			SetStrafeSide(!bStrafeRight);
+		}
 	}
 }
 
@@ -342,7 +357,7 @@ void UNeuralBrainComponent::StepBrain()
 	// 1. Start every neuron at its constant bias plus whatever the senses injected.
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
-		DriveScratch[Index] = Definitions[Index].Bias + ExternalInput[Index];
+		DriveScratch[Index] = Definitions[Index].Bias + AdaptiveBias[Index] + ExternalInput[Index];
 	}
 
 	// 2. Accumulate synapses using LAST step's activations. Reading the previous state
@@ -512,7 +527,7 @@ FString UNeuralBrainComponent::DescribeInputs(ENeuronId Neuron) const
 	}
 
 	const UEnum* NeuronEnum = StaticEnum<ENeuronId>();
-	FString Result = FString::Printf(TEXT("bias %.2f"), Definitions[Index].Bias);
+	FString Result = FString::Printf(TEXT("bias %.2f"), Definitions[Index].Bias + (AdaptiveBias.IsValidIndex(Index) ? AdaptiveBias[Index] : 0.0f));
 
 	for (const FNeuralSynapse& Synapse : Synapses)
 	{
@@ -603,47 +618,124 @@ void UNeuralBrainComponent::ApplyBrainAsset()
 	{
 		OutputMappings = BrainAsset->OutputMappings;
 	}
-	AdaptableSynapses = BrainAsset->AdaptableSynapses;
+	if (BrainAsset->AdaptableSynapses.Num() > 0 || BrainAsset->AdaptableBiases.Num() > 0)
+	{
+		AdaptableSynapses = BrainAsset->AdaptableSynapses;
+		AdaptableBiases = BrainAsset->AdaptableBiases;
+	}
 
 	UE_LOG(LogNeuralAI, Log, TEXT("%s brain overridden by %s"),
 		*GetNameSafe(GetOwner()), *GetNameSafe(BrainAsset));
 }
 
+void UNeuralBrainComponent::BuildDefaultAdaptation()
+{
+	using N = ENeuronId;
+	using A = EAdaptationAxis;
+	AdaptableSynapses.Reset();
+	AdaptableBiases.Reset();
+
+	// Each axis at +1 moves its cluster this far, -1 the same distance the other way. Kept
+	// modest so the base circuit's balance (threat beats aggression, dodges need a looming
+	// signal) survives a fully adapted enemy.
+
+	// Dodge: looming turns into a sidestep sooner and harder. The resting deficit shrinks but
+	// stays negative (-0.25 + 0.12), so a dodge still needs a shot actually coming.
+	AdaptableSynapses.Emplace(N::LoomLeft, N::DodgeRight, A::Dodge, 0.5f);
+	AdaptableSynapses.Emplace(N::LoomRight, N::DodgeLeft, A::Dodge, 0.5f);
+	AdaptableSynapses.Emplace(N::LoomFront, N::DodgeRight, A::Dodge, 0.5f);
+	AdaptableSynapses.Emplace(N::LoomFront, N::DodgeLeft, A::Dodge, 0.5f);
+	AdaptableBiases.Emplace(N::DodgeLeft, A::Dodge, 0.12f);
+	AdaptableBiases.Emplace(N::DodgeRight, A::Dodge, 0.12f);
+
+	// Strafe: the base circuit never drives the strafe neurons. Adaptation wires them from
+	// nothing - a nearby target and danger make the enemy circle. Written onto StrafeRight and
+	// mirrored onto StrafeLeft while it circles the other way.
+	AdaptableSynapses.Emplace(N::PlayerNear, N::StrafeRight, A::Strafe, 0.0f, 0.6f);
+	AdaptableSynapses.Emplace(N::Threat, N::StrafeRight, A::Strafe, 0.0f, 0.5f);
+	AdaptableSynapses.Emplace(N::ThreatMemory, N::StrafeRight, A::Strafe, 0.0f, 0.3f);
+
+	// Caution: danger registers more and keeps the enemy cautious longer.
+	AdaptableSynapses.Emplace(N::LoomLeft, N::Threat, A::Caution, 0.4f);
+	AdaptableSynapses.Emplace(N::LoomRight, N::Threat, A::Caution, 0.4f);
+	AdaptableSynapses.Emplace(N::LoomFront, N::Threat, A::Caution, 0.4f);
+	AdaptableSynapses.Emplace(N::Threat, N::Caution, A::Caution, 0.5f);
+	AdaptableSynapses.Emplace(N::ThreatMemory, N::Caution, A::Caution, 0.5f);
+	AdaptableBiases.Emplace(N::Caution, A::Caution, 0.1f);
+
+	// Approach: the urge to close. Below 0 a near target also holds it back.
+	AdaptableSynapses.Emplace(N::Aggression, N::Approach, A::Approach, 0.5f);
+	AdaptableSynapses.Emplace(N::Pursuit, N::Approach, A::Approach, 0.5f);
+	AdaptableSynapses.Emplace(N::PlayerNear, N::Approach, A::Approach, 0.0f, 0.3f);
+
+	// Retreat: caution turns into backing off, and a close target is a reason to open the gap.
+	AdaptableSynapses.Emplace(N::Caution, N::Retreat, A::Retreat, 0.6f);
+	AdaptableSynapses.Emplace(N::PlayerNear, N::Retreat, A::Retreat, 0.0f, 0.5f);
+	AdaptableBiases.Emplace(N::Retreat, A::Retreat, 0.05f);
+
+	// Aggression: an opening turns into an attack more readily, and danger holds it back less.
+	AdaptableSynapses.Emplace(N::PlayerNear, N::Aggression, A::Aggression, 0.3f);
+	AdaptableSynapses.Emplace(N::Aggression, N::Attack, A::Aggression, 0.6f);
+	AdaptableSynapses.Emplace(N::Threat, N::Attack, A::Aggression, -0.3f);
+	AdaptableBiases.Emplace(N::Attack, A::Aggression, 0.12f);
+}
+
+ENeuronId UNeuralBrainComponent::MirrorStrafe(ENeuronId Neuron) const
+{
+	if (bStrafeRight)
+	{
+		return Neuron;
+	}
+	return Neuron == ENeuronId::StrafeRight ? ENeuronId::StrafeLeft
+		: Neuron == ENeuronId::StrafeLeft ? ENeuronId::StrafeRight : Neuron;
+}
+
+void UNeuralBrainComponent::ResetStrafeSwapTimer()
+{
+	StrafeSwapSecondsLeft = FMath::FRandRange(1.5f, 3.5f);
+}
+
 void UNeuralBrainComponent::RebuildSynapses()
 {
 	Synapses = BaseSynapses;
-
-	if (AdaptableSynapses.Num() == 0)
+	AdaptiveBias.SetNumZeroed(NeuronCount());
+	for (float& Bias : AdaptiveBias)
 	{
-		return;
+		Bias = 0.0f;
 	}
-
-	auto ModifierFor = [this](EAdaptationAxis Axis)
-	{
-		switch (Axis)
-		{
-		case EAdaptationAxis::Projectile:  return AdaptationProfile.ProjectileAdaptation;
-		case EAdaptationAxis::CloseRange:  return AdaptationProfile.CloseRangeAdaptation;
-		case EAdaptationAxis::Mobility:    return AdaptationProfile.MobilityAdaptation;
-		case EAdaptationAxis::Aggression:  return AdaptationProfile.AggressionAdaptation;
-		default:                           return 1.0f;
-		}
-	};
 
 	for (const FAdaptableSynapse& Adaptable : AdaptableSynapses)
 	{
-		const float Modifier = ModifierFor(Adaptable.Axis);
+		const float Value = AdaptationProfile.Get(Adaptable.Axis);
+		if (FMath::IsNearlyZero(Value))
+		{
+			continue;
+		}
+		const ENeuronId To = MirrorStrafe(Adaptable.ToNeuron);
 
-		// Sensitivity interpolates between "ignore this axis" and "follow it exactly",
-		// so one axis can move a cluster of synapses by different amounts.
-		const float Scale = 1.0f + (Modifier - 1.0f) * Adaptable.Sensitivity;
-
+		// Scaling never flips a synapse's sign: an excitatory one at most falls silent.
+		const float Scale = FMath::Max(0.0f, 1.0f + Value * Adaptable.Sensitivity);
+		bool bFound = false;
 		for (FNeuralSynapse& Synapse : Synapses)
 		{
-			if (Synapse.FromNeuron == Adaptable.FromNeuron && Synapse.ToNeuron == Adaptable.ToNeuron)
+			if (Synapse.FromNeuron == Adaptable.FromNeuron && Synapse.ToNeuron == To)
 			{
-				Synapse.Weight *= Scale;
+				Synapse.Weight = Synapse.Weight * Scale + Value * Adaptable.AddedWeight;
+				bFound = true;
 			}
+		}
+		if (!bFound && !FMath::IsNearlyZero(Adaptable.AddedWeight))
+		{
+			Synapses.Emplace(Adaptable.FromNeuron, To, Value * Adaptable.AddedWeight);
+		}
+	}
+
+	for (const FAdaptableBias& Adaptable : AdaptableBiases)
+	{
+		const int32 Index = NeuronIndex(MirrorStrafe(Adaptable.Neuron));
+		if (AdaptiveBias.IsValidIndex(Index))
+		{
+			AdaptiveBias[Index] += AdaptationProfile.Get(Adaptable.Axis) * Adaptable.BiasPerUnit;
 		}
 	}
 }
@@ -656,11 +748,36 @@ void UNeuralBrainComponent::ApplyAdaptationProfile(const FEnemyAdaptationProfile
 	// previous adaptation instead of stacking on top of it.
 	RebuildSynapses();
 
-	UE_LOG(LogNeuralAI, Log,
-		TEXT("%s adaptation applied: projectile %.2f, close %.2f, mobility %.2f, aggression %.2f"),
-		*GetNameSafe(GetOwner()),
-		Profile.ProjectileAdaptation, Profile.CloseRangeAdaptation,
-		Profile.MobilityAdaptation, Profile.AggressionAdaptation);
+	UE_LOG(LogNeuralAI, Log, TEXT("%s adaptation applied: %s"), *GetNameSafe(GetOwner()), *Profile.ToString());
+}
+
+void UNeuralBrainComponent::SetStrafeSide(bool bRight)
+{
+	if (bStrafeRight == bRight)
+	{
+		return;
+	}
+	bStrafeRight = bRight;
+	RebuildSynapses();
+}
+
+float UNeuralBrainComponent::GetSynapseWeight(ENeuronId From, ENeuronId To) const
+{
+	float Weight = 0.0f;
+	for (const FNeuralSynapse& Synapse : Synapses)
+	{
+		if (Synapse.FromNeuron == From && Synapse.ToNeuron == To)
+		{
+			Weight += Synapse.Weight;
+		}
+	}
+	return Weight;
+}
+
+float UNeuralBrainComponent::GetAdaptiveBias(ENeuronId Neuron) const
+{
+	const int32 Index = NeuronIndex(Neuron);
+	return AdaptiveBias.IsValidIndex(Index) ? AdaptiveBias[Index] : 0.0f;
 }
 
 void UNeuralBrainComponent::ApplyProfile(const UEnemyAIProfile* Profile)

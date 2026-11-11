@@ -37,16 +37,6 @@ enum class EMotorChannel : uint8
 	DodgeRight
 };
 
-/** Which aspect of behaviour an adaptation modifier acts on. */
-UENUM(BlueprintType)
-enum class EAdaptationAxis : uint8
-{
-	Projectile,
-	CloseRange,
-	Mobility,
-	Aggression
-};
-
 /** Routes one sensor reading onto one sensory neuron. */
 USTRUCT(BlueprintType)
 struct NEURALAI_API FNeuralInputMapping
@@ -87,10 +77,16 @@ struct NEURALAI_API FNeuralOutputMapping
 };
 
 /**
- * Marks a synapse as something a future evolution system may tune.
+ * A synapse an adaptation axis changes.
  *
- * Identifying synapses by their endpoints rather than by array index means the list
- * survives reordering of the synapse array, which an index would not.
+ * Identified by its endpoints rather than by array index, so the list survives reordering of
+ * the synapse array. With the axis at value v (-1..1) the synapse's weight becomes
+ *
+ *     Weight * max(0, 1 + v * Sensitivity) + v * AddedWeight
+ *
+ * Sensitivity scales a synapse the circuit already has; AddedWeight can also create one it
+ * does not (the strafe wiring starts from nothing). A synapse onto StrafeRight is mirrored
+ * onto StrafeLeft while the enemy circles the other way.
  */
 USTRUCT(BlueprintType)
 struct NEURALAI_API FAdaptableSynapse
@@ -104,16 +100,39 @@ struct NEURALAI_API FAdaptableSynapse
 	ENeuronId ToNeuron = ENeuronId::LoomLeft;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation")
-	EAdaptationAxis Axis = EAdaptationAxis::Projectile;
+	EAdaptationAxis Axis = EAdaptationAxis::Dodge;
 
-	/**
-	 * How strongly this synapse follows its axis.
-	 *
-	 * 1 means a modifier of 1.5 scales the weight by 1.5; 0.5 scales it by 1.25. Lets one
-	 * axis move a whole cluster of synapses by different amounts.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float Sensitivity = 1.0f;
+	/** Relative weight change per unit of the axis: 0.5 makes v = 1 scale the weight by 1.5. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation", meta = (ClampMin = "-2.0", ClampMax = "2.0"))
+	float Sensitivity = 0.0f;
+
+	/** Weight added per unit of the axis, whether or not the circuit has this synapse. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation", meta = (ClampMin = "-2.0", ClampMax = "2.0"))
+	float AddedWeight = 0.0f;
+
+	FAdaptableSynapse() = default;
+	FAdaptableSynapse(ENeuronId InFrom, ENeuronId InTo, EAdaptationAxis InAxis, float InSensitivity, float InAddedWeight = 0.0f)
+		: FromNeuron(InFrom), ToNeuron(InTo), Axis(InAxis), Sensitivity(InSensitivity), AddedWeight(InAddedWeight) {}
+};
+
+/** Resting drive an adaptation axis adds to a neuron: v * BiasPerUnit. Mirrored like FAdaptableSynapse. */
+USTRUCT(BlueprintType)
+struct NEURALAI_API FAdaptableBias
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation")
+	ENeuronId Neuron = ENeuronId::Attack;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation")
+	EAdaptationAxis Axis = EAdaptationAxis::Aggression;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation", meta = (ClampMin = "-1.0", ClampMax = "1.0"))
+	float BiasPerUnit = 0.0f;
+
+	FAdaptableBias() = default;
+	FAdaptableBias(ENeuronId InNeuron, EAdaptationAxis InAxis, float InBiasPerUnit)
+		: Neuron(InNeuron), Axis(InAxis), BiasPerUnit(InBiasPerUnit) {}
 };
 
 /**
@@ -142,6 +161,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mapping")
 	TArray<FNeuralOutputMapping> OutputMappings;
 
+	/** Replaces the built-in adaptation wiring when not empty (together with AdaptableBiases). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation")
 	TArray<FAdaptableSynapse> AdaptableSynapses;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation")
+	TArray<FAdaptableBias> AdaptableBiases;
 };

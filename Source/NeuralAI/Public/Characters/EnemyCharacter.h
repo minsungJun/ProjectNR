@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "Core/NeuralTypes.h"
 #include "EnemyCharacter.generated.h"
 
 class UHealthComponent;
@@ -123,6 +124,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Enemy")
 	bool IsStunned() const { return bStunned; }
 
+	/**
+	 * Applies stat changes on top of the archetype: health, damage, speed, attack rate,
+	 * regeneration, resistance per player weapon. Always relative to the archetype's own values,
+	 * so applying twice replaces rather than stacks. Call after BeginPlay (the run does, as the
+	 * enemy joins a room). Behaviour adaptation goes to the brain separately.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Enemy")
+	void ApplyCombatModifiers(const FEnemyCombatModifiers& Modifiers);
+
+	UFUNCTION(BlueprintPure, Category = "Enemy")
+	const FEnemyCombatModifiers& GetCombatModifiers() const { return CombatModifiers; }
+
+	/** Attacks per second relative to the archetype; the controller divides its interval by it. */
+	float GetAttackSpeedMultiplier() const { return FMath::Max(CombatModifiers.AttackSpeedMultiplier, 0.1f); }
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
@@ -221,6 +237,14 @@ protected:
 
 private:
 	bool bStunned = false;
+
+	FEnemyCombatModifiers CombatModifiers;
+
+	/** Archetype values the modifiers scale, captured the first time they are applied. */
+	bool bCapturedBaseStats = false;
+	float BaseMovementSpeed = 0.0f;
+	float BaseAttackDamage = 0.0f;
+	float BaseMaxHealth = 0.0f;
 
 	/** The body mesh's own place on the capsule, to come back to after a climb. */
 	FTransform BodyRestTransform;

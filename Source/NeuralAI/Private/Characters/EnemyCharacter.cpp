@@ -538,3 +538,31 @@ void AEnemyCharacter::CopyArchetypeFrom(const AEnemyCharacter* Other)
 	AIProfile = Other->AIProfile;
 	CombatStateTree = Other->CombatStateTree;
 }
+
+void AEnemyCharacter::ApplyCombatModifiers(const FEnemyCombatModifiers& Modifiers)
+{
+	if (!bCapturedBaseStats)
+	{
+		bCapturedBaseStats = true;
+		BaseMovementSpeed = MovementSpeed;
+		BaseAttackDamage = AttackDamage;
+		BaseMaxHealth = HealthComponent ? HealthComponent->GetMaxHealth() : 0.0f;
+	}
+	CombatModifiers = Modifiers;
+
+	AttackDamage = BaseAttackDamage * FMath::Max(Modifiers.DamageMultiplier, 0.1f);
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->MaxWalkSpeed = BaseMovementSpeed * FMath::Max(Modifiers.MoveSpeedMultiplier, 0.1f);
+	}
+	if (HealthComponent)
+	{
+		// Raising the cap fills the difference, so a fresh enemy arrives at full health.
+		HealthComponent->SetMaxHealth(BaseMaxHealth * FMath::Max(Modifiers.HealthMultiplier, 0.1f));
+		HealthComponent->SetWeaponResistance(EAdaptationWeapon::Rifle, Modifiers.RifleResistance);
+		HealthComponent->SetWeaponResistance(EAdaptationWeapon::Shotgun, Modifiers.ShotgunResistance);
+		HealthComponent->SetWeaponResistance(EAdaptationWeapon::Melee, Modifiers.MeleeResistance);
+		HealthComponent->SetRegeneration(Modifiers.RegenPerSecond);
+	}
+	UE_LOG(LogNeuralAI, Log, TEXT("%s combat modifiers: %s"), *GetNameSafe(this), *Modifiers.ToString());
+}

@@ -316,7 +316,8 @@ void AEnemyAIController::TryDodge(float Now, float ImmediateThreat)
 
 void AEnemyAIController::TryAttack(float Now, float ImmediateThreat)
 {
-	const float Interval = ControlledEnemy->GetAttackInterval() > 0.0f ? ControlledEnemy->GetAttackInterval() : AttackCooldown;
+	const float BaseInterval = ControlledEnemy->GetAttackInterval() > 0.0f ? ControlledEnemy->GetAttackInterval() : AttackCooldown;
+	const float Interval = BaseInterval / ControlledEnemy->GetAttackSpeedMultiplier();
 	if (Now - LastAttackTime < Interval || IsCommitted(Now))
 	{
 		return;

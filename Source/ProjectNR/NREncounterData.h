@@ -8,6 +8,7 @@
 #include "NREncounterData.generated.h"
 
 class AEnemyCharacter;
+class UNRAdaptationConfig;
 
 /** How a kind of room fills itself from its spawn points. */
 USTRUCT(BlueprintType)
@@ -81,6 +82,10 @@ public:
 	/** Picked points keep at least this far apart while there are others to choose, in cm. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Placement", meta = (ClampMin = "0.0"))
 	float MinPointSpacing = 300.0f;
+
+	/** How the enemies adapt to the player's weapons from room to room. Empty: the built-in defaults. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Adaptation")
+	TObjectPtr<UNRAdaptationConfig> Adaptation;
 
 	/** Seconds the picked places are marked before the enemies appear. 0 spawns at once. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Placement", meta = (ClampMin = "0.0"))

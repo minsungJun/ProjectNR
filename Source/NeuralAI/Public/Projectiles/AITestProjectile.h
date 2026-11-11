@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Core/NeuralTypes.h"
 #include "AITestProjectile.generated.h"
 
 class USphereComponent;
@@ -48,6 +49,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Projectile")
 	void InitializeDamage(float FinalDamage) { Damage = FMath::Max(0.0f, FinalDamage); }
 
+	/** Which player weapon fired this, so the hit can be resisted and counted per weapon. */
+	void SetDamageSource(EAdaptationWeapon InSource) { DamageSource = InSource; }
+	EAdaptationWeapon GetDamageSource() const { return DamageSource; }
+
 	UFUNCTION(BlueprintPure, Category = "Projectile")
 	float GetCollisionRadius() const;
 
@@ -74,6 +79,8 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile")
 	float Damage = 20.0f;
+
+	EAdaptationWeapon DamageSource = EAdaptationWeapon::None;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = "0.1"))
 	float LifeSeconds = 5.0f;

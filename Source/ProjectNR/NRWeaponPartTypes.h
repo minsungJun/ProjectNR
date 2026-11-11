@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/NeuralTypes.h"
 #include "NRWeaponPartTypes.generated.h"
 
 class UNRWeaponPartData;
@@ -20,6 +21,18 @@ enum class ENRWeaponId : uint8
 };
 
 constexpr int32 NRWeaponIdCount = 3;
+
+/** The same weapon as the enemy side's adaptation knows it. */
+inline EAdaptationWeapon NRToAdaptationWeapon(ENRWeaponId WeaponId)
+{
+	switch (WeaponId)
+	{
+	case ENRWeaponId::Rifle:   return EAdaptationWeapon::Rifle;
+	case ENRWeaponId::Shotgun: return EAdaptationWeapon::Shotgun;
+	case ENRWeaponId::Melee:   return EAdaptationWeapon::Melee;
+	default:                   return EAdaptationWeapon::None;
+	}
+}
 
 /** What a part changes. One stat per part; a part that changes two things is two parts. */
 UENUM(BlueprintType)

@@ -11,6 +11,7 @@
 #include "GameFramework/Pawn.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "NRAdaptationSubsystem.h"
 #include "NRDoor.h"
 #include "NRSpawnPoint.h"
 #include "NRSpawnSubsystem.h"
@@ -112,6 +113,11 @@ void ANRRoom::AddSpawnedEnemy(AActor* Enemy)
 		if (UEnemySensorComponent* Sensor = Enemy->FindComponentByClass<UEnemySensorComponent>())
 		{
 			Sensor->SetDormant(false);
+		}
+		// What the enemies learned in the rooms before this one.
+		if (UNRAdaptationSubsystem* Adaptation = GetWorld() ? GetWorld()->GetSubsystem<UNRAdaptationSubsystem>() : nullptr)
+		{
+			Adaptation->ApplyToEnemy(Enemy);
 		}
 	}
 }
@@ -310,6 +316,10 @@ void ANRRoom::SetState(ENRRoomState NewState)
 		{
 			UpdateSafePhase(false);
 		}
+		if (UNRAdaptationSubsystem* Adaptation = GetWorld() ? GetWorld()->GetSubsystem<UNRAdaptationSubsystem>() : nullptr)
+		{
+			Adaptation->HandleRoomActivated(this);
+		}
 	}
 	else if (NewState == ENRRoomState::Cleared)
 	{
@@ -325,6 +335,10 @@ void ANRRoom::SetState(ENRRoomState NewState)
 		if (!IsGenerated())
 		{
 			UpdateSafePhase(true);
+		}
+		if (UNRAdaptationSubsystem* Adaptation = GetWorld() ? GetWorld()->GetSubsystem<UNRAdaptationSubsystem>() : nullptr)
+		{
+			Adaptation->HandleRoomCleared(this);
 		}
 	}
 

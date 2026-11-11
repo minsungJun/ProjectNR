@@ -80,15 +80,26 @@ TArray<FNRSpawnPicker::FPick> FNRSpawnPicker::Pick(const TArray<FCandidate>& Can
 		Usable.Remove(Chosen);
 	}
 
-	// 4. What comes out of each: ranged up to the room's cap.
+	// 4. What comes out of each: ranged up to the room's cap, both shifted by adaptation.
+	const float Bias = FMath::Clamp(Params.RangedBias, -1.0f, 1.0f);
+	const int32 MaxRanged = FMath::Max(Rule.MaxRanged + FMath::RoundToInt(Bias * Params.MaxRangedShift), 0);
+	const float AnyRangedChance = FMath::Clamp(Rule.AnyRangedChance + Bias * Params.AnyRangedChanceShift, 0.0f, 1.0f);
+	const float ConvertChance = FMath::Abs(Bias) * Params.ConvertChance;
 	int32 Ranged = 0;
 	for (const int32 Index : Drawn)
 	{
 		const ENRSpawnKind Kind = Candidates[Index].Kind;
 		bool bRanged = false;
-		if (Ranged < Rule.MaxRanged)
+		if (Ranged < MaxRanged)
 		{
-			bRanged = Kind == ENRSpawnKind::Ranged || (Kind == ENRSpawnKind::Any && Random.FRand() < Rule.AnyRangedChance);
+			// Rolled only when there is a bias, so an unadapted room draws exactly as before.
+			const bool bConverts = ConvertChance > 0.0f && Random.FRand() < ConvertChance;
+			switch (Kind)
+			{
+			case ENRSpawnKind::Ranged: bRanged = !(Bias < 0.0f && bConverts); break;
+			case ENRSpawnKind::Melee:  bRanged = Bias > 0.0f && bConverts; break;
+			default:                   bRanged = Random.FRand() < AnyRangedChance; break;
+			}
 		}
 		Ranged += bRanged ? 1 : 0;
 		Picks.Add({ Index, bRanged ? ENRSpawnKind::Ranged : ENRSpawnKind::Melee });
