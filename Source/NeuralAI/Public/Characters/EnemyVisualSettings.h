@@ -80,4 +80,8 @@ public:
 	/** The ranged enemy (ARangedEnemyCharacter). */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Enemies")
 	FEnemyVisual Spitter;
+
+	/** The boss (ABossEnemyCharacter): the rock golem at scale 5. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Enemies")
+	FEnemyVisual Boss;
 };

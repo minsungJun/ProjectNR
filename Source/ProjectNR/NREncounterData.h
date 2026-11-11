@@ -70,7 +70,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemies")
 	TSubclassOf<AEnemyCharacter> RangedClass;
 
-	/** The boss room's boss, on its Boss point. Empty until there is a boss: the room then holds its minions only. */
+	/** The boss room's boss, on its Boss point (ABossEnemyCharacter, the rock golem). Empty: the room holds its minions only. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Enemies")
 	TSubclassOf<AEnemyCharacter> BossClass;
 

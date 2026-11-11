@@ -431,10 +431,20 @@ void AEnemyCharacter::SetClimbPose(float Alpha)
 
 int32 AEnemyCharacter::PerformAttack()
 {
+	const int32 HitCount = ApplyAttackDamage();
+	if (HitCount >= 0)
+	{
+		PlayAttackAnimation();
+	}
+	return FMath::Max(HitCount, 0);
+}
+
+int32 AEnemyCharacter::ApplyAttackDamage()
+{
 	UWorld* World = GetWorld();
 	if (!World || IsDead())
 	{
-		return 0;
+		return -1;
 	}
 
 	const FVector Origin = GetActorLocation();
@@ -490,8 +500,6 @@ int32 AEnemyCharacter::PerformAttack()
 		FMath::DegreesToRadians(AttackHalfAngle), FMath::DegreesToRadians(15.0f), 16,
 		HitCount > 0 ? FColor::Red : FColor(150, 150, 150), false, 0.35f, 0, 2.0f);
 #endif
-
-	PlayAttackAnimation();
 
 	UE_LOG(LogNeuralAI, Log, TEXT("%s attacked, %d hit"), *GetNameSafe(this), HitCount);
 	return HitCount;

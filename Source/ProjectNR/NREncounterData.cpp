@@ -2,6 +2,7 @@
 
 #include "NREncounterData.h"
 
+#include "Characters/BossEnemyCharacter.h"
 #include "Characters/EnemyCharacter.h"
 #include "Characters/RangedEnemyCharacter.h"
 
@@ -9,6 +10,7 @@ UNREncounterData::UNREncounterData()
 {
 	MeleeClass = AEnemyCharacter::StaticClass();
 	RangedClass = ARangedEnemyCharacter::StaticClass();
+	BossClass = ABossEnemyCharacter::StaticClass();
 
 	Combat.MinUseRatio = 0.6f;
 	Combat.MaxUseRatio = 0.8f;

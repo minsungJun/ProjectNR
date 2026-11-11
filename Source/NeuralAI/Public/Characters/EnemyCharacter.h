@@ -142,6 +142,9 @@ protected:
 	/** Plays the model's attack once over the walk; called by PerformAttack when an attack goes out. */
 	void PlayAttackAnimation();
 
+	/** The damage half of PerformAttack: hits what is in the forward arc now. -1 when it cannot attack (dead). */
+	int32 ApplyAttackDamage();
+
 	/** Plays an animation once over the walk, cutting off any other one-shot still playing. */
 	void PlayOneShotAnimation(UAnimSequence* Animation);
 
