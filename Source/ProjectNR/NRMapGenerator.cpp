@@ -291,6 +291,7 @@ TArray<FNRRoomTemplateDesc> ANRMapGenerator::DescribeTemplates() const
 		Desc.RotationMask = static_cast<uint8>(Template->AllowedRotations & 0b1111);
 		Desc.Weight = Template->Weight;
 		Desc.Environment = Template->Environment;
+		Desc.IndoorSide = Template->bFixIndoorSide ? static_cast<int32>(Template->IndoorSide) : INDEX_NONE;
 		Desc.TypeMask = 0;
 		for (ENRGridRoomType Type : Template->RoomTypes)
 		{
@@ -1688,6 +1689,126 @@ namespace NRGridCommands
 		UE_LOG(LogNRMapGen, Log, TEXT("First seed with %d rooms: %d; with %d loops: %d"), Settings.MaxRooms, MostRooms, Settings.MaxLoops, MostLoops);
 	}
 
+	/**
+	 * NR.Grid.Survey [count] [from]: generates Hybrid maps with the config and counts, for every
+	 * Transition cell, the sides its Indoor corridors leave from. Measures a candidate rule: a
+	 * Transition cell's Indoor corridors fit one corner (an L: at most two sides, never opposite).
+	 * Read-only: no map is loaded.
+	 */
+	void Survey(const TArray<FString>& Args, UWorld* World)
+	{
+		const ANRMapGenerator* Generator = World ? Find(World) : nullptr;
+		if (!Generator)
+		{
+			return;
+		}
+		FNRMapGenSettings Settings = Generator->GetEffectiveSettings();
+		Settings.EnvironmentMode = ENRMapEnvironmentMode::Hybrid;
+		const TArray<FNRRoomTemplateDesc> Templates = Generator->DescribeTemplates();
+		const TArray<FNRCorridorTemplateDesc> Corridors = Generator->DescribeCorridors();
+		const int32 Count = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 400;
+		const int32 From = Args.Num() > 1 ? FCString::Atoi(*Args[1]) : 1;
+
+		// Indoor sides of one Transition cell: 0, 1, 2 at a corner, 2 opposite, 3, 4.
+		enum EPattern { None, One, Corner, Opposite, Three, Four, PatternCount };
+		const TCHAR* PatternNames[PatternCount] = { TEXT("0"), TEXT("1"), TEXT("2 corner (L)"), TEXT("2 opposite"), TEXT("3"), TEXT("4") };
+		int32 Cells[2][PatternCount] = {};
+		int32 Maps = 0, Failed = 0, Tries = 0, LoosePass = 0, StrictPass = 0, TransitionCells = 0;
+		// How a Transition cell's Indoor and Outdoor corridors sit against each other.
+		enum EFace { FaceAcross, FaceAtAngle, FaceIndoorOnly, FaceOutdoorOnly, FaceNeither, FaceCount };
+		const TCHAR* FaceNames[FaceCount] = { TEXT("Indoor across Outdoor"), TEXT("Indoor at right angles only"), TEXT("Indoor only"), TEXT("Outdoor only"), TEXT("neither") };
+		int32 Facing[FaceCount] = {};
+		int32 FaceLoosePass = 0, FaceStrictPass = 0;
+		for (int32 Seed = From; Seed < From + Count; ++Seed)
+		{
+			FNRGeneratedLayout Layout;
+			FString Error;
+			if (!FNRGridLayoutGenerator::Generate(Settings, Templates, Corridors, Seed, Layout, Error))
+			{
+				++Failed;
+				Tries += Settings.MaxAttempts;
+				continue;
+			}
+			++Maps;
+			Tries += Layout.Attempt + 1;
+			bool bLoose = true;
+			bool bStrict = true;
+			bool bFaceLoose = true;
+			bool bFaceStrict = true;
+			for (const FNRGeneratedRoom& Room : Layout.Rooms)
+			{
+				if (Room.Environment != ENRRoomEnvironment::Transition)
+				{
+					continue;
+				}
+				++TransitionCells;
+				uint8 Indoor = 0;
+				uint8 Outdoor = 0;
+				for (const FNRGeneratedConnection& Connection : Layout.Connections)
+				{
+					const bool bA = Connection.RoomA == Room.RoomId;
+					if (!bA && Connection.RoomB != Room.RoomId)
+					{
+						continue;
+					}
+					const FNRGeneratedRoom* Other = Layout.FindRoom(bA ? Connection.RoomB : Connection.RoomA);
+					if (!Other)
+					{
+						continue;
+					}
+					// Another Transition place counts as Outdoor: the corridor to it is an Outdoor one.
+					const FIntPoint Step = bA ? Connection.CellB - Connection.CellA : Connection.CellA - Connection.CellB;
+					const int32 Side = Step.Y > 0 ? 0 : Step.X > 0 ? 1 : Step.Y < 0 ? 2 : 3; // N, E, S, W
+					(Other->Environment == ENRRoomEnvironment::Indoor ? Indoor : Outdoor) |= 1 << Side;
+				}
+				// Facing: some Indoor side has an Outdoor side straight across (sides two steps apart).
+				const uint8 Across = static_cast<uint8>(((Outdoor << 2) | (Outdoor >> 2)) & 0b1111);
+				const bool bFacing = (Indoor & Across) != 0;
+				const int32 Face = !Indoor && !Outdoor ? FaceNeither : !Outdoor ? FaceIndoorOnly : !Indoor ? FaceOutdoorOnly : bFacing ? FaceAcross : FaceAtAngle;
+				++Facing[Face];
+				bFaceLoose &= !(Indoor && Outdoor) || bFacing;
+				bFaceStrict &= FMath::CountBits(Indoor) == 1 && FMath::CountBits(Outdoor) == 1 && bFacing;
+				const int32 Sides = FMath::CountBits(Indoor);
+				const bool bOpposite = Indoor == 0b0101 || Indoor == 0b1010;
+				const EPattern Pattern = Sides == 0 ? None : Sides == 1 ? One : Sides == 2 ? (bOpposite ? Opposite : Corner) : Sides == 3 ? Three : Four;
+				++Cells[Room.RoomType == ENRGridRoomType::Hall ? 1 : 0][Pattern];
+				bLoose &= Sides <= 2 && !bOpposite;
+				bStrict &= Pattern == Corner;
+			}
+			LoosePass += bLoose;
+			StrictPass += bStrict;
+			FaceLoosePass += bFaceLoose;
+			FaceStrictPass += bFaceStrict;
+		}
+
+		// A map fails only when all MaxAttempts tries fail. With the rule as one more check on a
+		// finished try, a try succeeds with (maps / tries) * (share of maps passing the rule).
+		const double TrySuccess = Tries > 0 ? static_cast<double>(Maps) / Tries : 0.0;
+		auto FailAfterAll = [&](int32 Pass)
+		{
+			const double P = Maps > 0 ? TrySuccess * Pass / Maps : 0.0;
+			return 100.0 * FMath::Pow(1.0 - P, static_cast<double>(Settings.MaxAttempts));
+		};
+		UE_LOG(LogNRMapGen, Log, TEXT("[Survey] seeds %d..%d: %d maps, %d failed, %d tries (%.1f%% of tries succeed), %d Transition cells"),
+			From, From + Count - 1, Maps, Failed, Tries, 100.0 * TrySuccess, TransitionCells);
+		for (int32 Pattern = 0; Pattern < PatternCount; ++Pattern)
+		{
+			UE_LOG(LogNRMapGen, Log, TEXT("[Survey]   Indoor sides %-13s: rooms %4d, hall cells %4d"), PatternNames[Pattern], Cells[0][Pattern], Cells[1][Pattern]);
+		}
+		UE_LOG(LogNRMapGen, Log, TEXT("[Survey] rule 'Indoor sides fit one corner' (<= 2, not opposite): %d/%d maps pass (%.1f%%), est. map failure after %d tries %.2f%%"),
+			LoosePass, Maps, Maps ? 100.0 * LoosePass / Maps : 0.0, Settings.MaxAttempts, FailAfterAll(LoosePass));
+		UE_LOG(LogNRMapGen, Log, TEXT("[Survey] rule 'Indoor sides exactly one L' (2 at a corner): %d/%d maps pass (%.1f%%), est. map failure after %d tries %.2f%%"),
+			StrictPass, Maps, Maps ? 100.0 * StrictPass / Maps : 0.0, Settings.MaxAttempts, FailAfterAll(StrictPass));
+		for (int32 Face = 0; Face < FaceCount; ++Face)
+		{
+			UE_LOG(LogNRMapGen, Log, TEXT("[Survey]   %-28s: %4d cells"), FaceNames[Face], Facing[Face]);
+		}
+		UE_LOG(LogNRMapGen, Log, TEXT("[Survey] rule 'touching both, Indoor faces Outdoor': %d/%d maps pass (%.1f%%), est. map failure after %d tries %.2f%%"),
+			FaceLoosePass, Maps, Maps ? 100.0 * FaceLoosePass / Maps : 0.0, Settings.MaxAttempts, FailAfterAll(FaceLoosePass));
+		UE_LOG(LogNRMapGen, Log, TEXT("[Survey] rule 'every cell: one Indoor straight across one Outdoor': %d/%d maps pass (%.1f%%), est. map failure after %d tries %.2f%%"),
+			FaceStrictPass, Maps, Maps ? 100.0 * FaceStrictPass / Maps : 0.0, Settings.MaxAttempts, FailAfterAll(FaceStrictPass));
+	}
+
 	/** NR.Grid.TestMissing <seed> [roomId]: build with one room's level pointing nowhere; must fail whole. */
 	void TestMissing(const TArray<FString>& Args, UWorld* World)
 	{
@@ -1823,6 +1944,10 @@ static FAutoConsoleCommandWithWorldAndArgs GNRGridHurtRoomCommand(TEXT("NR.Grid.
 static FAutoConsoleCommandWithWorldAndArgs GNRGridFindSeedCommand(TEXT("NR.Grid.FindSeed"),
 	TEXT("NR.Grid.FindSeed [from] [count]: first seeds giving the most rooms and the most loops."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::FindSeed));
+
+static FAutoConsoleCommandWithWorldAndArgs GNRGridSurveyCommand(TEXT("NR.Grid.Survey"),
+	TEXT("NR.Grid.Survey [count] [from]: generate Hybrid maps (nothing loaded) and log how Transition cells meet Indoor, and how often an L-corner rule would pass."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&NRGridCommands::Survey));
 
 static FAutoConsoleCommandWithWorldAndArgs GNRGridTestMissingCommand(TEXT("NR.Grid.TestMissing"),
 	TEXT("NR.Grid.TestMissing <seed> [roomId]: load a map with one room's level missing; it must fail as a whole."),

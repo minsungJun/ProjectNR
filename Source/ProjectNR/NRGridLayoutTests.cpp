@@ -154,7 +154,8 @@ namespace NRGridTests
 		return Templates;
 	}
 
-	/** One corridor per pair that may meet, and a second, rarer Indoor one. */
+	/** One corridor per pair that may meet, and a second, rarer Indoor one. The Transition-Transition
+	 *  one stays in the set to prove it is never chosen (those links take Outdoor-Outdoor). */
 	TArray<FNRCorridorTemplateDesc> EnvironmentCorridors()
 	{
 		using E = ENRRoomEnvironment;
@@ -223,6 +224,21 @@ namespace NRGridTests
 					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
 					Settings.HybridSplit = 0.7f;
 					Settings.bRandomizeHybridStart = true;
+				} },
+			// TransitionFacing: Validate refuses a layout that breaks it, so every map made keeps it.
+			{ TEXT("Hybrid DistanceFlood, Transition faces across"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+					Settings.TransitionFacing = ENRTransitionFacing::AcrossWhereBothMeet;
+					// These test templates leave Branching seed 61 short of 50 tries; the game config
+					// makes all of 400 seeds in 50 (NR.Grid.Survey, 2026-10-23).
+					Settings.MaxAttempts = 150;
+				} },
+			{ TEXT("Hybrid DistanceFlood, Transition straight through"), ENRMapEnvironmentMode::Hybrid, [](FNRMapGenSettings& Settings)
+				{
+					Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+					Settings.TransitionFacing = ENRTransitionFacing::StraightThrough;
+					Settings.MaxAttempts = 300;
 				} },
 		};
 		// DistanceFlood: the share of the map on the start's side, by split.
@@ -312,7 +328,7 @@ namespace NRGridTests
 						{
 							Failures.Add(FString::Printf(TEXT("%s: corridor %d-%d joins %s straight to %s"), *Where, Connection.RoomA, Connection.RoomB, *EnvName(A), *EnvName(B)));
 						}
-						if (!Corridors.IsValidIndex(Connection.TemplateIndex) || !Corridors[Connection.TemplateIndex].Joins(A, B))
+						if (!Corridors.IsValidIndex(Connection.TemplateIndex) || !Corridors[Connection.TemplateIndex].Serves(A, B))
 						{
 							Failures.Add(FString::Printf(TEXT("%s: corridor %d-%d (%s-%s) got corridor template %d"), *Where, Connection.RoomA, Connection.RoomB,
 								*EnvName(A), *EnvName(B), Connection.TemplateIndex));
@@ -437,6 +453,11 @@ namespace NRGridTests
 			if (Variant.Mode == ENRMapEnvironmentMode::Hybrid && !bFlood && Generated > 0 && Pairs[2][2] == 0)
 			{
 				Failures.Add(FString::Printf(TEXT("environments %s: no two Transition rooms or halls were ever joined"), Variant.Label));
+			}
+			// Transition to Transition takes the Outdoor corridor, never the Transition-Transition one.
+			if (CorridorUses[2] > 0)
+			{
+				Failures.Add(FString::Printf(TEXT("environments %s: the Transition-Transition corridor template was used %d time(s)"), Variant.Label, CorridorUses[2]));
 			}
 			if (Generated > 0 && CorridorUses[0] > 0 && CorridorUses[5] == 0)
 			{
@@ -625,6 +646,65 @@ namespace NRGridTests
 					Summary.Add(FString::Printf(TEXT("refusal '%s': %s"), Refusal.Label, *Error));
 				}
 			}
+		}
+
+		// Transition rooms whose template fixes the Indoor side (East, as DA_GR_T_Room_Combat): every
+		// one is turned so its Indoor corridor arrives there.
+		{
+			TArray<FNRRoomTemplateDesc> Fixed = Templates;
+			for (FNRRoomTemplateDesc& Template : Fixed)
+			{
+				if (Template.Environment == ENRRoomEnvironment::Transition && !(Template.TypeMask & (1 << static_cast<int32>(ENRGridRoomType::Hall))))
+				{
+					Template.IndoorSide = static_cast<int32>(ENRGridDirection::East);
+				}
+			}
+			int32 Made = 0;
+			int32 Turned = 0;
+			for (ENRGridLayoutShape Shape : Shapes)
+			{
+				FNRMapGenSettings Settings = MakeSettings(Shape, ENRMapEnvironmentMode::Hybrid);
+				Settings.HybridAssignment = ENRHybridAssignment::DistanceFlood;
+				Settings.TransitionFacing = ENRTransitionFacing::StraightThrough;
+				Settings.MaxAttempts = 300;
+				for (int32 Seed = 1; Seed <= SeedCount; ++Seed)
+				{
+					FNRGeneratedLayout Layout;
+					FString Error;
+					if (!FNRGridLayoutGenerator::Generate(Settings, Fixed, Corridors, Seed, Layout, Error))
+					{
+						Failures.Add(FString::Printf(TEXT("fixed Indoor side, %s seed %d: %s"), *ShapeName(Shape), Seed, *Error));
+						continue;
+					}
+					++Made;
+					for (const FNRGeneratedRoom& Room : Layout.Rooms)
+					{
+						if (Room.Environment != ENRRoomEnvironment::Transition || Room.RoomType == ENRGridRoomType::Hall)
+						{
+							continue;
+						}
+						// East turned by RotationSteps must be where its Indoor corridor goes.
+						const ENRGridDirection East = NRGrid::LocalToWorld(ENRGridDirection::East, Room.RotationSteps);
+						for (const FNRGeneratedConnection& Connection : Layout.Connections)
+						{
+							const bool bA = Connection.RoomA == Room.RoomId;
+							const FNRGeneratedRoom* Other = Layout.FindRoom(bA ? Connection.RoomB : Connection.RoomA);
+							ENRGridDirection Direction;
+							if ((bA || Connection.RoomB == Room.RoomId) && Other && Other->Environment == ENRRoomEnvironment::Indoor
+								&& NRGrid::DirectionBetween(bA ? Connection.CellA : Connection.CellB, bA ? Connection.CellB : Connection.CellA, Direction))
+							{
+								++Turned;
+								if (Direction != East)
+								{
+									Failures.Add(FString::Printf(TEXT("fixed Indoor side, %s seed %d: Transition room %d has its Indoor corridor on side %d, East is turned to %d"),
+										*ShapeName(Shape), Seed, Room.RoomId, static_cast<int32>(Direction), static_cast<int32>(East)));
+								}
+							}
+						}
+					}
+				}
+			}
+			Summary.Add(FString::Printf(TEXT("fixed Indoor side: %d maps, %d Transition room Indoor corridors all on the turned East side"), Made, Turned));
 		}
 
 		// Broken layouts Validate must catch.

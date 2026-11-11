@@ -580,14 +580,44 @@ namespace NRGridGen
 
 	/** The turned template a room becomes: among its shape's turns that have every doorway it
 	 *  uses (and no other, when bExact), by template weight (split over that template's fitting turns). */
+	/** Whether a turn puts its template's IndoorSide on one of IndoorSides (world, one bit per
+	 *  direction). True for a template without one, or a room with no Indoor corridor. */
+	bool FacesIndoor(const FTurnedRoom& Turned, const TArray<FNRRoomTemplateDesc>& Templates, uint8 IndoorSides)
+	{
+		const int32 Side = Templates[Turned.Template].IndoorSide;
+		return Side == INDEX_NONE || IndoorSides == 0
+			|| (IndoorSides & (1 << static_cast<int32>(NRGrid::LocalToWorld(static_cast<ENRGridDirection>(Side), Turned.Steps)))) != 0;
+	}
+
+	/** World sides (one bit per ENRGridDirection) room Index's corridors to Indoor rooms leave from. */
+	uint8 IndoorSidesOf(const FNRGeneratedLayout& Layout, int32 Index, const TArray<ENRRoomEnvironment>& Environments)
+	{
+		uint8 Sides = 0;
+		for (const FNRGeneratedConnection& Connection : Layout.Connections)
+		{
+			const bool bA = Connection.RoomA == Index;
+			if ((!bA && Connection.RoomB != Index) || Environments[bA ? Connection.RoomB : Connection.RoomA] != ENRRoomEnvironment::Indoor)
+			{
+				continue;
+			}
+			ENRGridDirection Direction;
+			if (NRGrid::DirectionBetween(bA ? Connection.CellA : Connection.CellB, bA ? Connection.CellB : Connection.CellA, Direction))
+			{
+				Sides |= 1 << static_cast<int32>(Direction);
+			}
+		}
+		return Sides;
+	}
+
 	const FTurnedRoom* PickTurn(const FShape& Shape, const TArray<FNRRoomPort>& Used, const TArray<FNRRoomTemplateDesc>& Templates,
-		bool bExact, FRandomStream& Stream)
+		bool bExact, FRandomStream& Stream, uint8 IndoorSides = 0)
 	{
 		TArray<const FTurnedRoom*> Fitting;
 		for (const FTurnedRoom* Turned : Shape.Turns)
 		{
 			if (!Used.ContainsByPredicate([Turned](const FNRRoomPort& Port) { return !Turned->HasPort(Port.Cell, Port.Side); })
-				&& (!bExact || Turned->Ports.Num() == Used.Num()))
+				&& (!bExact || Turned->Ports.Num() == Used.Num())
+				&& FacesIndoor(*Turned, Templates, IndoorSides))
 			{
 				Fitting.Add(Turned);
 			}
@@ -875,9 +905,12 @@ bool FNRGridLayoutGenerator::CheckSettings(const FNRMapGenSettings& Settings, co
 				{
 					continue;
 				}
-				if (!Corridors.ContainsByPredicate([&](const FNRCorridorTemplateDesc& Corridor) { return Corridor.Weight > 0.0f && Corridor.Joins(Environments[A], Environments[B]); }))
+				if (!Corridors.ContainsByPredicate([&](const FNRCorridorTemplateDesc& Corridor) { return Corridor.Weight > 0.0f && Corridor.Serves(Environments[A], Environments[B]); }))
 				{
-					OutError = FString::Printf(TEXT("no corridor template joins %s and %s"), *EnvName(Environments[A]), *EnvName(Environments[B]));
+					const bool bBothTransition = Environments[A] == ENRRoomEnvironment::Transition && Environments[B] == ENRRoomEnvironment::Transition;
+					OutError = bBothTransition
+						? FString(TEXT("no corridor template joins Outdoor and Outdoor (Transition to Transition uses one)"))
+						: FString::Printf(TEXT("no corridor template joins %s and %s"), *EnvName(Environments[A]), *EnvName(Environments[B]));
 					return false;
 				}
 			}
@@ -1669,6 +1702,35 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 				}
 				return Queue.Num() != Count;
 			};
+			// TransitionFacing: 1 when Room, turned Transition now, would have an Indoor corridor
+			// straight across from an Outdoor one (a Transition neighbour counts as Outdoor), or
+			// touch only one of the two; 0 otherwise or with no rule.
+			auto WouldFace = [&](int32 Room) -> int32
+			{
+				if (Settings.TransitionFacing == ENRTransitionFacing::Any)
+				{
+					return 0;
+				}
+				uint8 Sides[2] = { 0, 0 };
+				int32 Count[2] = { 0, 0 };
+				for (const FNRGeneratedConnection& Link : Layout.Connections)
+				{
+					const bool bFromA = Link.RoomA == Room;
+					if (!bFromA && Link.RoomB != Room)
+					{
+						continue;
+					}
+					const FIntPoint Step = bFromA ? Link.CellB - Link.CellA : Link.CellA - Link.CellB;
+					const int32 Side = Step.Y > 0 ? 0 : Step.X > 0 ? 1 : Step.Y < 0 ? 2 : 3;
+					const int32 Kind = Environments[bFromA ? Link.RoomB : Link.RoomA] == ENRRoomEnvironment::Indoor ? 0 : 1;
+					Sides[Kind] |= 1 << Side;
+					++Count[Kind];
+				}
+				const bool bFacing = (Sides[0] & static_cast<uint8>(((Sides[1] << 2) | (Sides[1] >> 2)) & 0b1111)) != 0;
+				return Settings.TransitionFacing == ENRTransitionFacing::StraightThrough
+					? (Count[0] == 1 && Count[1] == 1 && bFacing ? 1 : 0)
+					: (!(Sides[0] && Sides[1]) || bFacing ? 1 : 0);
+			};
 			for (bool bChanged = true; bChanged;)
 			{
 				bChanged = false;
@@ -1688,7 +1750,12 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 						return FString::Printf(TEXT("neither %s %d nor %s %d, where Indoor meets Outdoor, can turn Transition (no template, or its side would fall apart)"),
 							*TypeName(Types[A]), A, *TypeName(Types[B]), B);
 					}
+					// With TransitionFacing, the room whose Indoor and Outdoor corridors would face
+					// each other goes first; Validate refuses the layout otherwise.
+					const int32 FaceA = bA && bB ? WouldFace(A) : 0;
+					const int32 FaceB = bA && bB ? WouldFace(B) : 0;
 					const int32 Pick = !bA ? B : !bB ? A
+						: FaceA != FaceB ? (FaceA > FaceB ? A : B)
 						: Rank(A) != Rank(B) ? (Rank(A) < Rank(B) ? A : B)
 						: (Stream.FRand() < 0.5f ? A : B);
 					Environments[Pick] = ENRRoomEnvironment::Transition;
@@ -1709,7 +1776,8 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 				{
 					if (Environments[Room] != ENRRoomEnvironment::Transition && Types[Room] != ENRGridRoomType::Hall
 						&& Neighbours[Room].ContainsByPredicate([&Environments](int32 Next) { return Environments[Next] == ENRRoomEnvironment::Transition; })
-						&& Convertible(Room) && !Splits(Room) && (Extra == INDEX_NONE || Rank(Room) < Rank(Extra)))
+						&& Convertible(Room) && !Splits(Room)
+						&& (Extra == INDEX_NONE || WouldFace(Room) > WouldFace(Extra) || (WouldFace(Room) == WouldFace(Extra) && Rank(Room) < Rank(Extra))))
 					{
 						Extra = Room;
 					}
@@ -1782,12 +1850,14 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 		{
 			Shape = Catalog.For(Types[Index], Environments[Index]).FindByPredicate([Shape](const FShape& Other) { return Other.Size == Shape->Size; });
 		}
-		const FTurnedRoom* Turned = Shape ? PickTurn(*Shape, Used[Index], Templates, bHall && InTemplates.Num() > 0, Stream) : nullptr;
+		// A Transition room whose template fixes its Indoor side is turned to put it on an Indoor corridor.
+		const uint8 IndoorSides = Environments[Index] == ENRRoomEnvironment::Transition ? IndoorSidesOf(Layout, Index, Environments) : 0;
+		const FTurnedRoom* Turned = Shape ? PickTurn(*Shape, Used[Index], Templates, bHall && InTemplates.Num() > 0, Stream, IndoorSides) : nullptr;
 		if (!Turned)
 		{
 			OutReason = bHall
 				? FString::Printf(TEXT("no hall template has exactly the doorways hall cell %d uses"), Index)
-				: FString::Printf(TEXT("no template has every doorway room %d uses"), Index);
+				: FString::Printf(TEXT("no template has every doorway room %d uses (with its Indoor side, if fixed)"), Index);
 			return false;
 		}
 		Layout.Rooms[Index].TemplateIndex = InTemplates.Num() > 0 ? Turned->Template : INDEX_NONE;
@@ -1816,7 +1886,7 @@ bool FNRGridLayoutGenerator::TryGenerate(const FNRMapGenSettings& Settings, cons
 			TArray<float> Weights;
 			for (int32 Index = 0; Index < Corridors.Num(); ++Index)
 			{
-				if (Corridors[Index].Weight > 0.0f && Corridors[Index].Joins(A, B))
+				if (Corridors[Index].Weight > 0.0f && Corridors[Index].Serves(A, B))
 				{
 					Fitting.Add(Index);
 					Weights.Add(Corridors[Index].Weight);
@@ -1961,6 +2031,73 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			Problems.Add(TEXT("every Transition place is a hall cell; a Hybrid map needs at least one Transition room"));
 		}
 
+		// A Transition room whose template fixes its Indoor side has an Indoor corridor there.
+		for (const FNRGeneratedRoom& Room : Layout.Rooms)
+		{
+			if (Room.Environment != ENRRoomEnvironment::Transition || !Templates.IsValidIndex(Room.TemplateIndex)
+				|| Templates[Room.TemplateIndex].IndoorSide == INDEX_NONE)
+			{
+				continue;
+			}
+			uint8 IndoorSides = 0;
+			for (const FNRGeneratedConnection& Connection : Layout.Connections)
+			{
+				const bool bA = Connection.RoomA == Room.RoomId;
+				const FNRGeneratedRoom* Other = Layout.FindRoom(bA ? Connection.RoomB : Connection.RoomA);
+				ENRGridDirection Direction;
+				if ((bA || Connection.RoomB == Room.RoomId) && Other && Other->Environment == ENRRoomEnvironment::Indoor
+					&& NRGrid::DirectionBetween(bA ? Connection.CellA : Connection.CellB, bA ? Connection.CellB : Connection.CellA, Direction))
+				{
+					IndoorSides |= 1 << static_cast<int32>(Direction);
+				}
+			}
+			const ENRGridDirection Fixed = NRGrid::LocalToWorld(static_cast<ENRGridDirection>(Templates[Room.TemplateIndex].IndoorSide), Room.RotationSteps);
+			if (IndoorSides != 0 && !(IndoorSides & (1 << static_cast<int32>(Fixed))))
+			{
+				Problems.Add(FString::Printf(TEXT("Transition %s %d: its template's Indoor side is turned to %d, but its Indoor corridors leave from sides %d"),
+					*TypeName(Room.RoomType), Room.RoomId, static_cast<int32>(Fixed), IndoorSides));
+			}
+		}
+
+		// TransitionFacing: where each Transition place's Indoor and Outdoor corridors leave it. A
+		// corridor to another Transition place is an Outdoor one, so it counts as Outdoor.
+		if (IsHybrid(Settings) && Settings.TransitionFacing != ENRTransitionFacing::Any)
+		{
+			for (const FNRGeneratedRoom& Room : Layout.Rooms)
+			{
+				if (Room.Environment != ENRRoomEnvironment::Transition)
+				{
+					continue;
+				}
+				uint8 Sides[2] = { 0, 0 }; // Indoor, Outdoor; one bit per ENRGridDirection
+				int32 Count[2] = { 0, 0 };
+				for (const FNRGeneratedConnection& Connection : Layout.Connections)
+				{
+					const bool bA = Connection.RoomA == Room.RoomId;
+					const FNRGeneratedRoom* Other = Layout.FindRoom(bA ? Connection.RoomB : Connection.RoomA);
+					if ((!bA && Connection.RoomB != Room.RoomId) || !Other)
+					{
+						continue;
+					}
+					const FIntPoint Step = bA ? Connection.CellB - Connection.CellA : Connection.CellA - Connection.CellB;
+					const int32 Side = Step.Y > 0 ? 0 : Step.X > 0 ? 1 : Step.Y < 0 ? 2 : 3; // North, East, South, West
+					const int32 Kind = Other->Environment == ENRRoomEnvironment::Indoor ? 0 : 1;
+					Sides[Kind] |= 1 << Side;
+					++Count[Kind];
+				}
+				const uint8 AcrossOutdoor = static_cast<uint8>(((Sides[1] << 2) | (Sides[1] >> 2)) & 0b1111);
+				const bool bFacing = (Sides[0] & AcrossOutdoor) != 0;
+				const bool bOk = Settings.TransitionFacing == ENRTransitionFacing::StraightThrough
+					? Count[0] == 1 && Count[1] == 1 && bFacing
+					: !(Sides[0] && Sides[1]) || bFacing;
+				if (!bOk)
+				{
+					Problems.Add(FString::Printf(TEXT("Transition %s %d: its Indoor corridors (sides %d) and Outdoor ones (sides %d) do not face each other as TransitionFacing wants"),
+						*TypeName(Room.RoomType), Room.RoomId, Sides[0], Sides[1]));
+				}
+			}
+		}
+
 		// DistanceFlood: the start on its side, the boss on the other, and a bounded number of
 		// Transition places between them.
 		const FNRGeneratedRoom* Start = Layout.FindRoom(Layout.StartRoomId);
@@ -2029,7 +2166,7 @@ TArray<FString> FNRGridLayoutGenerator::Validate(const FNRMapGenSettings& Settin
 			Problems.Add(FString::Printf(TEXT("corridor %d-%d names corridor template %d of %d"), Connection.RoomA, Connection.RoomB,
 				Connection.TemplateIndex, Corridors.Num()));
 		}
-		else if (Corridors.Num() > 0 && !Corridors[Connection.TemplateIndex].Joins(RoomA.Environment, RoomB.Environment))
+		else if (Corridors.Num() > 0 && !Corridors[Connection.TemplateIndex].Serves(RoomA.Environment, RoomB.Environment))
 		{
 			const FNRCorridorTemplateDesc& Corridor = Corridors[Connection.TemplateIndex];
 			Problems.Add(FString::Printf(TEXT("corridor %d-%d between %s and %s uses corridor template %d, which joins %s and %s"),

@@ -51,6 +51,24 @@ enum class ENRHybridAssignment : uint8
 	DistanceFlood
 };
 
+/**
+ * Hybrid: how a Transition place's Indoor and Outdoor corridors must sit. A corridor to another
+ * Transition place counts as Outdoor (it is an Outdoor corridor). A layout that breaks the rule is
+ * retried, like any other invalid one.
+ */
+UENUM(BlueprintType)
+enum class ENRTransitionFacing : uint8
+{
+	/** No rule. */
+	Any,
+	/** A Transition place joined to both Indoor and Outdoor has an Indoor corridor straight across
+	 *  from an Outdoor one. Places that touch only one of the two are free. */
+	AcrossWhereBothMeet,
+	/** Every Transition place has exactly one Indoor and one Outdoor corridor, straight across from
+	 *  each other. Needs many more tries; raise MaxAttempts. */
+	StraightThrough
+};
+
 /** What DistanceFlood weighs when it keeps the two sides of a Hybrid map even. */
 UENUM(BlueprintType)
 enum class ENRHybridBalance : uint8
@@ -124,6 +142,10 @@ struct PROJECTNR_API FNRMapGenSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))
 	int32 MaxTransitionCells = 3;
+
+	/** Hybrid: whether a Transition place's Indoor and Outdoor corridors must face each other. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment")
+	ENRTransitionFacing TransitionFacing = ENRTransitionFacing::Any;
 
 	/** Hybrid PathSplit: Transition rooms in a row on the main path. Hall cells between them do not count. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map Generation|Environment", meta = (ClampMin = "1"))

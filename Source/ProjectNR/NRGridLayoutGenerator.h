@@ -19,6 +19,9 @@ struct PROJECTNR_API FNRRoomTemplateDesc
 	/** One bit per quarter turn it may be placed at. */
 	uint8 RotationMask = 0b1111;
 	float Weight = 1.0f;
+	/** The side, in its own frame, its Indoor corridor must arrive at (an ENRGridDirection), or
+	 *  INDEX_NONE for any. Used for Transition rooms joined to Indoor. */
+	int32 IndoorSide = INDEX_NONE;
 
 	/** Every side on the footprint's outline facing one of the directions in PortMask. */
 	static TArray<FNRRoomPort> OutlinePorts(const FIntPoint& Footprint, uint8 PortMask);
@@ -39,6 +42,17 @@ struct PROJECTNR_API FNRCorridorTemplateDesc
 	bool Joins(ENRRoomEnvironment A, ENRRoomEnvironment B) const
 	{
 		return (EndpointA == A && EndpointB == B) || (EndpointA == B && EndpointB == A);
+	}
+
+	/**
+	 * Whether it may stand between rooms of these two environments. Same as Joins, except that
+	 * Transition to Transition takes an Outdoor-Outdoor corridor: a Transition place only ever
+	 * meets Indoor or Outdoor corridors (design decision 2026-10-23).
+	 */
+	bool Serves(ENRRoomEnvironment A, ENRRoomEnvironment B) const
+	{
+		const bool bBothTransition = A == ENRRoomEnvironment::Transition && B == ENRRoomEnvironment::Transition;
+		return bBothTransition ? Joins(ENRRoomEnvironment::Outdoor, ENRRoomEnvironment::Outdoor) : Joins(A, B);
 	}
 
 	static FNRCorridorTemplateDesc Make(ENRRoomEnvironment A, ENRRoomEnvironment B, float Weight = 1.0f)
@@ -120,7 +134,7 @@ class PROJECTNR_API FNRGridLayoutGenerator
 {
 public:
 	/** Bump whenever a change would make a seed produce a different layout. */
-	static constexpr int32 Version = 8;
+	static constexpr int32 Version = 10;
 
 	/** Whether the settings and templates can be met at all. False with the reason when they cannot. */
 	static bool CheckSettings(const FNRMapGenSettings& Settings, const TArray<FNRRoomTemplateDesc>& Templates,

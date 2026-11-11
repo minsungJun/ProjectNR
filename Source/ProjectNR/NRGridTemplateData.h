@@ -53,6 +53,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template")
 	TArray<FNRRoomPort> Ports;
 
+	/**
+	 * Transition rooms: always turn the level so that its Indoor corridor arrives at IndoorSide
+	 * (a side in the level's own frame, e.g. East for the doorway on its +X wall). Off: any turn.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template")
+	bool bFixIndoorSide = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template", meta = (EditCondition = "bFixIndoorSide"))
+	ENRGridDirection IndoorSide = ENRGridDirection::East;
+
 	/** Quarter turns the level may be placed at: bit 0 for 0 degrees, bit 1 for 90, and so on. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room Template", meta = (Bitmask))
 	int32 AllowedRotations = 0b1111;
