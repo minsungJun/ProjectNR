@@ -284,6 +284,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
 	int32 AddReserveMagazines(float Magazines);
 
+	/** Bought ammo: Magazines magazines' worth into one weapon's reserve, up to its cap. Returns the
+	 *  rounds taken; 0 for a melee weapon or a full reserve. */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
+	int32 AddReserveMagazinesFor(ENRWeaponId WeaponId, float Magazines);
+
+	/** Room left in one weapon's reserve, in rounds. 0 for melee. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetReserveSpaceForWeapon(ENRWeaponId WeaponId) const;
+
+	/** Magazines' worth this weapon has fired so far (rounds / magazine size), so a 6-round
+	 *  shotgun and a 30-round rifle compare fairly. The shop prices ammo from it. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	float GetMagazinesFired(ENRWeaponId WeaponId) const;
+
+	/** The ranged weapons' ids, in slot order. */
+	TArray<ENRWeaponId> GetRangedWeaponIds() const;
+
 	/** Sets the weapon in hand's magazine and reserve outright, for tests and the console. */
 	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
 	void SetCurrentAmmo(int32 Magazine, int32 Reserve);
@@ -513,6 +530,9 @@ private:
 
 	/** Rounds in reserve per weapon, parallel to Weapons. StartingReserveMagazines at BeginPlay. */
 	TArray<int32> Reserve;
+
+	/** Magazines' worth fired per weapon, parallel to Weapons. */
+	TArray<float> MagazinesFired;
 
 	/** Rounds a reserve may hold for the weapon at Index, after parts. */
 	int32 GetMaxReserveForIndex(int32 Index) const;

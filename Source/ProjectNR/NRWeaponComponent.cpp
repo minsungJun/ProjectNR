@@ -319,6 +319,7 @@ void UNRWeaponComponent::BeginPlay()
 	// which runs before any BeginPlay, so the sizes already include starting loadouts.
 	Ammo.SetNum(Weapons.Num());
 	Reserve.SetNum(Weapons.Num());
+	MagazinesFired.Init(0.0f, Weapons.Num());
 	for (int32 Index = 0; Index < Weapons.Num(); ++Index)
 	{
 		const bool bRanged = Weapons[Index].Kind == ENRWeaponKind::Ranged;
@@ -576,6 +577,48 @@ int32 UNRWeaponComponent::AddReserveMagazines(float Magazines)
 			*GetCurrentWeaponName().ToString(), GetReserveAmmo(), GetMaxReserveAmmo());
 	}
 	return Taken;
+}
+
+int32 UNRWeaponComponent::AddReserveMagazinesFor(ENRWeaponId WeaponId, float Magazines)
+{
+	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+	if (!Reserve.IsValidIndex(Index) || Weapons[Index].Kind != ENRWeaponKind::Ranged)
+	{
+		return 0;
+	}
+	const int32 Rounds = FMath::RoundToInt32(GetRuntimeStats(WeaponId).MaxMagazine * Magazines);
+	const int32 Taken = NRAmmo::AddToReserve(Reserve[Index], Rounds, GetMaxReserveForIndex(Index));
+	if (Taken > 0)
+	{
+		UE_LOG(LogNRWeapon, Log, TEXT("%s got %d %s round(s), %d/%d in reserve"), *GetNameSafe(GetOwner()), Taken,
+			*Weapons[Index].DisplayName.ToString(), Reserve[Index], GetMaxReserveForIndex(Index));
+	}
+	return Taken;
+}
+
+int32 UNRWeaponComponent::GetReserveSpaceForWeapon(ENRWeaponId WeaponId) const
+{
+	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+	return Reserve.IsValidIndex(Index) ? FMath::Max(GetMaxReserveForIndex(Index) - Reserve[Index], 0) : 0;
+}
+
+float UNRWeaponComponent::GetMagazinesFired(ENRWeaponId WeaponId) const
+{
+	const int32 Index = Weapons.IndexOfByPredicate([WeaponId](const FNRWeaponDefinition& Weapon) { return Weapon.WeaponId == WeaponId; });
+	return MagazinesFired.IsValidIndex(Index) ? MagazinesFired[Index] : 0.0f;
+}
+
+TArray<ENRWeaponId> UNRWeaponComponent::GetRangedWeaponIds() const
+{
+	TArray<ENRWeaponId> Ids;
+	for (const FNRWeaponDefinition& Weapon : Weapons)
+	{
+		if (Weapon.Kind == ENRWeaponKind::Ranged)
+		{
+			Ids.AddUnique(Weapon.WeaponId);
+		}
+	}
+	return Ids;
 }
 
 void UNRWeaponComponent::SetCurrentAmmo(int32 Magazine, int32 InReserve)
@@ -1280,6 +1323,10 @@ int32 UNRWeaponComponent::Fire()
 
 	// One round per trigger pull, however many pellets it throws.
 	--Ammo[CurrentWeaponIndex];
+	if (MagazinesFired.IsValidIndex(CurrentWeaponIndex) && Stats.MaxMagazine > 0)
+	{
+		MagazinesFired[CurrentWeaponIndex] += 1.0f / Stats.MaxMagazine;
+	}
 
 	// Damage is the projectile class's own, scaled here, so the bullet and the pellet keep
 	// their separate base values.

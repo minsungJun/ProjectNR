@@ -9,7 +9,9 @@
 #include "NRHUD.generated.h"
 
 class UHealthComponent;
+class ANRShop;
 class UNRLoadoutWidget;
+class UNRShopWidget;
 class UNRWeaponComponent;
 
 /**
@@ -47,6 +49,13 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Loadout")
 	bool IsLoadoutMenuOpen() const;
+
+	/** Opens the shop screen for Shop (called by ANRShop::Interact). Closes the loadout screen first. */
+	void OpenShopMenu(ANRShop* Shop);
+	void CloseShopMenu();
+
+	UFUNCTION(BlueprintPure, Category = "Shop")
+	bool IsShopMenuOpen() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -230,6 +239,13 @@ private:
 	/** Kept after closing so reopening is instant; the loadout itself lives on the pawn. */
 	UPROPERTY(Transient)
 	TObjectPtr<UNRLoadoutWidget> LoadoutWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNRShopWidget> ShopWidget;
+
+	/** The cursor, input mode and ignored look/move a menu needs while open; Widget takes focus. */
+	void EnterMenuInput(UUserWidget* Widget);
+	void LeaveMenuInput();
 
 	TMap<TWeakObjectPtr<UHealthComponent>, FHealthBarState> BarStates;
 	TArray<FDamageNumber> DamageNumbers;

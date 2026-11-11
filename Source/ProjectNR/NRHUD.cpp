@@ -16,6 +16,8 @@
 #include "NRStaminaComponent.h"
 #include "NRStatsComponent.h"
 #include "NRLoadoutWidget.h"
+#include "NRShop.h"
+#include "NRShopWidget.h"
 #include "NRRoom.h"
 #include "NRRunSubsystem.h"
 #include "NRWeaponComponent.h"
@@ -50,6 +52,7 @@ void ANRHUD::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		CloseLoadoutMenu();
 	}
+	CloseShopMenu();
 	UHealthComponent::OnAnyDamaged.Remove(AnyDamagedHandle);
 	AnyDamagedHandle.Reset();
 	Super::EndPlay(EndPlayReason);
@@ -62,6 +65,7 @@ void ANRHUD::HandleRunStateChanged(ENRRunState NewState)
 	if (NewState == ENRRunState::Won || NewState == ENRRunState::Lost)
 	{
 		CloseLoadoutMenu();
+		CloseShopMenu();
 	}
 }
 
@@ -97,6 +101,7 @@ void ANRHUD::OpenLoadoutMenu()
 	{
 		return;
 	}
+	CloseShopMenu();
 
 	if (!LoadoutWidget)
 	{
@@ -114,16 +119,76 @@ void ANRHUD::OpenLoadoutMenu()
 	LoadoutWidget->SetPartComponent(Pawn ? Pawn->FindComponentByClass<UNRWeaponPartComponent>() : nullptr);
 	LoadoutWidget->AddToViewport(50);
 
+	EnterMenuInput(LoadoutWidget);
+}
+
+void ANRHUD::EnterMenuInput(UUserWidget* Widget)
+{
+	if (!PlayerOwner || !Widget)
+	{
+		return;
+	}
 	// GameAndUI so the world keeps running behind the menu. The widget swallows clicks and
 	// look/move input is ignored, so the character neither fires nor turns while choosing.
 	FInputModeGameAndUI InputMode;
-	InputMode.SetWidgetToFocus(LoadoutWidget->TakeWidget());
+	InputMode.SetWidgetToFocus(Widget->TakeWidget());
 	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 	InputMode.SetHideCursorDuringCapture(false);
 	PlayerOwner->SetInputMode(InputMode);
 	PlayerOwner->SetShowMouseCursor(true);
 	PlayerOwner->SetIgnoreLookInput(true);
 	PlayerOwner->SetIgnoreMoveInput(true);
+}
+
+void ANRHUD::LeaveMenuInput()
+{
+	if (PlayerOwner)
+	{
+		PlayerOwner->SetInputMode(FInputModeGameOnly());
+		PlayerOwner->SetShowMouseCursor(false);
+		PlayerOwner->SetIgnoreLookInput(false);
+		PlayerOwner->SetIgnoreMoveInput(false);
+	}
+}
+
+bool ANRHUD::IsShopMenuOpen() const
+{
+	return ShopWidget && ShopWidget->IsInViewport();
+}
+
+void ANRHUD::OpenShopMenu(ANRShop* Shop)
+{
+	if (!PlayerOwner || !Shop)
+	{
+		return;
+	}
+	CloseLoadoutMenu();
+	if (!ShopWidget)
+	{
+		ShopWidget = CreateWidget<UNRShopWidget>(PlayerOwner, UNRShopWidget::StaticClass());
+		if (!ShopWidget)
+		{
+			return;
+		}
+		ShopWidget->OnCloseRequested.BindUObject(this, &ANRHUD::CloseShopMenu);
+	}
+	ShopWidget->SetShop(Shop);
+	if (!ShopWidget->IsInViewport())
+	{
+		ShopWidget->AddToViewport(50);
+		EnterMenuInput(ShopWidget);
+	}
+}
+
+void ANRHUD::CloseShopMenu()
+{
+	if (!IsShopMenuOpen())
+	{
+		return;
+	}
+	ShopWidget->RemoveFromParent();
+	ShopWidget->SetShop(nullptr);
+	LeaveMenuInput();
 }
 
 void ANRHUD::CloseLoadoutMenu()
@@ -134,13 +199,7 @@ void ANRHUD::CloseLoadoutMenu()
 	}
 
 	LoadoutWidget->RemoveFromParent();
-	if (PlayerOwner)
-	{
-		PlayerOwner->SetInputMode(FInputModeGameOnly());
-		PlayerOwner->SetShowMouseCursor(false);
-		PlayerOwner->SetIgnoreLookInput(false);
-		PlayerOwner->SetIgnoreMoveInput(false);
-	}
+	LeaveMenuInput();
 }
 
 UNRWeaponComponent* ANRHUD::FindWeapon() const
