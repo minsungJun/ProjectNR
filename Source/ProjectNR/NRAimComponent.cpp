@@ -67,9 +67,10 @@ void UNRAimComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	// No blend: the pawn is going away, and the view must not be left on our camera.
-	if (Mode == ENRAimMode::Precision)
+	RestoreCharacter();
+	if (UsesAimCamera(Mode))
 	{
-		ExitFirstPerson(false);
+		ExitAimCamera(false);
 	}
 	Mode = ENRAimMode::None;
 
@@ -231,11 +232,19 @@ void UNRAimComponent::SetMode(ENRAimMode NewMode)
 
 	if (OldMode == ENRAimMode::Precision)
 	{
-		ExitFirstPerson(true);
+		RestoreCharacter();
 	}
-	if (NewMode == ENRAimMode::Precision)
+	if (UsesAimCamera(NewMode))
 	{
-		EnterFirstPerson();
+		EnterAimCamera(UsesAimCamera(OldMode));
+	}
+	else if (UsesAimCamera(OldMode))
+	{
+		ExitAimCamera(true);
+	}
+	if (NewMode == ENRAimMode::Precision && bHideCharacterInPrecision)
+	{
+		HideCharacter();
 	}
 
 	// Both aim modes are "aiming" to the sample: strafe, upper-body pose and aim offset.
@@ -296,9 +305,9 @@ void UNRAimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 	// anything in the sample does, aiming should not silently drop out.
 	SetSampleWantsToAim(true);
 
-	if (Mode == ENRAimMode::Precision)
+	if (UsesAimCamera(Mode))
 	{
-		UpdateFirstPersonCamera();
+		UpdateAimCamera();
 	}
 }
 
@@ -315,16 +324,64 @@ FVector UNRAimComponent::GetEyeLocation() const
 	return Owner ? Owner->GetActorLocation() : FVector::ZeroVector;
 }
 
-void UNRAimComponent::UpdateFirstPersonCamera()
+bool UNRAimComponent::UsesAimCamera(ENRAimMode InMode) const
 {
-	const APlayerController* PC = GetPlayerController();
-	if (FirstPersonCamera && PC)
-	{
-		FirstPersonCamera->SetActorLocationAndRotation(GetEyeLocation(), PC->GetControlRotation());
-	}
+	return InMode == ENRAimMode::Precision || (InMode == ENRAimMode::Shoulder && bUseShoulderCamera);
 }
 
-void UNRAimComponent::EnterFirstPerson()
+FTransform UNRAimComponent::GetAimCameraTarget(ENRAimMode InMode, float& OutFieldOfView) const
+{
+	const APlayerController* PC = GetPlayerController();
+	const FRotator View = PC ? PC->GetControlRotation() : GetOwner()->GetActorRotation();
+	const FVector Eye = GetEyeLocation();
+
+	if (InMode != ENRAimMode::Shoulder)
+	{
+		OutFieldOfView = PrecisionFieldOfView;
+		return FTransform(View, Eye);
+	}
+
+	OutFieldOfView = ShoulderFieldOfView;
+	FVector Location = Eye + View.RotateVector(ShoulderCameraOffset);
+
+	// Pulled in front of anything between the head and the camera, so a wall behind the
+	// character does not end up in front of the lens.
+	if (const UWorld* World = GetWorld(); World && ShoulderProbeRadius > 0.0f)
+	{
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NRShoulderCamera), false, GetOwner());
+		TArray<AActor*> Attached;
+		GetOwner()->GetAttachedActors(Attached, true, true);
+		Params.AddIgnoredActors(Attached);
+		FHitResult Hit;
+		if (World->SweepSingleByChannel(Hit, Eye, Location, FQuat::Identity, ECC_Camera,
+			FCollisionShape::MakeSphere(ShoulderProbeRadius), Params))
+		{
+			Location = Hit.Location;
+		}
+	}
+	return FTransform(View, Location);
+}
+
+void UNRAimComponent::UpdateAimCamera()
+{
+	if (!FirstPersonCamera)
+	{
+		return;
+	}
+
+	float FieldOfView = 90.0f;
+	const FTransform Target = GetAimCameraTarget(Mode, FieldOfView);
+
+	// Between two aim cameras (shoulder <-> precision) the move is ours to blend: the view
+	// target does not change, so the player camera manager has nothing to blend.
+	const float Elapsed = GetWorld() ? GetWorld()->GetTimeSeconds() - CameraMoveStartTime : CameraBlendTime;
+	const float Alpha = CameraBlendTime > 0.0f ? FMath::SmoothStep(0.0f, 1.0f, Elapsed / CameraBlendTime) : 1.0f;
+
+	FirstPersonCamera->SetActorLocationAndRotation(FMath::Lerp(CameraMoveFrom, Target.GetLocation(), Alpha), Target.Rotator());
+	FirstPersonCamera->GetCameraComponent()->SetFieldOfView(FMath::Lerp(CameraMoveFromFieldOfView, FieldOfView, Alpha));
+}
+
+void UNRAimComponent::EnterAimCamera(bool bFromAimCamera)
 {
 	APlayerController* PC = GetPlayerController();
 	UWorld* World = GetWorld();
@@ -347,20 +404,31 @@ void UNRAimComponent::EnterFirstPerson()
 		FirstPersonCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
 	}
 
-	FirstPersonCamera->GetCameraComponent()->SetFieldOfView(PrecisionFieldOfView);
-	UpdateFirstPersonCamera();
-	PC->SetViewTargetWithBlend(FirstPersonCamera, CameraBlendTime, VTBlend_EaseInOut, 2.0f);
-
-	if (bHideCharacterInPrecision)
+	float FieldOfView = 90.0f;
+	const FTransform Target = GetAimCameraTarget(Mode, FieldOfView);
+	if (bFromAimCamera)
 	{
-		HideCharacter();
+		CameraMoveFrom = FirstPersonCamera->GetActorLocation();
+		CameraMoveFromFieldOfView = FirstPersonCamera->GetCameraComponent()->FieldOfView;
+		CameraMoveStartTime = World->GetTimeSeconds();
+	}
+	else
+	{
+		// From the pawn's own camera the view target blend does the move; ours starts in place.
+		CameraMoveFrom = Target.GetLocation();
+		CameraMoveFromFieldOfView = FieldOfView;
+		CameraMoveStartTime = World->GetTimeSeconds() - CameraBlendTime;
+	}
+	UpdateAimCamera();
+
+	if (!bFromAimCamera)
+	{
+		PC->SetViewTargetWithBlend(FirstPersonCamera, CameraBlendTime, VTBlend_EaseInOut, 2.0f);
 	}
 }
 
-void UNRAimComponent::ExitFirstPerson(bool bBlend)
+void UNRAimComponent::ExitAimCamera(bool bBlend)
 {
-	RestoreCharacter();
-
 	// Back to the pawn: its Gameplay Camera takes over again as the view target's camera.
 	if (APlayerController* PC = GetPlayerController())
 	{
@@ -372,11 +440,22 @@ void UNRAimComponent::HideCharacter()
 {
 	RestoreCharacter();
 
+	// The pawn's own meshes (the weapon in hand among them) and those of attached actors: the
+	// body that is seen is the visual override's child actor, not the pawn's posing mesh.
 	TArray<UMeshComponent*> Meshes;
 	GetOwner()->GetComponents<UMeshComponent>(Meshes);
+	TArray<AActor*> Attached;
+	GetOwner()->GetAttachedActors(Attached, true, true);
+	for (const AActor* Child : Attached)
+	{
+		TArray<UMeshComponent*> ChildMeshes;
+		Child->GetComponents<UMeshComponent>(ChildMeshes);
+		Meshes.Append(ChildMeshes);
+	}
+
 	for (UMeshComponent* Mesh : Meshes)
 	{
-		if (!Mesh || !Mesh->IsVisible())
+		if (!Mesh || !Mesh->IsVisible() || Mesh->bHiddenInGame)
 		{
 			continue;
 		}
@@ -391,7 +470,9 @@ void UNRAimComponent::HideCharacter()
 			Entry.PreviousAnimTickOption = static_cast<uint8>(Skeletal->VisibilityBasedAnimTickOption);
 			Skeletal->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 		}
-		Mesh->SetVisibility(false, false);
+		// Hidden in game rather than made invisible: other code reads IsVisible() to find the body
+		// the weapon hangs from, and would move the weapon off a body it thought had gone.
+		Mesh->SetHiddenInGame(true, false);
 	}
 }
 
@@ -404,7 +485,7 @@ void UNRAimComponent::RestoreCharacter()
 		{
 			continue;
 		}
-		Mesh->SetVisibility(true, false);
+		Mesh->SetHiddenInGame(false, false);
 		if (Entry.bSkeletal)
 		{
 			CastChecked<USkeletalMeshComponent>(Mesh)->VisibilityBasedAnimTickOption =

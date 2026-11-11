@@ -15,6 +15,9 @@ class UEnhancedInputLocalPlayerSubsystem;
 class UInputAction;
 class UInputMappingContext;
 class UNRWeaponPartComponent;
+class USkeletalMeshComponent;
+class UStaticMesh;
+class UStaticMeshComponent;
 
 UENUM(BlueprintType)
 enum class ENRWeaponKind : uint8
@@ -106,6 +109,47 @@ struct FNRWeaponDefinition
 	/** Slot-relative play rate for @FireMontage. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Animation", meta = (ClampMin = "0.01"))
 	float FireMontagePlayRate = 1.0f;
+
+	/** Shown in the hand while this weapon is equipped. Empty shows nothing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	TObjectPtr<UStaticMesh> Mesh;
+
+	/**
+	 * Bone or socket on the pawn's own (posing) mesh that @Mesh hangs from. Used only when there is
+	 * no visible visual-override mesh with UNRWeaponComponent::VisualHandBone.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	FName HandSocket = TEXT("hand_r");
+
+	/**
+	 * @Mesh relative to the hand bone it hangs from (VisualHandBone on the visible body, else
+	 * @HandSocket): puts the grip in the palm and the barrel forward. NR.Weapon.FitToHands fits it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	FTransform MeshOffset;
+
+	/**
+	 * Aiming holds the hand differently from the hip-fire pose, so one offset cannot point the
+	 * weapon down the sights in both. When on, the weapon moves from MeshOffset to AimMeshOffset
+	 * as the animation blueprint's aim pose blends in (its AimAlpha). NR.Weapon.FitAim fits it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	bool bUseAimMeshOffset = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look", meta = (EditCondition = "bUseAimMeshOffset"))
+	FTransform AimMeshOffset;
+
+	/**
+	 * Socket on @Mesh the left hand reaches for, through the Two Bone IK on hand_l after the
+	 * animation blueprint's rifle layer. None, or a mesh without it, leaves the left hand to the
+	 * animation.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	FName LeftHandSocket = TEXT("LeftHand");
+
+	/** Socket on @Mesh that projectiles leave from. Without it they leave from the component's muzzle. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	FName MuzzleSocket = TEXT("Muzzle");
 };
 
 /**
@@ -268,7 +312,8 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
-	/** Runs only while the fire button is held: keeps firing at the weapon's interval. */
+	/** Runs while the fire button is held, to keep firing at the weapon's interval, and while a
+	 *  weapon with a left hand socket is held, to keep the left hand on it. */
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 protected:
@@ -294,6 +339,76 @@ protected:
 	 * layer is switched off while swinging.
 	 */
 	void ApplyWeaponKind();
+
+	/**
+	 * Puts the equipped weapon's mesh in the hand (or hides it) and points the left hand at its
+	 * LeftHandSocket through the animation blueprint's LeftHandIKAlpha / LeftHandIKLocation.
+	 */
+	void UpdateWeaponMesh();
+
+	/**
+	 * The mesh the weapon hangs from and its hand bone. The GASP visual override draws the
+	 * character as a separate child actor that copies a hidden posing mesh by retargeting, and
+	 * its proportions differ (its hands are about 10 cm higher), so the weapon goes in the hand
+	 * that is seen when there is one.
+	 */
+	USkeletalMeshComponent* FindHandBody(FName& OutBone) const;
+
+	/** Re-aims the left hand IK. Run every frame while a weapon with a LeftHandSocket is held. */
+	void UpdateLeftHandTarget();
+
+	/** Places the weapon between MeshOffset and AimMeshOffset by the aim pose's weight. */
+	void UpdateAimBlend();
+
+	/** The equipped weapon blends to an aim offset, so the component keeps ticking. */
+	bool bBlendAimOffset = false;
+
+	/**
+	 * Bone on a visible child-actor body (the visual override) that the weapon hangs from instead
+	 * of the weapon's HandSocket. Its left-hand twin is found by swapping Right for Left.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
+	FName VisualHandBone = TEXT("RightHand");
+
+	TWeakObjectPtr<USkeletalMeshComponent> HandBody;
+	FName HandBone;
+	bool bTrackLeftHand = false;
+
+	/** The weapon is on the posing mesh but should be on a visible body that may still appear. */
+	bool bWatchHandBody = false;
+
+public:
+	/** The mesh in the hand, created at BeginPlay. Null before that. */
+	UStaticMeshComponent* GetWeaponMeshComponent() const { return WeaponMesh; }
+
+	/**
+	 * Fits the equipped weapon's MeshOffset to the hands as the current pose has them: the grip in
+	 * the right palm, the barrel along the line from the right hand to the left (turned towards
+	 * straight ahead by Forward, 0..1), the top up. Applies it and returns it, so it can be copied
+	 * into the weapon's defaults. NR.Weapon.FitToHands [Forward].
+	 */
+	FTransform FitMeshOffsetToHands(float Forward = 0.0f);
+
+	/** Sets the equipped weapon's MeshOffset, re-applies the mesh and logs the value. For tuning. */
+	void SetCurrentMeshOffset(const FTransform& Offset);
+
+	/**
+	 * While aiming: turns the equipped weapon so its barrel runs straight down the view (the
+	 * crosshair), keeping MeshOffset's grip position, and stores that as AimMeshOffset (turning
+	 * bUseAimMeshOffset on). Logs it for copying into the Blueprint. NR.Weapon.FitAim.
+	 */
+	FTransform FitAimMeshOffset();
+
+	/** Sets the equipped weapon's AimMeshOffset (and turns it on) and logs it. NR.Weapon.AimOffset. */
+	void SetCurrentAimMeshOffset(const FTransform& Offset);
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+protected:
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> WeaponMesh;
 
 	/**
 	 * Weapons the player carries, in slot order. Defaults to a rifle on 1 and a shotgun on

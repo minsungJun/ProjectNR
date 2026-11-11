@@ -19,7 +19,8 @@ UENUM(BlueprintType)
 enum class ENRAimMode : uint8
 {
 	None,
-	/** Shoulder aim: the sample's own over-the-shoulder aim camera and pose, while held. */
+	/** Shoulder aim, while held: the sample's aim pose, seen through our over-the-shoulder camera
+	 *  (UNRAimComponent::bUseShoulderCamera; off falls back to the sample's aim camera). */
 	Shoulder,
 	/** Precision aim: first person, zoomed, tighter spread. Toggled by a click. */
 	Precision
@@ -129,6 +130,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Precision", meta = (ClampMin = "10.0", ClampMax = "120.0"))
 	float PrecisionFieldOfView = 55.0f;
 
+	/**
+	 * Shoulder aim looks through our own over-the-shoulder camera instead of the sample's aim
+	 * camera: close behind the right shoulder, with the character in the left of the frame.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Shoulder")
+	bool bUseShoulderCamera = true;
+
+	/** Camera position from the eyes, in the view's frame: back (-X), right (+Y), up (+Z), cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Shoulder")
+	FVector ShoulderCameraOffset = FVector(-120.0f, 75.0f, -15.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Shoulder", meta = (ClampMin = "10.0", ClampMax = "120.0"))
+	float ShoulderFieldOfView = 65.0f;
+
+	/** Radius of the sweep that keeps the shoulder camera in front of walls. 0 turns it off. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Shoulder", meta = (ClampMin = "0.0"))
+	float ShoulderProbeRadius = 12.0f;
+
 	/** Seconds to blend into and out of first person. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Precision", meta = (ClampMin = "0.0"))
 	float CameraBlendTime = 0.15f;
@@ -141,7 +160,8 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Precision", meta = (ClampMin = "0.0"))
 	float EyeBelowCapsuleTop = 14.0f;
 
-	/** Hides every mesh on the character in first person; there is no weapon model to show. */
+	/** Hides the character in first person: the pawn's meshes (the weapon in hand too) and the
+	 *  visible body of the visual override's child actor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aim|Precision")
 	bool bHideCharacterInPrecision = true;
 
@@ -187,10 +207,19 @@ private:
 	/** Writes the sample pawn's PlayerInputState.WantsToAim (field name has a GUID suffix). */
 	void SetSampleWantsToAim(bool bWantsToAim) const;
 
-	void EnterFirstPerson();
-	void ExitFirstPerson(bool bBlend);
-	void UpdateFirstPersonCamera();
+	/** Precision always looks through our camera; shoulder does when bUseShoulderCamera. */
+	bool UsesAimCamera(ENRAimMode InMode) const;
+	/** Where the aim camera should be for a mode, and its field of view. */
+	FTransform GetAimCameraTarget(ENRAimMode InMode, float& OutFieldOfView) const;
+	/** Switches the view to the aim camera; from another aim mode it moves there over CameraBlendTime. */
+	void EnterAimCamera(bool bFromAimCamera);
+	void ExitAimCamera(bool bBlend);
+	void UpdateAimCamera();
 	FVector GetEyeLocation() const;
+
+	FVector CameraMoveFrom = FVector::ZeroVector;
+	float CameraMoveFromFieldOfView = 90.0f;
+	float CameraMoveStartTime = -1000.0f;
 
 	void HideCharacter();
 	void RestoreCharacter();

@@ -6,6 +6,12 @@
 #include "Animation/AnimMontage.h"
 #include "Components/HealthComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshSocket.h"
+#include "DrawDebugHelpers.h"
+#include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -33,6 +39,205 @@ namespace
 		const UHealthComponent* Health = Owner ? Owner->FindComponentByClass<UHealthComponent>() : nullptr;
 		return Health && Health->IsDead();
 	}
+
+	TAutoConsoleVariable<bool> CVarLeftHandIK(
+		TEXT("NR.Weapon.LeftHandIK"), true,
+		TEXT("Left hand reaches for the weapon's LeftHand socket. Off leaves it to the animation (applied on the next equip or NR.Weapon.Refresh)."));
+
+	/** Blueprint "float" variables are doubles since UE5; older ones are floats. */
+	void SetAnimFloat(UAnimInstance* Anim, FName Name, double Value)
+	{
+		if (const FDoubleProperty* Double = FindFProperty<FDoubleProperty>(Anim->GetClass(), Name))
+		{
+			Double->SetPropertyValue_InContainer(Anim, Value);
+		}
+		else if (const FFloatProperty* Float = FindFProperty<FFloatProperty>(Anim->GetClass(), Name))
+		{
+			Float->SetPropertyValue_InContainer(Anim, static_cast<float>(Value));
+		}
+	}
+
+	double GetAnimFloat(const UAnimInstance* Anim, FName Name, double Default = 0.0)
+	{
+		if (const FDoubleProperty* Double = FindFProperty<FDoubleProperty>(Anim->GetClass(), Name))
+		{
+			return Double->GetPropertyValue_InContainer(Anim);
+		}
+		if (const FFloatProperty* Float = FindFProperty<FFloatProperty>(Anim->GetClass(), Name))
+		{
+			return Float->GetPropertyValue_InContainer(Anim);
+		}
+		return Default;
+	}
+
+	void SetAnimVector(UAnimInstance* Anim, FName Name, const FVector& Value)
+	{
+		const FStructProperty* Struct = FindFProperty<FStructProperty>(Anim->GetClass(), Name);
+		if (Struct && Struct->Struct == TBaseStructure<FVector>::Get())
+		{
+			*Struct->ContainerPtrToValuePtr<FVector>(Anim) = Value;
+		}
+	}
+
+	/** Mesh-space location of a socket on a static mesh. */
+	bool FindMeshSocket(const UStaticMesh* Mesh, FName Socket, FTransform& Out)
+	{
+		const UStaticMeshSocket* Found = (Mesh && !Socket.IsNone()) ? Mesh->FindSocket(Socket) : nullptr;
+		if (!Found)
+		{
+			return false;
+		}
+		Out = FTransform(Found->RelativeRotation, Found->RelativeLocation, Found->RelativeScale);
+		return true;
+	}
+
+	UNRWeaponComponent* FindPlayerWeapon(UWorld* World)
+	{
+		for (TActorIterator<APawn> It(World); It; ++It)
+		{
+			if (It->IsPlayerControlled())
+			{
+				if (UNRWeaponComponent* Weapon = It->FindComponentByClass<UNRWeaponComponent>())
+				{
+					return Weapon;
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	FAutoConsoleCommandWithWorldAndArgs CmdFitToHands(
+		TEXT("NR.Weapon.FitToHands"),
+		TEXT("NR.Weapon.FitToHands [Forward 0..1]: fits the equipped weapon's MeshOffset to the current hand pose and logs it. Forward turns the barrel from the hand line towards straight ahead. Turn NR.Weapon.LeftHandIK off and NR.Weapon.Refresh first, so the left hand is where the animation puts it."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (UNRWeaponComponent* Weapon = FindPlayerWeapon(World))
+			{
+				Weapon->FitMeshOffsetToHands(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 0.0f);
+			}
+		}));
+
+	FAutoConsoleCommandWithWorldAndArgs CmdSetOffset(
+		TEXT("NR.Weapon.Offset"),
+		TEXT("NR.Weapon.Offset X Y Z Pitch Yaw Roll: sets the equipped weapon's MeshOffset (relative to its hand socket) and logs it."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			UNRWeaponComponent* Weapon = FindPlayerWeapon(World);
+			if (!Weapon || Args.Num() < 6)
+			{
+				return;
+			}
+			const FTransform Offset(
+				FRotator(FCString::Atof(*Args[3]), FCString::Atof(*Args[4]), FCString::Atof(*Args[5])),
+				FVector(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atof(*Args[2])));
+			Weapon->SetCurrentMeshOffset(Offset);
+		}));
+
+	FAutoConsoleCommandWithWorld CmdDebug(
+		TEXT("NR.Weapon.Debug"),
+		TEXT("Logs the player's hand bones (the posing mesh and any visible child-actor mesh) and the weapon sockets, in the actor's frame (forward, right, up), and draws them for 10 s."),
+		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+		{
+			UNRWeaponComponent* Weapon = FindPlayerWeapon(World);
+			AActor* Owner = Weapon ? Weapon->GetOwner() : nullptr;
+			if (!Owner)
+			{
+				return;
+			}
+			const FTransform Frame = Owner->GetActorTransform();
+			auto Report = [&](const FString& Label, const FVector& Point, const FColor& Color)
+			{
+				const FVector L = Frame.InverseTransformPosition(Point);
+				UE_LOG(LogNRWeapon, Log, TEXT("  %-34s fwd %7.1f right %7.1f up %7.1f"), *Label, L.X, L.Y, L.Z);
+				DrawDebugSphere(World, Point, 2.5f, 8, Color, false, 10.0f, SDPG_Foreground);
+			};
+			UE_LOG(LogNRWeapon, Log, TEXT("NR.Weapon.Debug %s"), *Owner->GetName());
+
+			TArray<USkeletalMeshComponent*> Meshes;
+			Owner->GetComponents(Meshes);
+			TArray<AActor*> Attached;
+			Owner->GetAttachedActors(Attached, true, true);
+			for (AActor* Child : Attached)
+			{
+				TArray<USkeletalMeshComponent*> ChildMeshes;
+				Child->GetComponents(ChildMeshes);
+				Meshes.Append(ChildMeshes);
+			}
+			for (const USkeletalMeshComponent* Mesh : Meshes)
+			{
+				UE_LOG(LogNRWeapon, Log, TEXT(" %s.%s visible %d"), *GetNameSafe(Mesh->GetOwner()), *Mesh->GetName(), Mesh->IsVisible());
+				for (const TCHAR* Bone : { TEXT("hand_r"), TEXT("hand_l"), TEXT("lowerarm_r"), TEXT("lowerarm_l"),
+					TEXT("ik_hand_gun"), TEXT("ik_hand_r"), TEXT("ik_hand_l"),
+					TEXT("RightHand"), TEXT("LeftHand"), TEXT("RightForeArm"), TEXT("LeftForeArm"), TEXT("RightHandMiddle1") })
+				{
+					if (Mesh->GetBoneIndex(Bone) != INDEX_NONE)
+					{
+						Report(FString::Printf(TEXT("%s"), Bone), Mesh->GetSocketLocation(Bone), Mesh->IsVisible() ? FColor::Green : FColor::Red);
+					}
+				}
+				// Axes, in the actor's frame, of the bones a weapon could follow.
+				for (const TCHAR* Bone : { TEXT("hand_r"), TEXT("ik_hand_gun"), TEXT("RightHand") })
+				{
+					if (Mesh->GetBoneIndex(Bone) != INDEX_NONE)
+					{
+						const FQuat Q = Frame.GetRotation().Inverse() * Mesh->GetSocketQuaternion(Bone);
+						const FVector X = Q.GetAxisX(), Y = Q.GetAxisY(), Z = Q.GetAxisZ();
+						UE_LOG(LogNRWeapon, Log, TEXT("  axes %-14s X(%5.2f %5.2f %5.2f) Y(%5.2f %5.2f %5.2f) Z(%5.2f %5.2f %5.2f)"),
+							Bone, X.X, X.Y, X.Z, Y.X, Y.Y, Y.Z, Z.X, Z.Y, Z.Z);
+					}
+				}
+			}
+			if (const UStaticMeshComponent* Gun = Weapon->GetWeaponMeshComponent(); Gun && Gun->GetStaticMesh())
+			{
+				Report(TEXT("weapon origin"), Gun->GetComponentLocation(), FColor::Yellow);
+				Report(TEXT("weapon +X (muzzle way) 30cm"), Gun->GetComponentLocation() + Gun->GetForwardVector() * 30.0f, FColor::Yellow);
+				const FQuat Q = Frame.GetRotation().Inverse() * Gun->GetComponentQuat();
+				UE_LOG(LogNRWeapon, Log, TEXT("  axes %-14s X(%5.2f %5.2f %5.2f) Y(%5.2f %5.2f %5.2f) Z(%5.2f %5.2f %5.2f)"), TEXT("weapon"),
+					Q.GetAxisX().X, Q.GetAxisX().Y, Q.GetAxisX().Z, Q.GetAxisY().X, Q.GetAxisY().Y, Q.GetAxisY().Z,
+					Q.GetAxisZ().X, Q.GetAxisZ().Y, Q.GetAxisZ().Z);
+				for (const FName Socket : Gun->GetAllSocketNames())
+				{
+					Report(FString::Printf(TEXT("weapon socket %s"), *Socket.ToString()), Gun->GetSocketLocation(Socket), FColor::Cyan);
+				}
+			}
+		}));
+
+	FAutoConsoleCommandWithWorld CmdFitAim(
+		TEXT("NR.Weapon.FitAim"),
+		TEXT("While aiming: turns the equipped weapon so the barrel runs down the view, stores it as its AimMeshOffset and logs it."),
+		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+		{
+			if (UNRWeaponComponent* Weapon = FindPlayerWeapon(World))
+			{
+				Weapon->FitAimMeshOffset();
+			}
+		}));
+
+	FAutoConsoleCommandWithWorldAndArgs CmdSetAimOffset(
+		TEXT("NR.Weapon.AimOffset"),
+		TEXT("NR.Weapon.AimOffset X Y Z Pitch Yaw Roll: sets the equipped weapon's AimMeshOffset (turns it on) and logs it."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			UNRWeaponComponent* Weapon = FindPlayerWeapon(World);
+			if (!Weapon || Args.Num() < 6)
+			{
+				return;
+			}
+			Weapon->SetCurrentAimMeshOffset(FTransform(
+				FRotator(FCString::Atof(*Args[3]), FCString::Atof(*Args[4]), FCString::Atof(*Args[5])),
+				FVector(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atof(*Args[2]))));
+		}));
+
+	FAutoConsoleCommandWithWorld CmdRefresh(
+		TEXT("NR.Weapon.Refresh"),
+		TEXT("Re-applies the equipped weapon's mesh and left hand target."),
+		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+		{
+			if (UNRWeaponComponent* Weapon = FindPlayerWeapon(World))
+			{
+				Weapon->SetCurrentMeshOffset(Weapon->GetCurrentWeapon() ? Weapon->GetCurrentWeapon()->MeshOffset : FTransform::Identity);
+			}
+		}));
 }
 
 UNRWeaponComponent::UNRWeaponComponent()
@@ -96,6 +301,20 @@ void UNRWeaponComponent::BeginPlay()
 		ApplyWeaponKind();
 	}
 
+	if (USkeletalMeshComponent* Body = GetOwner()->FindComponentByClass<USkeletalMeshComponent>())
+	{
+		WeaponMesh = NewObject<UStaticMeshComponent>(GetOwner(), TEXT("NRWeaponMesh"));
+		WeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		WeaponMesh->SetGenerateOverlapEvents(false);
+		WeaponMesh->SetCanEverAffectNavigation(false);
+		WeaponMesh->SetupAttachment(Body);
+		WeaponMesh->RegisterComponent();
+	}
+	UpdateWeaponMesh();
+
+	// The visual-override body is a child actor that may not exist yet; look again once it does.
+	GetWorld()->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]() { UpdateWeaponMesh(); }));
+
 	// Full magazines to start. The part component computed its stats in InitializeComponent,
 	// which runs before any BeginPlay, so the sizes already include starting loadouts.
 	Ammo.SetNum(Weapons.Num());
@@ -140,6 +359,12 @@ void UNRWeaponComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UNRWeaponPartComponent* Parts = GetOwner()->FindComponentByClass<UNRWeaponPartComponent>())
 	{
 		Parts->OnRuntimeStatsChanged.RemoveDynamic(this, &UNRWeaponComponent::OnRuntimeStatsChanged);
+	}
+
+	if (WeaponMesh)
+	{
+		WeaponMesh->DestroyComponent();
+		WeaponMesh = nullptr;
 	}
 
 	CancelReload();
@@ -249,9 +474,38 @@ void UNRWeaponComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	// The weapon went on the posing mesh because the visible body did not exist yet (the visual
+	// override's child actor appears a few frames after BeginPlay). Move it as soon as it does:
+	// MeshOffset is tuned for the visible hand, and on the posing hand the weapon points elsewhere
+	// and drags the left hand with it.
+	// Also when the body it hangs from went away or was hidden: the visual override respawns its
+	// child actor (a new BP_Exosuit_C_n) when it is changed, and the weapon must move with it.
+	const USkeletalMeshComponent* Current = HandBody.Get();
+	if (bWatchHandBody || (WeaponMesh && WeaponMesh->GetStaticMesh() && (!IsValid(Current) || !Current->IsVisible())))
+	{
+		FName Bone;
+		if (FindHandBody(Bone) != HandBody.Get())
+		{
+			UpdateWeaponMesh();
+		}
+	}
+
+	if (bBlendAimOffset)
+	{
+		UpdateAimBlend();
+	}
+
+	if (bTrackLeftHand)
+	{
+		UpdateLeftHandTarget();
+	}
+
 	if (!NRAttackInput::IsAttackHeld(GetOwner()) || IsMeleeEquipped())
 	{
-		SetComponentTickEnabled(false);
+		if (!bTrackLeftHand && !bWatchHandBody && !bBlendAimOffset)
+		{
+			SetComponentTickEnabled(false);
+		}
 		return;
 	}
 
@@ -532,11 +786,262 @@ void UNRWeaponComponent::EquipWeapon(int32 Index)
 
 	CurrentWeaponIndex = Index;
 	ApplyWeaponKind();
+	UpdateWeaponMesh();
 
 	// NextFireTime is left alone: it was set by the weapon that fired, so switching cannot be
 	// used to skip the shotgun's pump time.
 	UE_LOG(LogNRWeapon, Log, TEXT("%s equipped %s"),
 		*GetNameSafe(GetOwner()), *Weapons[Index].DisplayName.ToString());
+}
+
+// --- Weapon mesh -------------------------------------------------------------------
+
+void UNRWeaponComponent::UpdateWeaponMesh()
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	UStaticMesh* Mesh = Weapon ? Weapon->Mesh.Get() : nullptr;
+
+	FName Bone;
+	USkeletalMeshComponent* Body = FindHandBody(Bone);
+	HandBody = Body;
+	HandBone = Bone;
+
+	if (WeaponMesh)
+	{
+		WeaponMesh->SetStaticMesh(Mesh);
+		WeaponMesh->SetVisibility(Mesh != nullptr);
+		if (Mesh && Body)
+		{
+			WeaponMesh->AttachToComponent(Body, FAttachmentTransformRules::SnapToTargetNotIncludingScale, Bone);
+			WeaponMesh->SetRelativeTransform(Weapon->MeshOffset);
+		}
+	}
+
+	FTransform Socket;
+	const USkeletalMeshComponent* Posing = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
+	bTrackLeftHand = CVarLeftHandIK.GetValueOnGameThread() && WeaponMesh && Mesh && Body && Posing
+		&& Posing->GetBoneIndex(TEXT("hand_r")) != INDEX_NONE && FindMeshSocket(Mesh, Weapon->LeftHandSocket, Socket);
+
+	// Still on the posing mesh while a visible hand is wanted: keep looking for the visible body.
+	bWatchHandBody = Mesh && Body && Body == Posing && !VisualHandBone.IsNone();
+	bBlendAimOffset = Mesh && WeaponMesh && Weapon->bUseAimMeshOffset;
+	if (bBlendAimOffset)
+	{
+		UpdateAimBlend();
+	}
+
+	if (UAnimInstance* Anim = Posing ? Posing->GetAnimInstance() : nullptr)
+	{
+		SetAnimFloat(Anim, TEXT("LeftHandIKAlpha"), bTrackLeftHand ? 1.0 : 0.0);
+	}
+	if (bTrackLeftHand)
+	{
+		UpdateLeftHandTarget();
+	}
+	if (bTrackLeftHand || bWatchHandBody || bBlendAimOffset)
+	{
+		SetComponentTickEnabled(true);
+	}
+}
+
+USkeletalMeshComponent* UNRWeaponComponent::FindHandBody(FName& OutBone) const
+{
+	AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return nullptr;
+	}
+
+	if (!VisualHandBone.IsNone())
+	{
+		TArray<AActor*> Attached;
+		Owner->GetAttachedActors(Attached, true, true);
+		for (const AActor* Child : Attached)
+		{
+			TArray<USkeletalMeshComponent*> Meshes;
+			Child->GetComponents(Meshes);
+			for (USkeletalMeshComponent* Mesh : Meshes)
+			{
+				if (Mesh->IsVisible() && Mesh->GetBoneIndex(VisualHandBone) != INDEX_NONE)
+				{
+					OutBone = VisualHandBone;
+					return Mesh;
+				}
+			}
+		}
+	}
+
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	OutBone = Weapon ? Weapon->HandSocket : NAME_None;
+	return Owner->FindComponentByClass<USkeletalMeshComponent>();
+}
+
+void UNRWeaponComponent::UpdateLeftHandTarget()
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	const USkeletalMeshComponent* Body = HandBody.Get();
+	const USkeletalMeshComponent* Posing = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
+	UAnimInstance* Anim = Posing ? Posing->GetAnimInstance() : nullptr;
+	if (!Weapon || !Body || !Anim || !WeaponMesh)
+	{
+		return;
+	}
+
+	// The IK runs on the hidden posing mesh, relative to its hand_r, and the visible body copies
+	// the result. Its hands sit higher than the posing mesh's, but both hands by about the same
+	// amount, so what has to carry over is the reach from the right hand to the left: the world
+	// offset from the hand the weapon is in to the LeftHand socket, turned into hand_r's frame.
+	// Uses last frame's pose, which is all there is before this frame's animation.
+	const FVector Reach = WeaponMesh->GetSocketLocation(Weapon->LeftHandSocket) - Body->GetSocketLocation(HandBone);
+	const FTransform PosingHand = Posing->GetSocketTransform(TEXT("hand_r"));
+	SetAnimVector(Anim, TEXT("LeftHandIKLocation"), PosingHand.GetRotation().UnrotateVector(Reach));
+}
+
+#if WITH_EDITOR
+void UNRWeaponComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Editing Weapons (MeshOffset, Mesh, sockets) on the player's WeaponComponent in the Details
+	// panel during PIE moves the weapon in the hand straight away, for tuning by eye.
+	if (WeaponMesh && GetWorld() && GetWorld()->IsGameWorld())
+	{
+		UpdateWeaponMesh();
+	}
+}
+#endif
+
+void UNRWeaponComponent::SetCurrentMeshOffset(const FTransform& Offset)
+{
+	if (!Weapons.IsValidIndex(CurrentWeaponIndex))
+	{
+		return;
+	}
+	Weapons[CurrentWeaponIndex].MeshOffset = Offset;
+	UpdateWeaponMesh();
+
+	const FVector L = Offset.GetLocation();
+	const FRotator R = Offset.Rotator();
+	UE_LOG(LogNRWeapon, Log, TEXT("%s MeshOffset: Location (X=%.2f,Y=%.2f,Z=%.2f) Rotation (Pitch=%.2f,Yaw=%.2f,Roll=%.2f)  [NR.Weapon.Offset %.2f %.2f %.2f %.2f %.2f %.2f]"),
+		*Weapons[CurrentWeaponIndex].DisplayName.ToString(), L.X, L.Y, L.Z, R.Pitch, R.Yaw, R.Roll,
+		L.X, L.Y, L.Z, R.Pitch, R.Yaw, R.Roll);
+}
+
+void UNRWeaponComponent::UpdateAimBlend()
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	if (!Weapon || !WeaponMesh || !Weapon->bUseAimMeshOffset)
+	{
+		return;
+	}
+
+	// The aim pose's own weight, so the weapon turns exactly as fast as the arms do.
+	const USkeletalMeshComponent* Posing = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
+	const UAnimInstance* Anim = Posing ? Posing->GetAnimInstance() : nullptr;
+	const float Alpha = Anim ? FMath::Clamp(static_cast<float>(GetAnimFloat(Anim, TEXT("AimAlpha"))), 0.0f, 1.0f) : 0.0f;
+
+	FTransform Blended;
+	Blended.Blend(Weapon->MeshOffset, Weapon->AimMeshOffset, Alpha);
+	if (!WeaponMesh->GetRelativeTransform().Equals(Blended, 0.01))
+	{
+		WeaponMesh->SetRelativeTransform(Blended);
+	}
+}
+
+void UNRWeaponComponent::SetCurrentAimMeshOffset(const FTransform& Offset)
+{
+	if (!Weapons.IsValidIndex(CurrentWeaponIndex))
+	{
+		return;
+	}
+	Weapons[CurrentWeaponIndex].AimMeshOffset = Offset;
+	Weapons[CurrentWeaponIndex].bUseAimMeshOffset = true;
+	UpdateWeaponMesh();
+
+	const FVector L = Offset.GetLocation();
+	const FRotator R = Offset.Rotator();
+	UE_LOG(LogNRWeapon, Log, TEXT("%s AimMeshOffset: Location (X=%.2f,Y=%.2f,Z=%.2f) Rotation (Pitch=%.2f,Yaw=%.2f,Roll=%.2f)  [NR.Weapon.AimOffset %.2f %.2f %.2f %.2f %.2f %.2f]"),
+		*Weapons[CurrentWeaponIndex].DisplayName.ToString(), L.X, L.Y, L.Z, R.Pitch, R.Yaw, R.Roll,
+		L.X, L.Y, L.Z, R.Pitch, R.Yaw, R.Roll);
+}
+
+FTransform UNRWeaponComponent::FitAimMeshOffset()
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
+	FName Bone;
+	const USkeletalMeshComponent* Body = FindHandBody(Bone);
+	if (!Weapon || !Weapon->Mesh || !Body || !PC)
+	{
+		return FTransform::Identity;
+	}
+
+	// Barrel along the view, top towards the view's up: straight down the crosshair.
+	const FRotator View = PC->GetControlRotation();
+	const FQuat WeaponWorld = FRotationMatrix::MakeFromXZ(View.Vector(), FRotationMatrix(View).GetUnitAxis(EAxis::Z)).ToQuat();
+	const FQuat Hand = Body->GetSocketQuaternion(Bone);
+
+	// The grip stays where MeshOffset puts it in the hand; only the turn changes.
+	const FTransform Offset(Hand.Inverse() * WeaponWorld, Weapon->MeshOffset.GetLocation());
+	SetCurrentAimMeshOffset(Offset);
+	return Offset;
+}
+
+FTransform UNRWeaponComponent::FitMeshOffsetToHands(float Forward)
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	FName Bone;
+	const USkeletalMeshComponent* Body = FindHandBody(Bone);
+	if (!Weapon || !Weapon->Mesh || !Body || Body->GetBoneIndex(Bone) == INDEX_NONE)
+	{
+		return FTransform::Identity;
+	}
+
+	// The left hand: the right hand bone's name with the side swapped (RightHand / hand_r).
+	FString LeftName = Bone.ToString().Replace(TEXT("Right"), TEXT("Left"));
+	if (LeftName.EndsWith(TEXT("_r")))
+	{
+		LeftName = LeftName.LeftChop(2) + TEXT("_l");
+	}
+	if (Body->GetBoneIndex(*LeftName) == INDEX_NONE)
+	{
+		return FTransform::Identity;
+	}
+
+	// Palm: a little past the wrist along the forearm, where the grip sits in a closed hand. Not
+	// from the finger bones: a hidden posing mesh runs at a LOD without them, so they are
+	// nowhere near the hand.
+	constexpr float WristToPalm = 7.0f;
+	const FTransform Hand = Body->GetSocketTransform(Bone);
+	FVector Palm = Hand.GetLocation();
+	const FName Forearm = Body->GetParentBone(Bone);
+	if (!Forearm.IsNone())
+	{
+		Palm += (Palm - Body->GetSocketLocation(Forearm)).GetSafeNormal() * WristToPalm;
+	}
+	const FVector LeftHand = Body->GetSocketLocation(*LeftName);
+
+	// Turn the weapon so its grip-to-LeftHand-socket line runs from the palm to the left hand,
+	// with the weapon's top as close to the character's up as that allows.
+	FTransform Socket;
+	const FVector LocalReach = FindMeshSocket(Weapon->Mesh, Weapon->LeftHandSocket, Socket)
+		? Socket.GetLocation().GetSafeNormal() : FVector::ForwardVector;
+	// The animation holds the rifle across the body; Forward turns the barrel from that line
+	// towards straight ahead (level, the way the character faces), and the left hand follows it
+	// through the IK.
+	const FVector Ahead = FVector(GetOwner()->GetActorForwardVector().GetSafeNormal2D());
+	const FVector WorldReach = FMath::Lerp((LeftHand - Palm).GetSafeNormal(), Ahead, FMath::Clamp(Forward, 0.0f, 1.0f)).GetSafeNormal();
+	const FVector Up = GetOwner()->GetActorUpVector();
+
+	const FMatrix LocalFrame = FRotationMatrix::MakeFromXZ(LocalReach, FVector::UpVector);
+	const FMatrix WorldFrame = FRotationMatrix::MakeFromXZ(WorldReach, Up);
+	const FQuat WeaponRotation = FQuat(WorldFrame) * FQuat(LocalFrame).Inverse();
+
+	const FTransform WeaponWorld(WeaponRotation, Palm);
+	const FTransform Offset = WeaponWorld.GetRelativeTransform(FTransform(Hand.GetRotation(), Hand.GetLocation()));
+	SetCurrentMeshOffset(Offset);
+	return Offset;
 }
 
 // --- Aiming ------------------------------------------------------------------------
@@ -633,6 +1138,13 @@ FVector UNRWeaponComponent::GetMuzzleLocation() const
 			PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
 			return ViewLocation + ViewRotation.Vector() * ForwardFromView;
 		}
+	}
+
+	// The weapon in hand, when it has a muzzle.
+	if (const FNRWeaponDefinition* Weapon = GetCurrentWeapon(); Weapon && WeaponMesh && WeaponMesh->IsVisible()
+		&& !Weapon->MuzzleSocket.IsNone() && WeaponMesh->DoesSocketExist(Weapon->MuzzleSocket))
+	{
+		return WeaponMesh->GetSocketLocation(Weapon->MuzzleSocket);
 	}
 
 	if (!MuzzleSocketName.IsNone())
