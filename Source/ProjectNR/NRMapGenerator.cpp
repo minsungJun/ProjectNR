@@ -225,6 +225,11 @@ FNRMapGenSettings ANRMapGenerator::GetEffectiveSettings() const
 	return Settings;
 }
 
+float ANRMapGenerator::GetCellPitch() const
+{
+	return RoomSize + GetCorridorLength();
+}
+
 FVector ANRMapGenerator::GetCellCenter(const FIntPoint& Cell) const
 {
 	const float Pitch = RoomSize + GetCorridorLength();

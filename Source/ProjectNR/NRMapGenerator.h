@@ -137,6 +137,12 @@ public:
 	/** World position of a room's centre (the middle of its footprint), on the floor. */
 	FVector GetRoomCenter(const FNRGeneratedRoom& Room) const;
 
+	/** Outer size of one room cell, in cm. */
+	float GetRoomSize() const { return RoomSize; }
+
+	/** Distance between two neighbouring cell centres: a room cell and one corridor. */
+	float GetCellPitch() const;
+
 	/** Template descriptions of the Config's rooms, index for index. Empty without a Config. */
 	TArray<FNRRoomTemplateDesc> DescribeTemplates() const;
 

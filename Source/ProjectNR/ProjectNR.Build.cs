@@ -47,7 +47,7 @@ public class ProjectNR : ModuleRules
 		});
 
 		// AssetRegistry: a loot table with no part list draws from every weapon part asset.
-		PrivateDependencyModuleNames.AddRange(new string[] { "AssetRegistry" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Landscape", "AssetRegistry", "RenderCore", "RHI" });
 
 		// ProjectNR.Loot.World opens a map in PIE and ends it again (FEndPlayMapCommand).
 		if (Target.bBuildEditor)
