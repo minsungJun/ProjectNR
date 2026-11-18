@@ -81,6 +81,15 @@ protected:
 
 	void OnRestartPressed();
 
+	/** Back to the main menu once the run has ended. */
+	UPROPERTY(EditDefaultsOnly, Category = "Run")
+	FKey MainMenuKey = EKeys::M;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Run")
+	FName MainMenuLevel = TEXT("/Game/Levels/Lvl_MainMenu");
+
+	void OnMainMenuPressed();
+
 	UFUNCTION()
 	void HandleRunStateChanged(ENRRunState NewState);
 

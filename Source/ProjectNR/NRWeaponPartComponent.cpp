@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRWeaponPartComponent.h"
+#include "NRMetaProgression.h"
 
 #include "NRWeaponComponent.h"
 #include "NRWeaponPartData.h"
@@ -174,10 +175,31 @@ FText UNRWeaponPartComponent::DescribeEquipResult(ENRWeaponPartEquipResult Resul
 
 // --- Changes -----------------------------------------------------------------------
 
+int32 UNRWeaponPartComponent::GetStoredCount() const
+{
+	int32 Count = 0;
+	for (const FNRWeaponPartInstance& Instance : Inventory)
+	{
+		Count += IsEquipped(Instance.InstanceId) ? 0 : 1;
+	}
+	return Count;
+}
+
+int32 UNRWeaponPartComponent::GetStorageCapacity() const
+{
+	return UNRMetaProgressionSubsystem::GetInventorySlots(this);
+}
+
 FGuid UNRWeaponPartComponent::AddPart(UNRWeaponPartData* PartData, ENRWeaponPartLevel Level)
 {
 	if (!PartData)
 	{
+		return FGuid();
+	}
+	if (GetStoredCount() >= GetStorageCapacity())
+	{
+		UE_LOG(LogNRWeaponPart, Log, TEXT("%s: parts inventory full (%d/%d), %s not taken"), *GetNameSafe(GetOwner()),
+			GetStoredCount(), GetStorageCapacity(), *GetNameSafe(PartData));
 		return FGuid();
 	}
 

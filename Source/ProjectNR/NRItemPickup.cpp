@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRItemPickup.h"
+#include "NRMetaProgression.h"
 
 #include "Components/PointLightComponent.h"
 #include "Components/SphereComponent.h"
@@ -205,7 +206,7 @@ bool ANRItemPickup::TryCollect(AActor* Collector)
 	case ENRItemType::Money:
 		if (UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr)
 		{
-			Run->AddMoney(Count);
+			Run->AddMoney(FMath::Max(FMath::RoundToInt32(Count * UNRMetaProgressionSubsystem::GetMultiplier(this, ENRMetaStat::GoldGain)), Count));
 			bTaken = true;
 		}
 		break;

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRLootChest.h"
+#include "NRMetaProgression.h"
 
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
@@ -171,7 +172,7 @@ void ANRLootChest::SpawnItems()
 		return;
 	}
 	TArray<FNRLootDrop> Drops;
-	Table->Roll(Drops);
+	Table->Roll(Drops, UNRMetaProgressionSubsystem::GetMultiplier(this, ENRMetaStat::ItemDropRate));
 
 	// In a row across the front, centred on the chest.
 	const FVector Front = GetActorLocation() + GetActorForwardVector().GetSafeNormal2D() * ItemDistance;

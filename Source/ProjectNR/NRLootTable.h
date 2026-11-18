@@ -55,7 +55,8 @@ public:
 	TArray<FNRLootRoll> Rolls;
 
 	/** Makes every roll and adds what comes up to Out. */
-	void Roll(TArray<FNRLootDrop>& Out) const;
+	/** ChanceScale multiplies every roll's chance (permanent drop rate growth), capped at 1. */
+	void Roll(TArray<FNRLootDrop>& Out, float ChanceScale = 1.0f) const;
 
 	/** A part from Pool at random; from every weapon part asset when Pool is empty. Null if there is none. */
 	static UNRWeaponPartData* PickPart(const TArray<TObjectPtr<UNRWeaponPartData>>& Pool);

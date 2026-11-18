@@ -16,6 +16,8 @@
 #include "NRStaminaComponent.h"
 #include "NRStatsComponent.h"
 #include "NRLoadoutWidget.h"
+#include "Kismet/GameplayStatics.h"
+#include "NRMetaProgression.h"
 #include "NRShop.h"
 #include "NRShopWidget.h"
 #include "NRRoom.h"
@@ -42,6 +44,7 @@ void ANRHUD::BeginPlay()
 		{
 			InputComponent->BindKey(LoadoutMenuKey, IE_Pressed, this, &ANRHUD::ToggleLoadoutMenu);
 			InputComponent->BindKey(RestartKey, IE_Pressed, this, &ANRHUD::OnRestartPressed);
+			InputComponent->BindKey(MainMenuKey, IE_Pressed, this, &ANRHUD::OnMainMenuPressed);
 		}
 	}
 }
@@ -66,6 +69,15 @@ void ANRHUD::HandleRunStateChanged(ENRRunState NewState)
 	{
 		CloseLoadoutMenu();
 		CloseShopMenu();
+	}
+}
+
+void ANRHUD::OnMainMenuPressed()
+{
+	UNRRunSubsystem* Run = GetWorld() ? GetWorld()->GetSubsystem<UNRRunSubsystem>() : nullptr;
+	if (Run && Run->GetTimeSinceEnded() >= RestartPromptDelay)
+	{
+		UGameplayStatics::OpenLevel(this, MainMenuLevel);
 	}
 }
 
@@ -497,11 +509,19 @@ void ANRHUD::DrawRunStatus()
 
 	if (Run->GetTimeSinceEnded() >= RestartPromptDelay)
 	{
-		const FString Prompt = FString::Printf(TEXT("[%s] Restart"), *RestartKey.GetDisplayName().ToString());
+		const FString Prompt = FString::Printf(TEXT("[%s] Restart    [%s] Main Menu"), *RestartKey.GetDisplayName().ToString(), *MainMenuKey.GetDisplayName().ToString());
 		float PromptWidth = 0.0f;
 		float PromptHeight = 0.0f;
 		GetTextSize(Prompt, PromptWidth, PromptHeight, nullptr, 1.4f);
 		DrawText(Prompt, NeutralColor, (Canvas->SizeX - PromptWidth) * 0.5f, BannerY + Height + 12.0f, nullptr, 1.4f);
+		if (const UNRMetaProgressionSubsystem* Meta = UNRMetaProgressionSubsystem::Get(this))
+		{
+			const FString Award = FString::Printf(TEXT("PERMANENT POINTS  +%d   (TOTAL %d)"), Meta->GetLastRunAward(), Meta->GetPoints());
+			float AwardWidth = 0.0f;
+			float AwardHeight = 0.0f;
+			GetTextSize(Award, AwardWidth, AwardHeight, nullptr, 1.3f);
+			DrawText(Award, FLinearColor(1.0f, 0.82f, 0.25f, 1.0f), (Canvas->SizeX - AwardWidth) * 0.5f, BannerY + Height + PromptHeight + 24.0f, nullptr, 1.3f);
+		}
 	}
 }
 

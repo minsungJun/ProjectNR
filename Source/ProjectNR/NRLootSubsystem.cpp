@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRLootSubsystem.h"
+#include "NRMetaProgression.h"
 
 #include "Characters/EnemyCharacter.h"
 #include "CollisionQueryParams.h"
@@ -57,7 +58,7 @@ void UNRLootSubsystem::HandleAnyDamaged(UHealthComponent* Health, float Damage)
 		return;
 	}
 	TArray<FNRLootDrop> Drops;
-	Table->Roll(Drops);
+	Table->Roll(Drops, UNRMetaProgressionSubsystem::GetMultiplier(this, ENRMetaStat::ItemDropRate));
 	const FVector Where = Owner->GetActorLocation();
 	for (const FNRLootDrop& Drop : Drops)
 	{

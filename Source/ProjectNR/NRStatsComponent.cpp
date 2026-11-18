@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRStatsComponent.h"
+#include "NRMetaProgression.h"
 
 #include "Characters/EnemyCharacter.h"
 #include "Components/HealthComponent.h"
@@ -60,6 +61,9 @@ void UNRStatsComponent::BeginPlay()
 	Super::BeginPlay();
 
 	Invested.Init(0, NRPlayerStatCount);
+	// Permanent growth raises the starting values; points spent in the run add on top.
+	Definitions[static_cast<int32>(ENRPlayerStat::MaxHealth)].BaseValue += UNRMetaProgressionSubsystem::GetFlatBonus(this, ENRMetaStat::MaxHealth);
+	Definitions[static_cast<int32>(ENRPlayerStat::MaxStamina)].BaseValue += UNRMetaProgressionSubsystem::GetFlatBonus(this, ENRMetaStat::MaxStamina);
 	AnyDamagedHandle = UHealthComponent::OnAnyDamaged.AddUObject(this, &UNRStatsComponent::HandleAnyDamaged);
 	ApplyStats();
 
@@ -120,7 +124,7 @@ void UNRStatsComponent::AddExperience(int32 Amount)
 		return;
 	}
 
-	Experience += Amount;
+	Experience += FMath::Max(FMath::RoundToInt32(Amount * UNRMetaProgressionSubsystem::GetMultiplier(this, ENRMetaStat::ExperienceGain)), 1);
 	while (Experience >= GetExperienceToNextLevel())
 	{
 		Experience -= GetExperienceToNextLevel();

@@ -8,11 +8,11 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRLootTable, Log, All);
 
-void UNRLootTable::Roll(TArray<FNRLootDrop>& Out) const
+void UNRLootTable::Roll(TArray<FNRLootDrop>& Out, float ChanceScale) const
 {
 	for (const FNRLootRoll& Each : Rolls)
 	{
-		if (FMath::FRand() >= Each.Chance)
+		if (FMath::FRand() >= FMath::Min(Each.Chance * FMath::Max(ChanceScale, 0.0f), 1.0f))
 		{
 			continue;
 		}

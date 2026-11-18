@@ -10,6 +10,7 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "NRMetaProgression.h"
 #include "NRWeaponPartComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNRRun, Log, All);
@@ -285,6 +286,11 @@ void UNRRunSubsystem::EndRun(bool bWon)
 		}
 	}
 
+	// Permanent points before the state change, so the run-end screen already has them.
+	if (UNRMetaProgressionSubsystem* Meta = UNRMetaProgressionSubsystem::Get(this))
+	{
+		Meta->AwardRun(RoomsCleared, bWon);
+	}
 	SetState(bWon ? ENRRunState::Won : ENRRunState::Lost);
 	UE_LOG(LogNRRun, Log, TEXT("Run %s after %.1fs: %d/%d rooms, %d kills, %.0f damage"),
 		bWon ? TEXT("WON") : TEXT("LOST"), GetElapsedTime(), RoomsCleared, Rooms.Num(), Kills, DamageDealt);

@@ -90,6 +90,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weapon Parts")
 	bool IsEquipped(FGuid InstanceId) const;
 
+	/** Parts held but not fitted to a weapon. */
+	UFUNCTION(BlueprintPure, Category = "Weapon Part")
+	int32 GetStoredCount() const;
+
+	/** Most parts that can be held unfitted (permanent growth raises it). AddPart refuses past it. */
+	UFUNCTION(BlueprintPure, Category = "Weapon Part")
+	int32 GetStorageCapacity() const;
+
 	/** The part in a slot, or an invalid guid for an empty one. */
 	UFUNCTION(BlueprintPure, Category = "Weapon Parts")
 	FGuid GetEquippedPart(ENRWeaponId WeaponId, int32 SlotIndex) const;
