@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRRollComponent.h"
+#include "NRAnimUtils.h"
 
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -297,7 +298,8 @@ bool UNRRollComponent::TryRoll()
 	const bool bCancelsAttack = Melee && Melee->IsAttacking();
 	const USkeletalMeshComponent* Mesh = Owner->FindComponentByClass<USkeletalMeshComponent>();
 	UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
-	if (!AnimInstance || (AnimInstance->IsAnyMontagePlaying() && !bCancelsAttack))
+	// The reload (an upper-body montage) does not count: it carries on over the roll's legs, or the roll cuts it.
+	if (!AnimInstance || (NRAnim::IsBodyMontagePlaying(AnimInstance) && !bCancelsAttack))
 	{
 		return false;
 	}

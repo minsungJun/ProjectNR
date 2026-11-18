@@ -1,6 +1,7 @@
 // ProjectNR player pawn.
 
 #include "NRPlayerPawn.h"
+#include "NRAnimUtils.h"
 #include "NRTraversalDebug.h"
 
 #include "Camera/CameraComponent.h"
@@ -487,7 +488,8 @@ void ANRPlayerPawn::OnJumpStarted(const FInputActionValue& Value)
 	{
 		if (const UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
 		{
-			if (AnimInstance->IsAnyMontagePlaying())
+			// Not the reload: an upper-body montage is not a traversal.
+			if (NRAnim::IsBodyMontagePlaying(AnimInstance))
 			{
 				return;
 			}

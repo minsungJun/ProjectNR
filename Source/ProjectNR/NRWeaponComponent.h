@@ -10,6 +10,7 @@
 #include "NRWeaponComponent.generated.h"
 
 class AAITestProjectile;
+class UAnimInstance;
 class UAnimMontage;
 class UEnhancedInputLocalPlayerSubsystem;
 class UInputAction;
@@ -34,6 +35,53 @@ enum class ENRWeaponKind : uint8
  * Aiming, the muzzle and the crosshair are shared by every weapon, so they stay on the
  * component. What is here is only what changes when the player switches.
  */
+/**
+ * A point the left hand touches during a reload: around Time (0..1 of the reload) the hand is
+ * pulled onto Socket. Between touches the reload animation moves the arm on its own (driving
+ * the whole way by IK left the arm stiff and the wrist bent); the start and the end hold the
+ * barrel (the weapon's LeftHandSocket).
+ */
+USTRUCT(BlueprintType)
+struct FNRReloadHandKey
+{
+	GENERATED_BODY()
+
+	/** Fraction of the reload, 0 = start, 1 = done. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float Time = 0.0f;
+
+	/** Socket (or bone) name: on the weapon mesh, or on the character's body with @bOnBody. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload")
+	FName Socket;
+
+	/** The socket is on the character (a bone such as thigh_l, or a socket on its skeleton), not on the weapon. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload")
+	bool bOnBody = false;
+
+	/**
+	 * Nudge from the socket, in cm. On the weapon: in the socket's own axes. On the body: in the
+	 * character's axes (X forward, Y right, Z up), so "a pouch on the left hip" is easy to aim.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload")
+	FVector Offset = FVector::ZeroVector;
+
+	/** How long (fraction of the reload) the hand stays fully on the socket, either side of Time. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload", meta = (ClampMin = "0.0", ClampMax = "0.5"))
+	float Hold = 0.05f;
+
+	/** How long (fraction of the reload) the pull onto the socket fades in and out around the hold. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload", meta = (ClampMin = "0.01", ClampMax = "0.5"))
+	float Blend = 0.1f;
+
+	/**
+	 * 0..1: how far the left elbow is turned out, away from the body, while the hand is on this
+	 * point (the animation blueprint's second left-arm IK, ReloadElbowAlpha). For points close to
+	 * the body (a hip pouch), where the animation's own elbow would fold into the torso.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ElbowOut = 0.0f;
+};
+
 USTRUCT(BlueprintType)
 struct FNRWeaponDefinition
 {
@@ -110,6 +158,14 @@ struct FNRWeaponDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Animation", meta = (ClampMin = "0.01"))
 	float FireMontagePlayRate = 1.0f;
 
+	/**
+	 * Played on the upper body (its tracks in the UpperBody slot) while reloading, sped up or
+	 * slowed down to last the reload. The left hand lets go of the barrel meanwhile. Not played
+	 * over a montage that owns the body (a vault, a roll). Empty: reload with no animation.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Animation")
+	TObjectPtr<UAnimMontage> ReloadMontage;
+
 	/** Shown in the hand while this weapon is equipped. Empty shows nothing. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
 	TObjectPtr<UStaticMesh> Mesh;
@@ -140,12 +196,35 @@ struct FNRWeaponDefinition
 	FTransform AimMeshOffset;
 
 	/**
+	 * Muzzle kick per shot, in degrees: the weapon tips muzzle-up about its origin (the grip) and
+	 * settles back. 0 turns it off. The left hand follows through its IK.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look", meta = (ClampMin = "0.0", ClampMax = "45.0"))
+	float RecoilKickPitch = 0.0f;
+
+	/** Seconds the muzzle takes to rise. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look", meta = (ClampMin = "0.01"))
+	float RecoilKickTime = 0.06f;
+
+	/** Seconds it takes to settle back. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look", meta = (ClampMin = "0.01"))
+	float RecoilRecoverTime = 0.3f;
+
+	/**
 	 * Socket on @Mesh the left hand reaches for, through the Two Bone IK on hand_l after the
 	 * animation blueprint's rifle layer. None, or a mesh without it, leaves the left hand to the
 	 * animation.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
 	FName LeftHandSocket = TEXT("LeftHand");
+
+	/**
+	 * Points the left hand touches during a reload (see FNRReloadHandKey): say the magazine
+	 * socket on the weapon, a pouch on the hip, the magazine again. Around each the IK pulls the
+	 * hand onto it; between them the reload animation moves it. Empty: the animation alone.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Reload")
+	TArray<FNRReloadHandKey> ReloadHandPath;
 
 	/** Socket on @Mesh that projectiles leave from. Without it they leave from the component's muzzle. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon|Look")
@@ -374,11 +453,19 @@ protected:
 	/** Re-aims the left hand IK. Run every frame while a weapon with a LeftHandSocket is held. */
 	void UpdateLeftHandTarget();
 
-	/** Places the weapon between MeshOffset and AimMeshOffset by the aim pose's weight. */
+	/** Places the weapon between MeshOffset and AimMeshOffset by the aim pose's weight, tipped up by
+	 *  any muzzle kick. */
 	void UpdateAimBlend();
 
 	/** The equipped weapon blends to an aim offset, so the component keeps ticking. */
 	bool bBlendAimOffset = false;
+
+	/** A shot's muzzle kick is playing (RecoilKickPitch); the component ticks until it settles. */
+	bool bRecoiling = false;
+	float RecoilStartTime = 0.0f;
+
+	/** Muzzle-up degrees of the kick now; 0 once it has settled (and clears bRecoiling). */
+	float GetRecoilPitch();
 
 	/**
 	 * Bone on a visible child-actor body (the visual override) that the weapon hangs from instead
@@ -525,6 +612,24 @@ private:
 	void FinishReload();
 	void CancelReload();
 
+	/** The animation instance of the mesh that poses (and plays montages); null without one. */
+	UAnimInstance* GetPosingAnimInstance() const;
+
+	/** 0..1, how far the left hand has let go of the barrel for the reload animation. */
+	float GetReloadHandRelease() const;
+
+	/** World location of one stop of the reload hand path; Fallback when its socket is missing. */
+	FVector ResolveReloadHandKey(const FNRReloadHandKey& Key, const FVector& Fallback) const;
+
+	/**
+	 * The left hand IK during a reload with a hand path: returns its weight (0 = the animation's
+	 * hand, 1 = on the target) and sets OutTarget to where the touches near this moment pull it.
+	 */
+	float GetReloadHandIK(const FNRWeaponDefinition& Weapon, const FVector& Barrel, FVector& OutTarget, float& OutElbowOut) const;
+
+	/** Seconds the left hand takes to let go of the barrel and to take it again. */
+	static constexpr float ReloadHandBlendTime = 0.2f;
+
 	/** Rounds per weapon, parallel to Weapons. Filled to the magazine size at BeginPlay. */
 	TArray<int32> Ammo;
 
@@ -541,6 +646,9 @@ private:
 	float ReloadStartTime = 0.0f;
 	float ReloadDuration = 0.0f;
 	FTimerHandle ReloadTimer;
+
+	/** The reload montage playing for the current reload, to stop it if the reload is cancelled. */
+	TWeakObjectPtr<UAnimMontage> PlayingReloadMontage;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> ReloadContext;

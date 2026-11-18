@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NRWeaponComponent.h"
+#include "NRMetaProgression.h"
 
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -22,6 +23,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "NRAimComponent.h"
+#include "NRAnimUtils.h"
 #include "NRAmmo.h"
 #include "NRAttackInput.h"
 #include "NREnemyAwarenessSubsystem.h"
@@ -236,6 +238,17 @@ namespace
 			if (UNRWeaponComponent* Weapon = FindPlayerWeapon(World))
 			{
 				Weapon->SetCurrentMeshOffset(Weapon->GetCurrentWeapon() ? Weapon->GetCurrentWeapon()->MeshOffset : FTransform::Identity);
+			}
+		}));
+
+	FAutoConsoleCommandWithWorldAndArgs CmdEquip(
+		TEXT("NR.Weapon.Equip"),
+		TEXT("NR.Weapon.Equip <slot>: equips the player's weapon in that slot (0 = first), as its key does."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (UNRWeaponComponent* Weapon = FindPlayerWeapon(World); Weapon && Args.Num() > 0)
+			{
+				Weapon->EquipWeapon(FCString::Atoi(*Args[0]));
 			}
 		}));
 }
@@ -491,7 +504,7 @@ void UNRWeaponComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 		}
 	}
 
-	if (bBlendAimOffset)
+	if (bBlendAimOffset || bRecoiling)
 	{
 		UpdateAimBlend();
 	}
@@ -503,7 +516,7 @@ void UNRWeaponComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 
 	if (!NRAttackInput::IsAttackHeld(GetOwner()) || IsMeleeEquipped())
 	{
-		if (!bTrackLeftHand && !bWatchHandBody && !bBlendAimOffset)
+		if (!bTrackLeftHand && !bWatchHandBody && !bBlendAimOffset && !bRecoiling)
 		{
 			SetComponentTickEnabled(false);
 		}
@@ -535,7 +548,9 @@ int32 UNRWeaponComponent::GetMaxReserveForIndex(int32 Index) const
 	{
 		return 0;
 	}
-	return FMath::RoundToInt32(GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine * Weapons[Index].MaxReserveMagazines);
+	// Permanent growth adds whole magazines (rifle 30, shotgun 6 rounds each).
+	const float Magazines = Weapons[Index].MaxReserveMagazines + UNRMetaProgressionSubsystem::GetFlatBonus(this, ENRMetaStat::AmmoReserve);
+	return FMath::RoundToInt32(GetRuntimeStats(Weapons[Index].WeaponId).MaxMagazine * Magazines);
 }
 
 int32 UNRWeaponComponent::GetReserveAmmo() const
@@ -673,6 +688,23 @@ bool UNRWeaponComponent::Reload()
 	}
 
 	World->GetTimerManager().SetTimer(ReloadTimer, this, &UNRWeaponComponent::FinishReload, ReloadDuration, false);
+
+	// The upper body reloads over whatever the legs do, timed to the reload. Not over a vault or
+	// a roll: the body is theirs, and the montage would cut them off (they share the montage group).
+	PlayingReloadMontage = nullptr;
+	if (UAnimMontage* Montage = Weapon->ReloadMontage)
+	{
+		UAnimInstance* AnimInstance = GetPosingAnimInstance();
+		if (AnimInstance && !NRAnim::IsBodyMontagePlaying(AnimInstance) && Montage->GetPlayLength() > 0.0f)
+		{
+			if (AnimInstance->Montage_Play(Montage, Montage->GetPlayLength() / ReloadDuration) > 0.0f)
+			{
+				PlayingReloadMontage = Montage;
+			}
+		}
+	}
+	// The left hand's grip is updated in the tick.
+	SetComponentTickEnabled(true);
 	UE_LOG(LogNRWeapon, Log, TEXT("%s reloading %s (%.1fs)"), *GetNameSafe(GetOwner()),
 		*Weapon->DisplayName.ToString(), ReloadDuration);
 	return true;
@@ -682,6 +714,8 @@ void UNRWeaponComponent::FinishReload()
 {
 	const int32 Index = ReloadingWeaponIndex;
 	ReloadingWeaponIndex = INDEX_NONE;
+	// Its own blend-out carries it to the end; nothing to stop.
+	PlayingReloadMontage = nullptr;
 	if (!Weapons.IsValidIndex(Index) || !Ammo.IsValidIndex(Index) || !Reserve.IsValidIndex(Index))
 	{
 		return;
@@ -705,6 +739,36 @@ void UNRWeaponComponent::CancelReload()
 		World->GetTimerManager().ClearTimer(ReloadTimer);
 	}
 	ReloadingWeaponIndex = INDEX_NONE;
+
+	if (UAnimMontage* Montage = PlayingReloadMontage.Get())
+	{
+		UAnimInstance* AnimInstance = GetPosingAnimInstance();
+		if (AnimInstance && AnimInstance->Montage_IsPlaying(Montage))
+		{
+			AnimInstance->Montage_Stop(ReloadHandBlendTime, Montage);
+		}
+	}
+	PlayingReloadMontage = nullptr;
+}
+
+UAnimInstance* UNRWeaponComponent::GetPosingAnimInstance() const
+{
+	const USkeletalMeshComponent* Posing = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
+	return Posing ? Posing->GetAnimInstance() : nullptr;
+}
+
+float UNRWeaponComponent::GetReloadHandRelease() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !IsReloading() || !PlayingReloadMontage.IsValid() || ReloadDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+	// Off the barrel at the start, back on it for the end; both over ReloadHandBlendTime.
+	const float Elapsed = World->GetTimeSeconds() - ReloadStartTime;
+	const float Left = ReloadDuration - Elapsed;
+	const float Blend = FMath::Min(ReloadHandBlendTime, ReloadDuration * 0.5f);
+	return FMath::Clamp(FMath::Min(Elapsed, Left) / FMath::Max(Blend, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
 }
 
 void UNRWeaponComponent::OnRuntimeStatsChanged(ENRWeaponId WeaponId, const FNRWeaponRuntimeStats& Stats)
@@ -868,6 +932,7 @@ void UNRWeaponComponent::UpdateWeaponMesh()
 	// Still on the posing mesh while a visible hand is wanted: keep looking for the visible body.
 	bWatchHandBody = Mesh && Body && Body == Posing && !VisualHandBone.IsNone();
 	bBlendAimOffset = Mesh && WeaponMesh && Weapon->bUseAimMeshOffset;
+	bRecoiling = false;
 	if (bBlendAimOffset)
 	{
 		UpdateAimBlend();
@@ -876,6 +941,8 @@ void UNRWeaponComponent::UpdateWeaponMesh()
 	if (UAnimInstance* Anim = Posing ? Posing->GetAnimInstance() : nullptr)
 	{
 		SetAnimFloat(Anim, TEXT("LeftHandIKAlpha"), bTrackLeftHand ? 1.0 : 0.0);
+		// A weapon change mid-reload must not leave the elbow IK on.
+		SetAnimFloat(Anim, TEXT("ReloadElbowAlpha"), 0.0);
 	}
 	if (bTrackLeftHand)
 	{
@@ -935,9 +1002,92 @@ void UNRWeaponComponent::UpdateLeftHandTarget()
 	// amount, so what has to carry over is the reach from the right hand to the left: the world
 	// offset from the hand the weapon is in to the LeftHand socket, turned into hand_r's frame.
 	// Uses last frame's pose, which is all there is before this frame's animation.
-	const FVector Reach = WeaponMesh->GetSocketLocation(Weapon->LeftHandSocket) - Body->GetSocketLocation(HandBone);
+	const FVector Barrel = WeaponMesh->GetSocketLocation(Weapon->LeftHandSocket);
+	// A weapon with a reload hand path keeps the IK on and walks the hand along its stops; one
+	// without lets go and the reload animation moves the hand.
+	const bool bFollowPath = Weapon->ReloadHandPath.Num() > 0 && IsReloading();
+	FVector Target = Barrel;
+	float ElbowOut = 0.0f;
+	const float PathAlpha = bFollowPath ? GetReloadHandIK(*Weapon, Barrel, Target, ElbowOut) : 1.0f;
+	SetAnimFloat(Anim, TEXT("ReloadElbowAlpha"), ElbowOut);
+	const FVector Reach = Target - Body->GetSocketLocation(HandBone);
 	const FTransform PosingHand = Posing->GetSocketTransform(TEXT("hand_r"));
 	SetAnimVector(Anim, TEXT("LeftHandIKLocation"), PosingHand.GetRotation().UnrotateVector(Reach));
+	SetAnimFloat(Anim, TEXT("LeftHandIKAlpha"), bFollowPath ? PathAlpha : 1.0 - GetReloadHandRelease());
+}
+
+FVector UNRWeaponComponent::ResolveReloadHandKey(const FNRReloadHandKey& Key, const FVector& Fallback) const
+{
+	if (Key.bOnBody)
+	{
+		// The visible body first (it may be a Mixamo rig: LeftUpLeg), then the posing mesh, which
+		// has the UE mannequin's names (thigh_l) and stands in the same place.
+		const USkeletalMeshComponent* Body = HandBody.Get();
+		if (!Body || Key.Socket.IsNone() || !Body->DoesSocketExist(Key.Socket))
+		{
+			Body = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
+		}
+		if (!Body || Key.Socket.IsNone() || !Body->DoesSocketExist(Key.Socket))
+		{
+			return Fallback;
+		}
+		const FQuat Facing = GetOwner() ? GetOwner()->GetActorQuat() : FQuat::Identity;
+		return Body->GetSocketLocation(Key.Socket) + Facing.RotateVector(Key.Offset);
+	}
+	if (!WeaponMesh || Key.Socket.IsNone() || !WeaponMesh->DoesSocketExist(Key.Socket))
+	{
+		return Fallback;
+	}
+	return WeaponMesh->GetSocketTransform(Key.Socket).TransformPosition(Key.Offset);
+}
+
+float UNRWeaponComponent::GetReloadHandIK(const FNRWeaponDefinition& Weapon, const FVector& Barrel, FVector& OutTarget, float& OutElbowOut) const
+{
+	OutTarget = Barrel;
+	OutElbowOut = 0.0f;
+	if (!IsReloading() || Weapon.ReloadHandPath.Num() == 0)
+	{
+		return 1.0f;
+	}
+
+	// Each touch pulls with a weight that is 1 within Hold of its time and fades to 0 over Blend
+	// beyond. The barrel is a touch at the start and at the end. The hand goes to the weighted
+	// middle of the touches pulling now, as hard as the strongest pull.
+	const float Progress = GetReloadProgress();
+	auto Weight = [Progress](float Time, float Hold, float Blend)
+	{
+		const float Away = FMath::Abs(Progress - Time) - Hold;
+		return Away <= 0.0f ? 1.0f : 1.0f - FMath::SmoothStep(0.0f, 1.0f, Away / FMath::Max(Blend, KINDA_SMALL_NUMBER));
+	};
+
+	float Strongest = 0.0f;
+	float Total = 0.0f;
+	FVector Sum = FVector::ZeroVector;
+	auto Add = [&](float W, const FVector& Where)
+	{
+		if (W > 0.0f)
+		{
+			Strongest = FMath::Max(Strongest, W);
+			Total += W;
+			Sum += Where * W;
+		}
+	};
+	constexpr float BarrelBlend = 0.12f;
+	Add(Weight(0.0f, 0.0f, BarrelBlend), Barrel);
+	Add(Weight(1.0f, 0.0f, BarrelBlend), Barrel);
+	for (const FNRReloadHandKey& Key : Weapon.ReloadHandPath)
+	{
+		const float W = Weight(FMath::Clamp(Key.Time, 0.0f, 1.0f), Key.Hold, Key.Blend);
+		Add(W, ResolveReloadHandKey(Key, Barrel));
+		// The elbow turns out as far as the strongest pull of a point that asks for it.
+		OutElbowOut = FMath::Max(OutElbowOut, W * Key.ElbowOut);
+	}
+
+	if (Total > 0.0f)
+	{
+		OutTarget = Sum / Total;
+	}
+	return Strongest;
 }
 
 #if WITH_EDITOR
@@ -973,22 +1123,60 @@ void UNRWeaponComponent::SetCurrentMeshOffset(const FTransform& Offset)
 void UNRWeaponComponent::UpdateAimBlend()
 {
 	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
-	if (!Weapon || !WeaponMesh || !Weapon->bUseAimMeshOffset)
+	if (!Weapon || !WeaponMesh)
 	{
 		return;
 	}
 
-	// The aim pose's own weight, so the weapon turns exactly as fast as the arms do.
-	const USkeletalMeshComponent* Posing = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
-	const UAnimInstance* Anim = Posing ? Posing->GetAnimInstance() : nullptr;
-	const float Alpha = Anim ? FMath::Clamp(static_cast<float>(GetAnimFloat(Anim, TEXT("AimAlpha"))), 0.0f, 1.0f) : 0.0f;
-
-	FTransform Blended;
-	Blended.Blend(Weapon->MeshOffset, Weapon->AimMeshOffset, Alpha);
-	if (!WeaponMesh->GetRelativeTransform().Equals(Blended, 0.01))
+	FTransform Base = Weapon->MeshOffset;
+	if (Weapon->bUseAimMeshOffset)
 	{
-		WeaponMesh->SetRelativeTransform(Blended);
+		// The aim pose's own weight, so the weapon turns exactly as fast as the arms do.
+		const USkeletalMeshComponent* Posing = GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr;
+		const UAnimInstance* Anim = Posing ? Posing->GetAnimInstance() : nullptr;
+		const float Alpha = Anim ? FMath::Clamp(static_cast<float>(GetAnimFloat(Anim, TEXT("AimAlpha"))), 0.0f, 1.0f) : 0.0f;
+		Base.Blend(Weapon->MeshOffset, Weapon->AimMeshOffset, Alpha);
 	}
+
+	// Muzzle kick: a pitch in the weapon's own frame, so it turns about the grip (the mesh origin)
+	// with the muzzle (+X) going up (+Z).
+	const float Kick = bRecoiling ? GetRecoilPitch() : 0.0f;
+	const FTransform Final = Kick != 0.0f ? FTransform(FRotator(Kick, 0.0f, 0.0f)) * Base : Base;
+	// Tight tolerance: a loose one left the last fraction of a degree of the kick in place.
+	if (!WeaponMesh->GetRelativeTransform().Equals(Final, 1.e-4))
+	{
+		WeaponMesh->SetRelativeTransform(Final);
+	}
+}
+
+float UNRWeaponComponent::GetRecoilPitch()
+{
+	const FNRWeaponDefinition* Weapon = GetCurrentWeapon();
+	const UWorld* World = GetWorld();
+	if (!Weapon || !World || Weapon->RecoilKickPitch <= 0.0f)
+	{
+		bRecoiling = false;
+		return 0.0f;
+	}
+	const float Up = FMath::Max(Weapon->RecoilKickTime, 0.01f);
+	const float Down = FMath::Max(Weapon->RecoilRecoverTime, 0.01f);
+	const float Time = World->GetTimeSeconds() - RecoilStartTime;
+	float Amount = 0.0f;
+	if (Time < Up)
+	{
+		// Quick rise, easing into the top.
+		Amount = FMath::Sin(HALF_PI * Time / Up);
+	}
+	else if (Time < Up + Down)
+	{
+		// Smooth settle back to rest.
+		Amount = 0.5f * (1.0f + FMath::Cos(PI * (Time - Up) / Down));
+	}
+	else
+	{
+		bRecoiling = false;
+	}
+	return Weapon->RecoilKickPitch * Amount;
 }
 
 void UNRWeaponComponent::SetCurrentAimMeshOffset(const FTransform& Offset)
@@ -1271,12 +1459,12 @@ bool UNRWeaponComponent::ShouldShowCrosshair() const
 
 	// A montage owning the body means a traversal, a takedown or a hit reaction - none of
 	// which are aiming poses. Crude but it costs nothing and covers every case the sample
-	// drives through the default slot.
+	// drives through the default slot. The reload (upper body only) keeps the crosshair.
 	if (const USkeletalMeshComponent* Mesh = Pawn->FindComponentByClass<USkeletalMeshComponent>())
 	{
 		if (const UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
 		{
-			if (AnimInstance->IsAnyMontagePlaying())
+			if (NRAnim::IsBodyMontagePlaying(AnimInstance))
 			{
 				return false;
 			}
@@ -1383,6 +1571,13 @@ int32 UNRWeaponComponent::Fire()
 			Criticals += bCritical ? 1 : 0;
 			TotalDamage += FinalDamage;
 		}
+	}
+
+	if (Weapon->RecoilKickPitch > 0.0f && WeaponMesh && WeaponMesh->IsVisible())
+	{
+		bRecoiling = true;
+		RecoilStartTime = World->GetTimeSeconds();
+		SetComponentTickEnabled(true);
 	}
 
 	if (UAnimMontage* FireMontage = Weapon->FireMontage)
