@@ -202,6 +202,14 @@ void AEnemyAIController::RunNeuralPipeline(float DeltaTime)
 		return;
 	}
 
+	// A boss pattern that moves the body itself (a charge, an advancing sweep) owns it until it is
+	// over; sensing and thinking carry on above.
+	if (ControlledEnemy->IsAttackLocked())
+	{
+		DesiredMovement = FVector::ZeroVector;
+		return;
+	}
+
 	UpdatePathToTarget(Now);
 	// Holding position (NeuralAI.NeuralMovement 0) holds off climbing too; a climb by command still runs.
 	if (CVarNeuralMovement.GetValueOnGameThread() != 0 && (TryClimbAlongPath() || TryClimbOnDemand(Now)))
@@ -378,8 +386,11 @@ void AEnemyAIController::ApplyNeuralMovement(float Now)
 	// Strafe shares the ego frame with the sensory readings that drive it.
 	const FVector EnemyRight = ControlledEnemy->GetActorRightVector().GetSafeNormal2D();
 
+	// Whether it may back off at all is the character's rule (the boss never does), not the brain's.
+	const float Retreat = ControlledEnemy->CanRetreat() ? Output.Retreat : 0.0f;
+
 	FVector Blended =
-		TargetDirection * (Output.Approach - Output.Retreat) +
+		TargetDirection * (Output.Approach - Retreat) +
 		EnemyRight * (Output.StrafeRight - Output.StrafeLeft);
 
 	// In its slot the enemy stops closing in: Approach would only push it into the target or a
@@ -387,7 +398,7 @@ void AEnemyAIController::ApplyNeuralMovement(float Now)
 	FVector SlotLocation;
 	if (GetDrivingSlot(SlotLocation) && IsAtSlot(SlotLocation))
 	{
-		Blended = -Sensor->GetTargetDirection() * Output.Retreat
+		Blended = -Sensor->GetTargetDirection() * Retreat
 			+ EnemyRight * (Output.StrafeRight - Output.StrafeLeft) * GetDefault<UPositionalSlotSettings>()->ArrivedStrafeScale;
 	}
 

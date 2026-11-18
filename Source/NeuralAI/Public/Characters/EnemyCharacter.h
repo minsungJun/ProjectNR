@@ -47,8 +47,9 @@ public:
 	/**
 	 * Damages anything with health inside a forward arc. Purely mechanical: the decision
 	 * that an attack should happen, and whether it is allowed to, belongs to the controller.
-	 * Returns the number of actors hit (a ranged enemy, whose shot lands later, returns 1 for
-	 * a shot fired).
+	 * The animation goes first and the blow lands AttackImpactDelay later (ReleaseAttack), so the
+	 * wind-up can be read and stepped out of. Returns 1 when an attack started (with no delay,
+	 * the number of actors hit), 0 when none could.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Enemy")
 	virtual int32 PerformAttack();
@@ -65,6 +66,18 @@ public:
 
 	/** Whether its attacks take turns through the attack tokens. Close-in strikes do. */
 	virtual bool UsesAttackTokens() const { return true; }
+
+	/**
+	 * True while the character runs an attack that moves the body itself (the boss's charge and
+	 * sweep): the controller keeps sensing and thinking but issues no movement, dodge or attack.
+	 */
+	virtual bool IsAttackLocked() const { return false; }
+
+	/**
+	 * Whether the brain's Retreat drive may move it. The brain still feels it (and learns with
+	 * it); the controller just does not act on it. The boss stands its ground.
+	 */
+	virtual bool CanRetreat() const { return true; }
 
 	UFUNCTION(BlueprintPure, Category = "Enemy")
 	UEnemyClimbComponent* GetClimbComponent() const { return ClimbComponent; }
@@ -161,6 +174,23 @@ protected:
 	/** The damage half of PerformAttack: hits what is in the forward arc now. -1 when it cannot attack (dead). */
 	int32 ApplyAttackDamage();
 
+	/** The moment of the strike, AttackImpactDelay into the attack: a close-in blow by default, a shot for the Spitter. */
+	virtual int32 ReleaseAttack();
+
+	/** Between the start of an attack and its release: a flinch would cut the strike off, so none plays. */
+	bool IsAttackWindingUp() const;
+
+	/**
+	 * Damages what has health within Radius of Origin and inside the arc of HalfAngleDeg about
+	 * Forward (180 = all round), enemies excepted. Actors in AlreadyHit are skipped and the ones hit
+	 * are added, so a long attack can hit each actor once. Returns the number hit.
+	 */
+	int32 DamageInArc(const FVector& Origin, const FVector& Forward, float Radius, float HalfAngleDeg,
+		float Damage, TSet<AActor*>* AlreadyHit = nullptr, bool bDrawDebug = true);
+
+	/** Plays an animation on a loop for Seconds, then back to the walk cycle (or the rest pose without one). */
+	void PlayLoopingAnimation(UAnimSequence* Animation, float Seconds);
+
 	/** Plays an animation once over the walk, cutting off any other one-shot still playing. */
 	void PlayOneShotAnimation(UAnimSequence* Animation);
 
@@ -231,6 +261,13 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Attack", meta = (ClampMin = "5.0", ClampMax = "180.0"))
 	float AttackHalfAngle = 60.0f;
 
+	/**
+	 * Seconds from the start of the attack animation to the frame it strikes (the end of its
+	 * anticipation), when the damage lands or the shot leaves. 0 strikes at once.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Attack", meta = (ClampMin = "0.0"))
+	float AttackImpactDelay = 0.28f;
+
 	/** Seconds between attacks. 0 uses the controller's AttackCooldown (1.5). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Attack", meta = (ClampMin = "0.0"))
 	float AttackInterval = 0.0f;
@@ -276,4 +313,5 @@ private:
 	FTimerHandle WalkTimer;
 	FTimerHandle OneShotTimer;
 	FTimerHandle StunTimer;
+	FTimerHandle AttackReleaseTimer;
 };

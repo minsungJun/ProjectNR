@@ -17,6 +17,8 @@ ARangedEnemyCharacter::ARangedEnemyCharacter()
 	AttackRange = 3000.0f;
 	AttackInterval = 2.0f;
 	AttackDamage = 10.0f;
+	// A_Spitter_Attack spits here, after the sac swells and the body rears.
+	AttackImpactDelay = 0.33f;
 
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> TintFinder(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 	TintMaterial = TintFinder.Object;
@@ -53,6 +55,21 @@ const FEnemyVisual& ARangedEnemyCharacter::GetVisual() const
 
 int32 ARangedEnemyCharacter::PerformAttack()
 {
+	const UEnemySensorComponent* Sensor = GetSensorComponent();
+	const AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
+	if (!GetWorld() || IsDead() || !Target || !ProjectileClass)
+	{
+		return 0;
+	}
+
+	// Turn to the target for the wind-up (the sac swells and it rears); the shot leaves on the spit.
+	const FVector ToTarget = Target->GetActorLocation() - GetActorLocation();
+	SetActorRotation(FRotator(0.0f, ToTarget.Rotation().Yaw, 0.0f));
+	return Super::PerformAttack();
+}
+
+int32 ARangedEnemyCharacter::ReleaseAttack()
+{
 	UWorld* World = GetWorld();
 	const UEnemySensorComponent* Sensor = GetSensorComponent();
 	const AActor* Target = Sensor ? Sensor->GetCurrentTarget() : nullptr;
@@ -61,8 +78,8 @@ int32 ARangedEnemyCharacter::PerformAttack()
 		return 0;
 	}
 
-	// Turn to the target and fire from the muzzle at its middle; no leading, so a moving target
-	// can sidestep.
+	// Aimed now, at the target's middle, from the muzzle; no leading, so a moving target can
+	// sidestep (and the wind-up gives it a moment to start).
 	const FVector ToTarget = Target->GetActorLocation() - GetActorLocation();
 	SetActorRotation(FRotator(0.0f, ToTarget.Rotation().Yaw, 0.0f));
 	const FVector Muzzle = GetActorLocation() + GetActorRotation().RotateVector(MuzzleOffset);
@@ -78,7 +95,6 @@ int32 ARangedEnemyCharacter::PerformAttack()
 		return 0;
 	}
 	Shot->Launch(Direction, ProjectileSpeed, AttackDamage, AttackRange);
-	PlayAttackAnimation();
 
 	UE_LOG(LogNeuralAI, Log, TEXT("%s fired at %s from %.0f cm"), *GetNameSafe(this), *GetNameSafe(Target), ToTarget.Size2D());
 	return 1;

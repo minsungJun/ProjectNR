@@ -272,6 +272,7 @@ void AEnemyCharacter::HandleDeath(AActor* Killer)
 	// Collapse and stay collapsed: nothing hands the model back to the walk cycle after this.
 	GetWorldTimerManager().ClearTimer(WalkTimer);
 	GetWorldTimerManager().ClearTimer(OneShotTimer);
+	GetWorldTimerManager().ClearTimer(AttackReleaseTimer);
 	if (bShowsModel && DeathAnimation && GetMesh())
 	{
 		bPlayingOneShot = true;
@@ -378,7 +379,9 @@ void AEnemyCharacter::HandleDamaged(float Damage, AActor* DamageInstigator, cons
 {
 	// A killing blow broadcasts here before the health component marks itself dead, so read the
 	// health left: the dead keep still rather than flinch.
-	if (Damage > 0.0f && HealthComponent && HealthComponent->GetCurrentHealth() > 0.0f)
+	// Nor does it flinch mid wind-up: the strike it is gathering for plays through (the hit
+	// still counts; only the animation is spared).
+	if (Damage > 0.0f && HealthComponent && HealthComponent->GetCurrentHealth() > 0.0f && !IsAttackWindingUp())
 	{
 		PlayOneShotAnimation(HitAnimation);
 	}
@@ -398,6 +401,19 @@ void AEnemyCharacter::PlayOneShotAnimation(UAnimSequence* Animation)
 		Animation->GetPlayLength(), false);
 }
 
+void AEnemyCharacter::PlayLoopingAnimation(UAnimSequence* Animation, float Seconds)
+{
+	USkeletalMeshComponent* Model = GetMesh();
+	if (!bShowsModel || !Animation || !Model || Seconds <= 0.0f)
+	{
+		return;
+	}
+	bPlayingOneShot = true;
+	Model->PlayAnimation(Animation, true);
+	Model->SetPlayRate(1.0f);
+	GetWorldTimerManager().SetTimer(OneShotTimer, this, &AEnemyCharacter::FinishOneShotAnimation, Seconds, false);
+}
+
 void AEnemyCharacter::FinishOneShotAnimation()
 {
 	bPlayingOneShot = false;
@@ -407,6 +423,12 @@ void AEnemyCharacter::FinishOneShotAnimation()
 		// From where every foot is down; the walk timer picks the rate up from here.
 		Model->PlayAnimation(WalkAnimation, true);
 		Model->SetPlayRate(0.0f);
+	}
+	else if (Model && bShowsModel && !IsDead())
+	{
+		// No walk cycle (the boss): back to the rest pose rather than freezing on the last frame,
+		// which for a loop (the boss's charge) is mid-stride.
+		Model->SetAnimation(nullptr);
 	}
 }
 
@@ -431,38 +453,73 @@ void AEnemyCharacter::SetClimbPose(float Alpha)
 
 int32 AEnemyCharacter::PerformAttack()
 {
-	const int32 HitCount = ApplyAttackDamage();
-	if (HitCount >= 0)
+	UWorld* World = GetWorld();
+	if (!World || IsDead() || IsAttackWindingUp())
 	{
-		PlayAttackAnimation();
+		return 0;
 	}
-	return FMath::Max(HitCount, 0);
+
+	PlayAttackAnimation();
+	if (AttackImpactDelay <= 0.0f)
+	{
+		return ReleaseAttack();
+	}
+
+	// The animation's anticipation plays first; the blow lands on its strike frame. Nothing lands
+	// if it died meanwhile (ReleaseAttack checks).
+	World->GetTimerManager().SetTimer(AttackReleaseTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		ReleaseAttack();
+	}), AttackImpactDelay, false);
+	return 1;
+}
+
+int32 AEnemyCharacter::ReleaseAttack()
+{
+	return FMath::Max(ApplyAttackDamage(), 0);
+}
+
+bool AEnemyCharacter::IsAttackWindingUp() const
+{
+	const UWorld* World = GetWorld();
+	return World && World->GetTimerManager().IsTimerActive(AttackReleaseTimer);
 }
 
 int32 AEnemyCharacter::ApplyAttackDamage()
 {
-	UWorld* World = GetWorld();
-	if (!World || IsDead())
+	if (!GetWorld() || IsDead())
 	{
 		return -1;
 	}
+	const int32 HitCount = DamageInArc(GetActorLocation(), GetActorForwardVector().GetSafeNormal2D(),
+		AttackRange, AttackHalfAngle, AttackDamage);
+	UE_LOG(LogNeuralAI, Log, TEXT("%s attacked, %d hit"), *GetNameSafe(this), HitCount);
+	return HitCount;
+}
 
-	const FVector Origin = GetActorLocation();
-	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
-	const float CosHalfAngle = FMath::Cos(FMath::DegreesToRadians(AttackHalfAngle));
+int32 AEnemyCharacter::DamageInArc(const FVector& Origin, const FVector& Forward, float Radius, float HalfAngleDeg,
+	float Damage, TSet<AActor*>* AlreadyHit, bool bDrawDebug)
+{
+	UWorld* World = GetWorld();
+	if (!World || IsDead())
+	{
+		return 0;
+	}
+
+	const float CosHalfAngle = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(HalfAngleDeg, 0.0f, 180.0f)));
 
 	TArray<FOverlapResult> Overlaps;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(EnemyAttack), false, this);
 	World->OverlapMultiByChannel(Overlaps, Origin, FQuat::Identity, ECC_Pawn,
-		FCollisionShape::MakeSphere(AttackRange), Params);
+		FCollisionShape::MakeSphere(Radius), Params);
 
 	int32 HitCount = 0;
-	TSet<AActor*> AlreadyHit;
+	TSet<AActor*> HitNow;
 
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
 		AActor* Other = Overlap.GetActor();
-		if (!Other || Other == this || AlreadyHit.Contains(Other))
+		if (!Other || Other == this || HitNow.Contains(Other) || (AlreadyHit && AlreadyHit->Contains(Other)))
 		{
 			continue;
 		}
@@ -485,23 +542,35 @@ int32 AEnemyCharacter::ApplyAttackDamage()
 		FVector ToOther = Other->GetActorLocation() - Origin;
 		ToOther.Z = 0.0f;
 		const FVector ToOtherDir = ToOther.GetSafeNormal();
-		if (FVector::DotProduct(Forward, ToOtherDir) < CosHalfAngle)
+		if (HalfAngleDeg < 180.0f && FVector::DotProduct(Forward, ToOtherDir) < CosHalfAngle)
 		{
 			continue;
 		}
 
-		AlreadyHit.Add(Other);
-		OtherHealth->ApplyDamage(AttackDamage, this, ToOtherDir);
+		HitNow.Add(Other);
+		if (AlreadyHit)
+		{
+			AlreadyHit->Add(Other);
+		}
+		OtherHealth->ApplyDamage(Damage, this, ToOtherDir);
 		++HitCount;
 	}
 
 #if ENABLE_DRAW_DEBUG
-	DrawDebugCone(World, Origin, Forward, AttackRange,
-		FMath::DegreesToRadians(AttackHalfAngle), FMath::DegreesToRadians(15.0f), 16,
-		HitCount > 0 ? FColor::Red : FColor(150, 150, 150), false, 0.35f, 0, 2.0f);
+	if (bDrawDebug)
+	{
+		const FColor Color = HitCount > 0 ? FColor::Red : FColor(150, 150, 150);
+		if (HalfAngleDeg >= 180.0f)
+		{
+			DrawDebugCircle(World, Origin, Radius, 32, Color, false, 0.5f, 0, 3.0f, FVector(1, 0, 0), FVector(0, 1, 0), false);
+		}
+		else
+		{
+			DrawDebugCone(World, Origin, Forward, Radius, FMath::DegreesToRadians(HalfAngleDeg),
+				FMath::DegreesToRadians(15.0f), 16, Color, false, 0.35f, 0, 2.0f);
+		}
+	}
 #endif
-
-	UE_LOG(LogNeuralAI, Log, TEXT("%s attacked, %d hit"), *GetNameSafe(this), HitCount);
 	return HitCount;
 }
 

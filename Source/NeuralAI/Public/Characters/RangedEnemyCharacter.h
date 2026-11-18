@@ -26,7 +26,7 @@ class NEURALAI_API ARangedEnemyCharacter : public AEnemyCharacter
 public:
 	ARangedEnemyCharacter();
 
-	/** Fires one shot at the current target. Returns 1 when a shot left, 0 otherwise. */
+	/** Turns to the current target and winds up a shot; it leaves AttackImpactDelay later. Returns 1 when it started. */
 	virtual int32 PerformAttack() override;
 
 	virtual int32 GetPreferredSlotRing() const override { return 1; }
@@ -35,6 +35,9 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual const FEnemyVisual& GetVisual() const override;
+
+	/** Fires the shot at the current target. Returns 1 when a shot left. */
+	virtual int32 ReleaseAttack() override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy|Ranged")
 	TSubclassOf<AEnemyProjectile> ProjectileClass;
